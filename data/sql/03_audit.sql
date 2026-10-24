@@ -29,9 +29,9 @@ create table if not exists basalt.audit (
 ) partition by range (at);
 -- Anything outside the monthly partitions still gets recorded.
 create table if not exists basalt.audit_default partition of basalt.audit default;
-alter sequence basalt.audit_id_seq owner to basalt_owner;
-alter table basalt.audit owner to basalt_owner;
-alter table basalt.audit_default owner to basalt_owner;
+alter sequence basalt.audit_id_seq owner to :"owner_role";
+alter table basalt.audit owner to :"owner_role";
+alter table basalt.audit_default owner to :"owner_role";
 revoke all on basalt.audit, basalt.audit_default, basalt.audit_id_seq from public;
 
 -- Creates this month's partition and the next two. Run by every migrate.
@@ -53,13 +53,12 @@ begin
         m, (m + interval '1 month')::date, 'audit_' || to_char(m, 'YYYY_MM'));
       execute format('alter table basalt.audit attach partition basalt.%I for values from (%L) to (%L)',
         'audit_' || to_char(m, 'YYYY_MM'), m, (m + interval '1 month')::date);
-      execute format('alter table basalt.%I owner to basalt_owner', 'audit_' || to_char(m, 'YYYY_MM'));
       execute format('revoke all on basalt.%I from public', 'audit_' || to_char(m, 'YYYY_MM'));
     end if;
   end loop;
 end
 $$;
-alter function basalt.ensure_audit_partitions() owner to basalt_owner;
+alter function basalt.ensure_audit_partitions() owner to :"owner_role";
 revoke execute on function basalt.ensure_audit_partitions() from public;
 select basalt.ensure_audit_partitions();
 
@@ -86,7 +85,7 @@ begin
   return null;
 end
 $$;
-alter function basalt.audit_row() owner to basalt_owner;
+alter function basalt.audit_row() owner to :"owner_role";
 revoke execute on function basalt.audit_row() from public;
 
 create or replace function basalt.touch_updated_at() returns trigger
@@ -98,5 +97,5 @@ begin
   return new;
 end
 $$;
-alter function basalt.touch_updated_at() owner to basalt_owner;
+alter function basalt.touch_updated_at() owner to :"owner_role";
 revoke execute on function basalt.touch_updated_at() from public;

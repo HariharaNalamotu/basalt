@@ -7,32 +7,35 @@ revoke create on schema public from public;
 select format('revoke connect, temporary on database %I from public', datname)
 from pg_database where datallowconn \gexec
 
--- basalt_owner owns every Basalt table. It can't log in.
--- basalt_exec runs the API function. It can't log in and nobody can become it.
--- basalt_data is the only login, held only by the Data service. All it can do
+-- The owner role owns every Basalt table. It can't log in.
+-- The exec role runs the API function. It can't log in and nobody can become it.
+-- The data role is the only login, held only by the Data service. All it can do
 -- is call basalt.api(): no table access at all.
-select 'create role basalt_owner nologin'
-where not exists (select 1 from pg_roles where rolname = 'basalt_owner') \gexec
-select 'create role basalt_exec nologin'
-where not exists (select 1 from pg_roles where rolname = 'basalt_exec') \gexec
-select 'create role basalt_data login'
-where not exists (select 1 from pg_roles where rolname = 'basalt_data') \gexec
+--
+-- Each app's database gets its own three roles (names passed in by the caller),
+-- so one app's login can never open another app's data.
+select format('create role %I nologin', :'owner_role')
+where not exists (select 1 from pg_roles where rolname = :'owner_role') \gexec
+select format('create role %I nologin', :'exec_role')
+where not exists (select 1 from pg_roles where rolname = :'exec_role') \gexec
+select format('create role %I login', :'data_role')
+where not exists (select 1 from pg_roles where rolname = :'data_role') \gexec
 
-alter role basalt_data with login password :'data_pw'
+alter role :"data_role" with login password :'data_pw'
   nosuperuser nocreatedb nocreaterole noinherit nobypassrls noreplication
   connection limit 50;
-alter role basalt_owner with nologin nosuperuser nobypassrls;
-alter role basalt_exec with nologin nosuperuser nobypassrls noinherit;
-grant connect on database postgres to basalt_data;
+alter role :"owner_role" with nologin nosuperuser nobypassrls;
+alter role :"exec_role" with nologin nosuperuser nobypassrls noinherit;
+select format('grant connect on database %I to %I', current_database(), :'data_role') \gexec
 
 -- Defaults that kill runaway work.
-alter role basalt_data set statement_timeout = '3s';
-alter role basalt_data set transaction_timeout = '5s';
-alter role basalt_data set idle_in_transaction_session_timeout = '2s';
-alter role basalt_data set lock_timeout = '1s';
-alter role basalt_data set work_mem = '4MB';
-alter role basalt_data set temp_file_limit = '16MB';
-alter role basalt_data set search_path = pg_catalog;
+alter role :"data_role" set statement_timeout = '3s';
+alter role :"data_role" set transaction_timeout = '5s';
+alter role :"data_role" set idle_in_transaction_session_timeout = '2s';
+alter role :"data_role" set lock_timeout = '1s';
+alter role :"data_role" set work_mem = '4MB';
+alter role :"data_role" set temp_file_limit = '16MB';
+alter role :"data_role" set search_path = pg_catalog;
 
 -- Built in functions that are open to everyone by default and could be used to
 -- store data outside the row rules (large objects), hold locks forever
@@ -50,21 +53,21 @@ where n.nspname = 'pg_catalog'
 
 -- Postgres lets everyone run new functions by default. Turn that off.
 alter default privileges revoke execute on functions from public;
-alter default privileges for role basalt_owner revoke execute on functions from public;
-alter default privileges for role basalt_exec revoke execute on functions from public;
+alter default privileges for role :"owner_role" revoke execute on functions from public;
+alter default privileges for role :"exec_role" revoke execute on functions from public;
 
-create schema if not exists basalt authorization basalt_owner;
+create schema if not exists basalt authorization :"owner_role";
 create extension if not exists pgcrypto schema basalt;
-create schema if not exists app authorization basalt_owner;
+create schema if not exists app authorization :"owner_role";
 
 -- The default above also locks pgcrypto. Open only the functions the login
 -- check needs, and only to the owner role that runs that check.
 revoke execute on all functions in schema basalt from public;
-grant execute on function basalt.hmac(text, text, text) to basalt_owner;
-grant execute on function basalt.digest(bytea, text) to basalt_owner;
-grant execute on function basalt.digest(text, text) to basalt_owner;
+grant execute on function basalt.hmac(text, text, text) to :"owner_role";
+grant execute on function basalt.digest(bytea, text) to :"owner_role";
+grant execute on function basalt.digest(text, text) to :"owner_role";
 
--- basalt_data can reach these schemas only to call basalt.api().
-revoke all on schema app from basalt_data;
-grant usage on schema basalt to basalt_data;
-grant usage on schema basalt, app to basalt_exec;
+-- The data role can reach these schemas only to call basalt.api().
+revoke all on schema app from :"data_role";
+grant usage on schema basalt to :"data_role";
+grant usage on schema basalt, app to :"exec_role";

@@ -71,8 +71,20 @@ export function addColumnSql(table: TableSpec, name: string): string {
   return `alter table app.${quoteIdent(table.name)} add column ${columnSql(name, table.fields.get(name)!)}`;
 }
 
-export function tableSql(table: TableSpec): string[] {
+// The database roles for one app. Every app gets its own three.
+export interface Roles {
+  owner: string;
+  exec: string;
+  data: string;
+}
+
+export const DEFAULT_ROLES: Roles = { owner: 'basalt_owner', exec: 'basalt_exec', data: 'basalt_data' };
+
+export function tableSql(table: TableSpec, roles: Roles = DEFAULT_ROLES): string[] {
   const t = `app.${quoteIdent(table.name)}`;
+  const owner = quoteIdent(roles.owner);
+  const exec = quoteIdent(roles.exec);
+  const data = quoteIdent(roles.data);
   const writable = [...table.fields.keys()];
   const writableSql = writable.map(quoteIdent).join(', ');
   const me = '(select basalt.uid())';
@@ -87,12 +99,12 @@ export function tableSql(table: TableSpec): string[] {
   "created_at" timestamptz not null default now(),
   "updated_at" timestamptz not null default now()
 )`,
-    `alter table ${t} owner to basalt_owner`,
+    `alter table ${t} owner to ${owner}`,
     `alter table ${t} enable row level security`,
     `alter table ${t} force row level security`,
 
     // Start from nothing on every run so a stale grant or policy can't survive.
-    `revoke all on ${t} from public, basalt_data, basalt_exec`,
+    `revoke all on ${t} from public, ${data}, ${exec}`,
     `do $basalt$ declare p record; begin
   for p in select policyname from pg_policies where schemaname = 'app' and tablename = ${quoteLiteral(table.name)} loop
     execute format('drop policy %I on app.%I', p.policyname, ${quoteLiteral(table.name)});
@@ -108,18 +120,18 @@ end $basalt$`,
       : []),
 
     // Each user sees their own rows, plus rows shared with them. Only the
-    // owner can change a row. Only basalt_exec (inside basalt.api) gets these.
+    // owner can change a row. Only the exec role (inside basalt.api) gets these.
     share
-      ? `create policy basalt_select on ${t} for select to basalt_exec using ("owner_id" = ${me} or ${share} = ${me})`
-      : `create policy basalt_select on ${t} for select to basalt_exec using ("owner_id" = ${me})`,
-    `create policy basalt_insert on ${t} for insert to basalt_exec with check ("owner_id" = ${me})`,
-    `create policy basalt_update on ${t} for update to basalt_exec using ("owner_id" = ${me}) with check ("owner_id" = ${me})`,
+      ? `create policy basalt_select on ${t} for select to ${exec} using ("owner_id" = ${me} or ${share} = ${me})`
+      : `create policy basalt_select on ${t} for select to ${exec} using ("owner_id" = ${me})`,
+    `create policy basalt_insert on ${t} for insert to ${exec} with check ("owner_id" = ${me})`,
+    `create policy basalt_update on ${t} for update to ${exec} using ("owner_id" = ${me}) with check ("owner_id" = ${me})`,
 
     // Read rows, write only the contract's fields. id, owner_id and the
     // timestamps are set by the database. No delete at all.
-    `grant select on ${t} to basalt_exec`,
-    `grant insert (${writableSql}, "request_key") on ${t} to basalt_exec`,
-    `grant update (${writableSql}) on ${t} to basalt_exec`,
+    `grant select on ${t} to ${exec}`,
+    `grant insert (${writableSql}, "request_key") on ${t} to ${exec}`,
+    `grant update (${writableSql}) on ${t} to ${exec}`,
 
     // Updates that change nothing don't bump updated_at or write to the audit log.
     `drop trigger if exists basalt_touch on ${t}`,
@@ -141,6 +153,6 @@ end $basalt$`,
   ];
 }
 
-export function contractSql(contract: Contract): string[] {
-  return [...contract.tables.values()].flatMap(tableSql);
+export function contractSql(contract: Contract, roles: Roles = DEFAULT_ROLES): string[] {
+  return [...contract.tables.values()].flatMap((t) => tableSql(t, roles));
 }

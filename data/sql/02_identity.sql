@@ -14,7 +14,7 @@ create table if not exists basalt.settings (
   reads_per_minute int not null default 600 check (reads_per_minute > 0),
   writes_per_minute int not null default 60 check (writes_per_minute > 0)
 );
-alter table basalt.settings owner to basalt_owner;
+alter table basalt.settings owner to :"owner_role";
 revoke all on basalt.settings from public;
 -- Set once on first boot. Upgrades never touch it, so a rotated secret or a
 -- tightened issuer can't be undone by an old environment. To rotate, run as admin:
@@ -28,7 +28,7 @@ create table if not exists basalt.revocations (
   uid uuid primary key,
   before timestamptz not null
 );
-alter table basalt.revocations owner to basalt_owner;
+alter table basalt.revocations owner to :"owner_role";
 revoke all on basalt.revocations from public;
 
 create or replace function basalt.b64url_decode(s text) returns bytea
@@ -37,7 +37,7 @@ set search_path = pg_catalog, pg_temp
 as $$
   select decode(rpad(translate(s, '-_', '+/'), ((length(s) + 3) / 4) * 4, '='), 'base64')
 $$;
-alter function basalt.b64url_decode(text) owner to basalt_owner;
+alter function basalt.b64url_decode(text) owner to :"owner_role";
 revoke execute on function basalt.b64url_decode(text) from public;
 
 -- True only if s is the one exact base64url spelling of its bytes. Blocks
@@ -48,7 +48,7 @@ set search_path = pg_catalog, pg_temp
 as $$
   select rtrim(translate(replace(encode(basalt.b64url_decode(s), 'base64'), E'\n', ''), '+/', '-_'), '=') = s
 $$;
-alter function basalt.b64url_canonical(text) owner to basalt_owner;
+alter function basalt.b64url_canonical(text) owner to :"owner_role";
 revoke execute on function basalt.b64url_canonical(text) from public;
 
 -- Returns the verified user id, or null. Null means every row rule says no.
@@ -169,9 +169,9 @@ exception when data_exception then
   return null;
 end
 $$;
-alter function basalt.uid() owner to basalt_owner;
+alter function basalt.uid() owner to :"owner_role";
 revoke execute on function basalt.uid() from public;
-grant execute on function basalt.uid() to basalt_exec;
+grant execute on function basalt.uid() to :"exec_role";
 
 -- For the auth service or an admin: log a user out of every session.
 create or replace function basalt.revoke_user(target uuid) returns void
@@ -182,7 +182,7 @@ as $$
   insert into revocations as r (uid, before) values (target, clock_timestamp())
   on conflict (uid) do update set before = greatest(r.before, excluded.before)
 $$;
-alter function basalt.revoke_user(uuid) owner to basalt_owner;
+alter function basalt.revoke_user(uuid) owner to :"owner_role";
 revoke execute on function basalt.revoke_user(uuid) from public;
 
 -- Per user, per minute usage, shared by every Data service instance.
@@ -195,10 +195,10 @@ create unlogged table if not exists basalt.usage (
   primary key (uid, minute)
 );
 create index if not exists usage_minute on basalt.usage (minute);
-alter table basalt.usage owner to basalt_owner;
+alter table basalt.usage owner to :"owner_role";
 revoke all on basalt.usage from public;
-grant select, insert, update, delete on basalt.usage to basalt_exec;
-grant select (id, reads_per_minute, writes_per_minute) on basalt.settings to basalt_exec;
+grant select, insert, update, delete on basalt.usage to :"exec_role";
+grant select (id, reads_per_minute, writes_per_minute) on basalt.settings to :"exec_role";
 
 -- Old usage rows are only useful for a minute. basalt.api() prunes now and
 -- then and a scheduled job can also run this.
@@ -209,7 +209,7 @@ as $$
   with gone as (delete from usage where minute < statement_timestamp() - interval '5 minutes' returning 1)
   select count(*) from gone
 $$;
-alter function basalt.prune_usage() owner to basalt_owner;
+alter function basalt.prune_usage() owner to :"owner_role";
 revoke execute on function basalt.prune_usage() from public;
 
 -- Removed in this version. Upgrades drop them so nothing old lingers.

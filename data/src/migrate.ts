@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import pg from 'pg';
 import { parseContract, type TableSpec } from './contract.ts';
-import { addColumnSql, tableSpecJson, tableSql } from './schema.ts';
+import { addColumnSql, tableSpecJson, tableSql, type Roles } from './schema.ts';
 
 type StoredSpec = { fields: Record<string, unknown>; shareWith?: string };
 
@@ -34,6 +34,23 @@ function plan(table: TableSpec, before: StoredSpec): string[] {
   return added;
 }
 
+// Reads this database's three roles from what the security SQL set up, so
+// migrate always grants to the right app's roles.
+async function findRoles(client: pg.Client): Promise<Roles> {
+  const res = await client.query<{ owner: string; exec: string; data: string | null }>(`
+    select
+      (select nspowner::regrole::text from pg_namespace where nspname = 'app') as owner,
+      (select proowner::regrole::text from pg_proc where oid = 'basalt.api(text, text, text, jsonb)'::regprocedure) as exec,
+      (select a.grantee::regrole::text
+         from pg_proc p, aclexplode(p.proacl) a
+        where p.oid = 'basalt.api(text, text, text, jsonb)'::regprocedure
+          and a.privilege_type = 'EXECUTE' and a.grantee <> p.proowner
+        limit 1) as data`);
+  const r = res.rows[0];
+  if (!r?.owner || !r.exec || !r.data) throw new Error('This database has no Basalt security setup. Run the SQL in sql/ first.');
+  return { owner: r.owner, exec: r.exec, data: r.data };
+}
+
 export async function migrate(adminUrl: string, contractJson: unknown): Promise<{ tables: string[]; added: string[] }> {
   const contract = parseContract(contractJson);
   const client = new pg.Client({ connectionString: adminUrl });
@@ -41,6 +58,7 @@ export async function migrate(adminUrl: string, contractJson: unknown): Promise<
   const added: string[] = [];
   try {
     await client.query('begin');
+    const roles = await findRoles(client);
 
     for (const table of contract.tables.values()) {
       const exists = await client.query(`select to_regclass($1) is not null as yes`, [`app.${table.name}`]);
@@ -55,7 +73,7 @@ export async function migrate(adminUrl: string, contractJson: unknown): Promise<
           added.push(`${table.name}.${name}`);
         }
       }
-      for (const sql of tableSql(table)) await client.query(sql);
+      for (const sql of tableSql(table, roles)) await client.query(sql);
     }
 
     await client.query('select basalt.ensure_audit_partitions()');

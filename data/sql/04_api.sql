@@ -1,6 +1,6 @@
 -- The one door into the data. Safe to run again on upgrade.
 --
--- basalt_data (the Data service's login) can call basalt.api() and nothing
+-- The data role (the Data service's login) can call basalt.api() and nothing
 -- else: no table access at all. Each call verifies the login token, charges the
 -- user's damage limits, then does one get, list, create or update. The charge
 -- sticks even if the operation fails, and nobody can skip it, not even someone
@@ -16,9 +16,9 @@ create table if not exists basalt.registry (
   share_field text,
   spec jsonb not null
 );
-alter table basalt.registry owner to basalt_owner;
+alter table basalt.registry owner to :"owner_role";
 revoke all on basalt.registry from public;
-grant select on basalt.registry to basalt_exec;
+grant select on basalt.registry to :"exec_role";
 
 create or replace function basalt.api(token text, op text, tbl text, args jsonb) returns jsonb
 language plpgsql volatile security definer
@@ -212,6 +212,6 @@ begin
   return jsonb_build_object('ok', true, 'data', result);
 end
 $$;
-alter function basalt.api(text, text, text, jsonb) owner to basalt_exec;
+alter function basalt.api(text, text, text, jsonb) owner to :"exec_role";
 revoke execute on function basalt.api(text, text, text, jsonb) from public;
-grant execute on function basalt.api(text, text, text, jsonb) to basalt_data;
+grant execute on function basalt.api(text, text, text, jsonb) to :"data_role";
