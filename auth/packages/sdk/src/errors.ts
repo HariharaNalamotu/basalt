@@ -10,6 +10,7 @@ export type AuthErrorCode =
   | 'too_many_attempts'
   | 'invalid_token'
   | 'mfa_required'
+  | 'reauthentication_required'
   | 'email_not_verified'
   | 'forbidden'
   | 'origin_not_allowed'

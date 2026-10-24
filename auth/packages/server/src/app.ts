@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { RequestMeta, ServiceContext } from './context.js';
 import {
   type HttpOptions,
+  accessResponse,
   clearSessionCookies,
   clientIp,
   clientMode,
@@ -23,6 +24,7 @@ import { LIMITS } from './services/limits.js';
 import { ProjectService, type Project } from './services/projects.js';
 import { SessionService } from './services/sessions.js';
 import { SigningKeyStore } from './services/signing-keys.js';
+import { DataGrantService } from './services/data-grants.js';
 import { OriginListSchema, ProjectSettingsPatchSchema } from './settings.js';
 
 export interface Services {
@@ -31,13 +33,16 @@ export interface Services {
   sessions: SessionService;
   accounts: AccountService;
   admin: AdminService;
+  dataGrants: DataGrantService;
 }
 
 export function createServices(ctx: ServiceContext): Services {
   const signingKeys = new SigningKeyStore(ctx);
   const projects = new ProjectService(ctx, signingKeys);
-  const sessions = new SessionService(ctx, signingKeys);
+  const dataGrants = new DataGrantService(ctx);
+  const sessions = new SessionService(ctx, signingKeys, dataGrants);
   return {
+    dataGrants,
     projects,
     signingKeys,
     sessions,
@@ -160,6 +165,17 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
   });
   platform.post('/projects/:id/rotate-secret-key', async (c) => c.json(await projects.rotateSecretKey((await owned(c)).id)));
   platform.post('/projects/:id/rotate-signing-key', async (c) => c.json(await signingKeys.rotate((await owned(c)).id)));
+
+  // Database-enforced ownership. The SQL embeds the project's data key: run it against the app
+  // database as an admin/migration role, never show it to end users or commit it.
+  platform.get('/projects/:id/data-protection/install.sql', async (c) => {
+    const project = await owned(c);
+    c.header('content-type', 'application/sql; charset=utf-8');
+    return c.body(await services.dataGrants.installSql(project.id));
+  });
+  platform.get('/projects/:id/data-protection/revocations', async (c) =>
+    c.json(await services.dataGrants.revocations((await owned(c)).id, feedQuery(c))),
+  );
 
   // User administration on behalf of the workspace owner (used by the MCP tools / dashboard).
   platform.get('/projects/:id/users', async (c) =>
@@ -410,6 +426,13 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
     return c.json({ revoked: count });
   });
 
+  p.post('/session/reauthenticate', async (c) => {
+    const principal = await requirePrincipal(c);
+    const mode = c.req.header('origin') !== undefined ? clientMode(c, principal.project) : 'native';
+    const r = await accounts.reauthenticate(principal, await readJson(c), c.get('meta'));
+    return c.json(accessResponse(c, mode, opts, r.user, r.sessionId, r.access));
+  });
+
   p.post('/password/change', async (c) => {
     const principal = await requirePrincipal(c);
     await accounts.changePassword(principal, await readJson(c), c.get('meta'));
@@ -483,6 +506,9 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
       }),
     ),
   );
+  /** Revocation feed for the app database's data-grant verifier (see @basalt/auth/server syncRevocations). */
+  a.get('/revocations', async (c) => c.json(await services.dataGrants.revocations(c.get('project').id, feedQuery(c))));
+
   /** Strict check for high-stakes actions: is this access token valid AND its session still live? */
   a.post('/sessions/verify', async (c) => {
     const project = c.get('project');
@@ -497,6 +523,13 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
   p.route('/admin', a);
   app.route('/v1/projects/:projectId', p);
   return app;
+}
+
+function feedQuery(c: Context): { since?: Date; cursor?: string } {
+  const since = c.req.query('since');
+  const parsed = since ? new Date(since) : undefined;
+  if (parsed && Number.isNaN(parsed.getTime())) throw new AuthError('invalid_request', 'Invalid since timestamp.');
+  return { since: parsed, cursor: c.req.query('cursor') || undefined };
 }
 
 function publicProject(project: Project, ctx: ServiceContext) {

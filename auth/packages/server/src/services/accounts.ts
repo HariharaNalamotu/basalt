@@ -415,6 +415,34 @@ export class AccountService {
     this.sendMail(project, { template: 'password_changed', to: user.email, appName: appName(project) });
   }
 
+  /**
+   * Step-up authentication: the signed-in user proves who they are again (password, plus a second
+   * factor if enrolled). Backends can then require a recent `auth_time` for sensitive actions.
+   */
+  async reauthenticate(principal: Principal, input: { password?: unknown; code?: unknown }, meta: RequestMeta) {
+    const { project } = principal;
+    const user = await this.requireUser(principal);
+    await this.limit(`sens:${user.id}`, LIMITS.sensitivePerUser);
+    await this.assertPassword(user, input.password);
+    const code = typeof input.code === 'string' ? input.code.trim() : '';
+    if (user.totp_enabled_at && !code) {
+      throw new AuthError('mfa_required', 'Enter the code from your authenticator app.');
+    }
+    const access = await this.ctx.db.transaction(async (tx) => {
+      let amr = ['pwd'];
+      if (user.totp_enabled_at) {
+        const locked = (await tx.query<UserRow>('SELECT * FROM auth_users WHERE id = $1 FOR UPDATE', [user.id])).rows[0]!;
+        const method = await this.checkSecondFactor(tx, locked, code);
+        if (!method) throw new AuthError('invalid_code', 'That code is incorrect.');
+        amr = ['pwd', method === 'totp' ? 'otp' : 'recovery'];
+      }
+      const issued = await this.sessions.markAuthenticated(tx, project, user, principal.sessionId, amr);
+      await audit(tx, { projectId: project.id, userId: user.id, type: 'session.reauthenticated', meta, data: { amr } });
+      return issued;
+    });
+    return { user: toPublicUser(user), sessionId: principal.sessionId, access };
+  }
+
   async beginTotpEnrollment(principal: Principal) {
     const { project } = principal;
     if (!project.settings.allowTotp) throw new AuthError('forbidden', 'Authenticator apps are not enabled for this app.');

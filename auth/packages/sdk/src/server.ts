@@ -46,6 +46,16 @@ export interface AuthUser {
   amr: string[];
   /** True if this session passed a second factor. */
   mfa: boolean;
+  /** When the user last proved their identity in this session (sign-in or re-authentication). */
+  authTime: Date;
+}
+
+/** Minimal node-postgres–compatible pool (pg.Pool, or anything with the same shape). */
+export interface PgPoolLike {
+  connect(): Promise<PgClientLike & { release(err?: Error | boolean): void }>;
+}
+export interface PgClientLike {
+  query(sql: string, params?: unknown[]): Promise<{ rows: any[]; rowCount?: number | null }>;
 }
 
 export interface GetUserOptions {
@@ -58,6 +68,12 @@ export interface RequireUserOptions extends GetUserOptions {
   emailVerified?: boolean;
   /** Reject (403) sessions that did not pass a second factor. */
   mfa?: boolean;
+  /**
+   * Reject (403 `reauthentication_required`) unless the user proved their identity within this
+   * many seconds. Use for payments, deleting data, changing email/roles. The client then calls
+   * `auth.reauthenticate({ password })` and retries.
+   */
+  maxAgeSeconds?: number;
 }
 
 /** Anything with a `get(name)` method: Fetch Headers, Next.js `headers()`, etc. */
@@ -80,6 +96,24 @@ export interface AuthServer {
    * responds 401 JSON for signed-out requests.
    */
   middleware(opts?: RequireUserOptions & { required?: boolean }): (req: any, res: any, next: (err?: unknown) => void) => void;
+  /**
+   * Runs `fn` in a database transaction where Postgres itself verifies the user's session-bound
+   * data grant. Tables protected with `basalt_auth.protect()` then only expose this user's rows,
+   * even to queries with no WHERE clause. Commits on success, rolls back on error.
+   *
+   *   const todos = await auth.withUserDb(pool, req, (db) => db.query('SELECT * FROM todos'));
+   */
+  withUserDb<T>(pool: PgPoolLike, who: RequestLike | AuthUser, fn: (db: PgClientLike, user: AuthUser) => Promise<T>, opts?: RequireUserOptions): Promise<T>;
+  /**
+   * The data grant for a verified user, for ORMs that manage their own transactions. Inside a
+   * transaction run `SELECT basalt_auth.authenticate($1)` with it before any other query.
+   * Never log it or send it to the browser: it is a credential.
+   */
+  dataGrant(user: AuthUser): string;
+  /** Pulls revoked sessions into the app database once. Needs the secret key. */
+  syncRevocations(pool: PgPoolLike): Promise<{ synced: number }>;
+  /** Keeps revocations in sync in the background (default every 10s). Returns a stop function. */
+  startRevocationSync(pool: PgPoolLike, opts?: { intervalMs?: number; onError?: (err: unknown) => void }): () => void;
   /** Server-side user management. Requires the project secret key; never use it in browser code. */
   admin: AdminApi;
 }
@@ -175,17 +209,23 @@ export function createAuthServer(options: AuthServerOptions = {}): AuthServer {
     }
   }
 
+  // Grants are kept off the user object so `console.log(user)` or `res.json(user)` can't leak them.
+  const grants = new WeakMap<AuthUser, string>();
+
   function toAuthUser(p: JWTPayload): AuthUser | null {
     if (typeof p.sub !== 'string' || typeof p.sid !== 'string' || typeof p.email !== 'string') return null;
     const amr = Array.isArray(p.amr) ? (p.amr as string[]) : [];
-    return {
+    const user: AuthUser = {
       id: p.sub,
       email: p.email,
       emailVerified: p.email_verified === true,
       sessionId: p.sid,
       amr,
       mfa: amr.includes('otp') || amr.includes('recovery'),
+      authTime: new Date((typeof p.auth_time === 'number' ? p.auth_time : (p.iat ?? 0)) * 1000),
     };
+    if (typeof p.bdg === 'string') grants.set(user, p.bdg);
+    return user;
   }
 
   async function strictCheck(token: string): Promise<boolean> {
@@ -224,7 +264,120 @@ export function createAuthServer(options: AuthServerOptions = {}): AuthServer {
     if (!user) throw new BasaltAuthError('unauthenticated', 'Sign in required.', 401);
     if (opts.emailVerified && !user.emailVerified) throw new BasaltAuthError('email_not_verified', 'Verify your email to continue.', 403);
     if (opts.mfa && !user.mfa) throw new BasaltAuthError('mfa_required', 'Two-factor authentication required.', 403);
+    if (opts.maxAgeSeconds !== undefined && Date.now() - user.authTime.getTime() > opts.maxAgeSeconds * 1000) {
+      throw new BasaltAuthError('reauthentication_required', 'Please confirm your password to continue.', 403);
+    }
     return user;
+  }
+
+  // ---------------------------------------------------------------- database-enforced ownership
+  const checkedPools = new WeakMap<PgPoolLike, Promise<void>>();
+  const isProduction = env.NODE_ENV === 'production';
+
+  /**
+   * RLS is only a boundary if the app can't switch it off or read the grant key. Refuse to run
+   * (production) or warn loudly (development) when connected as a role that defeats it.
+   */
+  async function assertSafeRole(db: PgClientLike) {
+    let row: { rolsuper: boolean; rolbypassrls: boolean; owns_keys: boolean; can_read_keys: boolean } | undefined;
+    try {
+      row = (
+        await db.query(
+          `SELECT r.rolsuper, r.rolbypassrls,
+                  pg_has_role(current_user, k.relowner, 'USAGE') AS owns_keys,
+                  has_table_privilege(current_user, 'basalt_auth.keys', 'SELECT') AS can_read_keys
+           FROM pg_roles r, pg_class k
+           WHERE r.rolname = current_user AND k.oid = 'basalt_auth.keys'::regclass`,
+        )
+      ).rows[0];
+    } catch (err) {
+      if ((err as { code?: string }).code === '42P01' || (err as { code?: string }).code === '3F000') {
+        throw new Error('Basalt Auth: data protection is not installed in this database. Run the auth_enable_data_protection MCP tool.');
+      }
+      throw err;
+    }
+    const problems: string[] = [];
+    if (row?.rolsuper) problems.push('the database role is a superuser (bypasses row-level security)');
+    if (row?.rolbypassrls) problems.push('the database role has BYPASSRLS');
+    if (row?.owns_keys || row?.can_read_keys) problems.push('the database role can read the data-grant key (it owns the basalt_auth schema)');
+    if (!problems.length) return;
+    const message = `Basalt Auth: unsafe database role for withUserDb: ${problems.join('; ')}. Connect the app with the restricted app role the platform provides, not the admin/migration role.`;
+    if (isProduction) throw new Error(message);
+    console.warn(`${message} (allowed outside production)`);
+  }
+
+  async function withUserDb<T>(
+    pool: PgPoolLike,
+    who: RequestLike | AuthUser,
+    fn: (db: PgClientLike, user: AuthUser) => Promise<T>,
+    opts: RequireUserOptions = {},
+  ): Promise<T> {
+    const user = grants.has(who as AuthUser) ? (who as AuthUser) : await requireUser(who as RequestLike, opts);
+    const grant = dataGrant(user);
+    const client = await pool.connect();
+    let failed: Error | undefined;
+    try {
+      if (!checkedPools.has(pool)) {
+        const check = assertSafeRole(client);
+        checkedPools.set(pool, check);
+        check.catch(() => checkedPools.delete(pool));
+      }
+      await checkedPools.get(pool);
+      await client.query('BEGIN');
+      try {
+        await client.query('SELECT basalt_auth.authenticate($1)', [grant]);
+        const result = await fn(client, user);
+        await client.query('COMMIT');
+        return result;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        if ((err as { code?: string }).code === '28000') {
+          throw new BasaltAuthError('unauthenticated', 'Session is no longer valid. Please sign in again.', 401);
+        }
+        throw err;
+      }
+    } catch (err) {
+      failed = err instanceof Error ? err : undefined;
+      throw err;
+    } finally {
+      // A connection that failed mid-protocol is discarded rather than returned to the pool.
+      client.release(failed && !(failed instanceof BasaltAuthError) ? failed : undefined);
+    }
+  }
+
+  function dataGrant(user: AuthUser): string {
+    const g = grants.get(user);
+    if (!g) throw new Error('Basalt Auth: no data grant for this user object. Pass the object returned by getUser/requireUser.');
+    return g;
+  }
+
+  async function syncRevocations(pool: PgPoolLike) {
+    const client = await pool.connect();
+    try {
+      const last = (await client.query('SELECT basalt_auth.revocations_synced_to() AS t')).rows[0]?.t as Date | string | null;
+      // Re-read a small overlap: revocations committed slightly out of order are still caught.
+      let query = last ? `since=${encodeURIComponent(new Date(new Date(last).getTime() - 30_000).toISOString())}` : '';
+      let synced = 0;
+      for (let page = 0; page < 100; page++) {
+        const r = await adminCall<{ revocations: { sessionId: string; revokedAt: string }[]; hasMore: boolean; nextCursor: string | null }>(
+          'GET',
+          `/revocations?${query}`,
+        );
+        if (r.revocations.length) {
+          await client.query('SELECT basalt_auth.record_revocations($1::uuid[], $2::timestamptz[], $3::timestamptz)', [
+            r.revocations.map((x) => x.sessionId),
+            r.revocations.map((x) => x.revokedAt),
+            r.revocations[r.revocations.length - 1]!.revokedAt,
+          ]);
+          synced += r.revocations.length;
+        }
+        if (!r.hasMore || !r.nextCursor) break;
+        query = `cursor=${encodeURIComponent(r.nextCursor)}`;
+      }
+      return { synced };
+    } finally {
+      client.release();
+    }
   }
 
   // ---------------------------------------------------------------- admin
@@ -269,6 +422,18 @@ export function createAuthServer(options: AuthServerOptions = {}): AuthServer {
     requireUser,
     verifyAccessToken,
     admin,
+    withUserDb,
+    dataGrant,
+    syncRevocations,
+    startRevocationSync(pool, opts = {}) {
+      const tick = () => {
+        syncRevocations(pool).catch((err) => (opts.onError ?? ((e) => console.error('Basalt Auth: revocation sync failed', e)))(err));
+      };
+      tick();
+      const timer = setInterval(tick, Math.max(1000, opts.intervalMs ?? 10_000));
+      (timer as { unref?: () => void }).unref?.();
+      return () => clearInterval(timer);
+    },
     middleware(opts = {}) {
       return (req, res, next) => {
         requireUser(req, opts).then(

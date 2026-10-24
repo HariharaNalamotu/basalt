@@ -3,14 +3,14 @@
  * pattern — agents should copy it rather than improvise. Keep in sync with packages/sdk.
  */
 
-export const FRAMEWORKS = ['react', 'nextjs', 'express', 'hono', 'native'] as const;
+export const FRAMEWORKS = ['react', 'nextjs', 'express', 'hono', 'native', 'database'] as const;
 export type Framework = (typeof FRAMEWORKS)[number];
 
 export const RULES = `## Non-negotiable rules for apps using Basalt Auth
 
 1. **Never build auth yourself.** No password columns, no password hashing, no JWT signing, no session tables, no reset-token logic, no "remember me" cookies. Basalt Auth does all of it. Do not add next-auth, passport, lucia, express-session or jsonwebtoken alongside it.
 2. **Never touch tokens in frontend code.** Sessions are HttpOnly cookies; the SDK manages them. Never put tokens, user ids or "isLoggedIn" flags in localStorage/sessionStorage/document.cookie. Ask \`auth.getUser()\` instead.
-3. **Every backend route that reads or writes user data calls \`auth.requireUser(req)\`** and scopes database queries by \`user.id\` (e.g. \`WHERE owner_id = $user.id\`). Never trust a user id, email or role sent by the client.
+3. **Every backend route that reads or writes user data calls \`auth.requireUser(req)\`** and scopes database queries by \`user.id\` (e.g. \`WHERE owner_id = $user.id\`). Never trust a user id, email or role sent by the client. With Postgres, go further: protect tables with \`basalt_auth.protect()\` and query through \`auth.withUserDb\` so the database enforces ownership (see the **database** guide).
 4. **Hiding UI is not security.** A button hidden for non-admins must also be rejected by the backend.
 5. **The secret key (\`BASALT_AUTH_SECRET_KEY\`) is backend-only.** Never import it in frontend code, never prefix it with NEXT_PUBLIC_/VITE_, never commit or log it.
 6. **Roles/permissions:** store them in your own database keyed by \`user.id\`, or in user \`metadata\` set from the backend via \`auth.admin.updateUser\`. Users cannot edit metadata themselves.
@@ -182,24 +182,42 @@ npm install @basalt/auth
 
 \`\`\`ts
 import express from 'express';
+import pg from 'pg';
 import { createAuthServer, BasaltAuthError } from '@basalt/auth/server';
 
 const auth = createAuthServer(); // reads BASALT_PROJECT_ID, BASALT_AUTH_URL, BASALT_AUTH_SECRET_KEY
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL }); // the restricted app role
+auth.startRevocationSync(pool); // signed-out sessions lose database access within seconds
+
 const app = express();
 app.use(express.json());
 
 // Protect every route under /api. req.auth is the verified user.
 app.use('/api', auth.middleware({ required: true }));
 
+// withUserDb: Postgres itself verifies the session and returns only this user's rows
+// (tables protected with basalt_auth.protect — see the "database" guide).
 app.get('/api/todos', async (req, res) => {
-  const todos = await db.query('SELECT * FROM todos WHERE owner_id = $1', [req.auth.id]); // ALWAYS scope by req.auth.id
-  res.json(todos.rows);
+  const todos = await auth.withUserDb(pool, req.auth, async (db) => (await db.query('SELECT * FROM todos ORDER BY id')).rows);
+  res.json(todos);
 });
 
 app.post('/api/todos', async (req, res) => {
-  // Never take owner/user ids from req.body — use req.auth.id.
-  const row = await db.query('INSERT INTO todos (owner_id, title) VALUES ($1, $2) RETURNING *', [req.auth.id, req.body.title]);
-  res.status(201).json(row.rows[0]);
+  // owner_id is filled in by the database from the verified session; never take it from req.body.
+  const todo = await auth.withUserDb(pool, req.auth, async (db) =>
+    (await db.query('INSERT INTO todos (title) VALUES ($1) RETURNING *', [req.body.title])).rows[0]);
+  res.status(201).json(todo);
+});
+
+// Sensitive action: require the password to have been entered in the last 5 minutes.
+app.delete('/api/account/data', async (req, res, next) => {
+  try {
+    const user = await auth.requireUser(req, { maxAgeSeconds: 300 }); // client: catch reauthentication_required -> auth.reauthenticate({ password })
+    await auth.withUserDb(pool, user, (db) => db.query('DELETE FROM todos'));
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
 });
 
 // High-stakes: instant revocation check + require MFA for admins.
@@ -211,9 +229,14 @@ app.post('/api/admin/users/:targetUserId/ban', async (req, res, next) => {
     await auth.admin.updateUser(req.params.targetUserId, { disabled: true });
     res.json({ ok: true });
   } catch (err) {
-    if (err instanceof BasaltAuthError) return res.status(err.status).json({ error: { code: err.code, message: err.message } });
     next(err);
   }
+});
+
+// Turn auth errors (401 signed out / session revoked, 403 step-up or MFA required) into JSON.
+app.use((err, req, res, next) => {
+  if (err instanceof BasaltAuthError) return res.status(err.status).json({ error: { code: err.code, message: err.message } });
+  next(err);
 });
 \`\`\`
 
@@ -349,14 +372,115 @@ Rules:
 - Call your backend with \`Authorization: Bearer <accessToken>\`; on 401, refresh once and retry.
 `;
 
-const GUIDES: Record<Framework, string> = { react: REACT, nextjs: NEXTJS, express: EXPRESS, hono: HONO, native: NATIVE };
+const DATABASE = `# Basalt Auth — database-enforced data ownership (Postgres)
+
+Basalt Auth makes **Postgres itself** check who is asking. Every session carries a short-lived *data grant*; the database verifies it (signature, expiry, revocation) and Row-Level Security returns only rows the user owns. A query that forgets its WHERE clause, an IDOR bug or SQL injection still cannot read another user's data.
+
+### 1. Enable it once per app database
+Call the \`auth_enable_data_protection\` tool. It installs the \`basalt_auth\` schema (verifier + key) using the admin role.
+
+The app must run with **two database URLs**:
+- \`DATABASE_URL\` — the restricted app role used at runtime (not a superuser, no BYPASSRLS, does not own tables). The SDK refuses to run with an unsafe role in production.
+- the admin/migration URL — only for running migrations.
+
+### 2. Every per-user table: \`owner_id uuid\` + one call to protect it (in a migration)
+\`\`\`sql
+CREATE TABLE todos (
+  id bigserial PRIMARY KEY,
+  owner_id uuid NOT NULL DEFAULT basalt_auth.uid(),
+  title text NOT NULL,
+  done boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX todos_owner_idx ON todos (owner_id);
+SELECT basalt_auth.protect('todos');           -- owner_id column name is the default
+SELECT basalt_auth.protect('notes', 'user_id'); -- or name the column
+GRANT SELECT, INSERT, UPDATE, DELETE ON todos TO app_role; -- whatever role DATABASE_URL uses
+\`\`\`
+After migrations, this must return no rows:
+\`\`\`sql
+SELECT * FROM basalt_auth.unprotected_tables();
+\`\`\`
+
+### 3. Query through \`withUserDb\` (node-postgres)
+\`\`\`ts
+import pg from 'pg';
+import { createAuthServer } from '@basalt/auth/server';
+
+const auth = createAuthServer();
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+auth.startRevocationSync(pool);
+
+export async function listTodos(req: Request) {
+  // Throws 401 if signed out or the session was revoked. No WHERE owner_id needed: the database enforces it.
+  return auth.withUserDb(pool, req, async (db) => (await db.query('SELECT * FROM todos ORDER BY id')).rows);
+}
+
+export async function addTodo(req: Request, title: string) {
+  return auth.withUserDb(pool, req, async (db) =>
+    (await db.query('INSERT INTO todos (title) VALUES ($1) RETURNING *', [title])).rows[0]);
+}
+\`\`\`
+Keep the explicit \`WHERE owner_id = user.id\` filters you already have if you like — defense in depth — but correctness no longer depends on them.
+
+### Prisma
+\`\`\`ts
+const user = await auth.requireUser(req);
+const todos = await prisma.$transaction(async (tx) => {
+  await tx.$queryRaw\`SELECT basalt_auth.authenticate(\${auth.dataGrant(user)})\`;
+  return tx.todo.findMany();
+});
+\`\`\`
+
+### Drizzle
+\`\`\`ts
+const user = await auth.requireUser(req);
+const rows = await db.transaction(async (tx) => {
+  await tx.execute(sql\`SELECT basalt_auth.authenticate(\${auth.dataGrant(user)})\`);
+  return tx.select().from(todos);
+});
+\`\`\`
+The grant must be set in the **same transaction** as the queries. Never log \`auth.dataGrant(user)\` or send it to the browser.
+
+### Sharing patterns (add policies next to the owner policy; they combine with OR)
+\`\`\`sql
+-- Public-readable posts, only the author can write
+SELECT basalt_auth.protect('posts', 'author_id');
+CREATE POLICY posts_public_read ON posts FOR SELECT USING (published);
+
+-- Team documents: members of the team can read and write
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docs FORCE ROW LEVEL SECURITY;
+CREATE POLICY docs_team ON docs FOR ALL
+  USING (team_id IN (SELECT team_id FROM team_members WHERE user_id = (SELECT basalt_auth.uid())))
+  WITH CHECK (team_id IN (SELECT team_id FROM team_members WHERE user_id = (SELECT basalt_auth.uid())));
+
+-- App admins (rows in your own app_admins table) can read everything
+CREATE POLICY todos_admin_read ON todos FOR SELECT
+  USING (EXISTS (SELECT 1 FROM app_admins WHERE user_id = (SELECT basalt_auth.uid())));
+\`\`\`
+Always write \`(SELECT basalt_auth.uid())\` (in parentheses with SELECT) so Postgres evaluates it once per query, not once per row.
+
+### Sensitive actions: step-up
+\`\`\`ts
+const user = await auth.requireUser(req, { maxAgeSeconds: 300 }); // 403 reauthentication_required if older
+\`\`\`
+Client side: catch \`err.code === 'reauthentication_required'\`, ask for the password, call \`auth.reauthenticate({ password })\`, retry.
+
+### Never
+- \`ALTER TABLE ... DISABLE ROW LEVEL SECURITY\`, \`NO FORCE ROW LEVEL SECURITY\`, \`BYPASSRLS\`, or dropping the \`basalt_owner\` policy.
+- Running the app with the admin/migration database URL.
+- Setting \`basalt.grant\` by hand or passing anything other than \`auth.dataGrant(user)\` to \`basalt_auth.authenticate\`.
+`;
+
+const GUIDES: Record<Framework, string> = { react: REACT, nextjs: NEXTJS, express: EXPRESS, hono: HONO, native: NATIVE, database: DATABASE };
 
 export function integrationGuide(framework: Framework): string {
   const pairing =
     framework === 'react'
       ? '\n> Pair this with a backend guide (express / hono / nextjs) so your API verifies the user.\n'
-      : framework === 'express' || framework === 'hono'
-        ? '\n> Pair this with the **react** guide for the frontend.\n'
+      : framework === 'express' || framework === 'hono' || framework === 'nextjs'
+        ? '\n> Pair this with the **react** guide for the frontend, and the **database** guide if you use Postgres (strongly recommended: the database then enforces data ownership).\n'
         : '';
   return `${GUIDES[framework]}${pairing}\n${ENV}\n${RULES}`;
 }

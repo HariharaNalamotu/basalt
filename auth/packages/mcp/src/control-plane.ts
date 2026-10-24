@@ -15,6 +15,13 @@ export interface ControlPlane {
   deleteUser(id: string, userId: string): Promise<void>;
   revokeSessions(id: string, userId: string): Promise<{ revoked: number }>;
   listEvents(id: string, q: { userId?: string; limit?: number; before?: number }): Promise<{ events: unknown[] }>;
+  /** SQL that installs the data-grant verifier and the project's key into an app database. Contains a secret. */
+  getDataProtectionSql(id: string): Promise<string>;
+  /**
+   * If implemented, the platform runs the install SQL against the app's database itself (as the
+   * admin role) so neither the key nor the SQL is ever shown to the agent.
+   */
+  installDataProtection?(projectId: string): Promise<{ database: string; appRole: string }>;
   /**
    * If implemented, new/rotated secret keys are written straight into the app's secret store and
    * never shown to the agent. Returns the environment variable name the app will see.
@@ -71,6 +78,17 @@ export class HttpControlPlane implements ControlPlane {
     }
     return (res.status === 204 ? undefined : await res.json()) as T;
   }
+
+  getDataProtectionSql = async (id: string) => {
+    const res = await this.fetchImpl(`${this.authUrl.replace(/\/+$/, '')}/v1/platform${this.p(id)}/data-protection/install.sql`, {
+      headers: { authorization: `Bearer ${this.platformKey}`, 'x-basalt-owner': this.ownerId },
+    });
+    if (!res.ok) {
+      const err = ((await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } }).error;
+      throw new ControlPlaneError(err?.code ?? 'error', err?.message ?? `HTTP ${res.status}`, res.status);
+    }
+    return res.text();
+  };
 
   private p = (id: string) => `/projects/${encodeURIComponent(id)}`;
 

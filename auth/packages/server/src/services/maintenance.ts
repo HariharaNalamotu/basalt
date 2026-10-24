@@ -30,6 +30,10 @@ export async function runMaintenance(ctx: ServiceContext, signingKeys: SigningKe
            WHERE (expires_at < $1 OR idle_expires_at < $1 OR revoked_at < $1) LIMIT $2)`,
         [deadBefore, BATCH],
       ],
+      [
+        'DELETE FROM auth_session_revocations WHERE id IN (SELECT id FROM auth_session_revocations WHERE revoked_at < $1 LIMIT $2)',
+        [new Date(now.getTime() - 86_400_000), BATCH],
+      ],
       ['DELETE FROM auth_events WHERE id IN (SELECT id FROM auth_events WHERE created_at < $1 LIMIT $2)', [eventsBefore, BATCH]],
     ];
     for (const [sql, params] of sweeps) await tx.query(sql, params);

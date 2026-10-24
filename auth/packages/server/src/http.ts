@@ -144,6 +144,31 @@ export function sessionResponse(
   return base;
 }
 
+/** Response for a new access token on an existing session (step-up); the refresh cookie is untouched. */
+export function accessResponse(
+  c: Context,
+  mode: ClientMode,
+  opts: HttpOptions,
+  user: PublicUser,
+  sessionId: string,
+  access: { token: string; expiresAt: Date },
+) {
+  const base = {
+    status: 'signed_in' as const,
+    user,
+    session: { id: sessionId, accessTokenExpiresAt: access.expiresAt.toISOString() },
+  };
+  if (mode === 'native') return { ...base, accessToken: access.token };
+  setCookie(c, cookieNames(opts.cookieSecure).access, access.token, {
+    httpOnly: true,
+    secure: opts.cookieSecure,
+    sameSite: 'Lax',
+    path: '/',
+    maxAge: Math.max(1, Math.floor((access.expiresAt.getTime() - Date.now()) / 1000)),
+  });
+  return base;
+}
+
 export function clearSessionCookies(c: Context, project: Project, opts: HttpOptions) {
   const names = cookieNames(opts.cookieSecure);
   deleteCookie(c, names.access, { path: '/', secure: opts.cookieSecure });

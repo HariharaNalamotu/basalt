@@ -208,6 +208,40 @@ export function registerAuthTools(server: McpServer, cp: ControlPlane, opts: Reg
   );
 
   server.registerTool(
+    name('enable_data_protection'),
+    {
+      title: 'Enable database-enforced data ownership',
+      description:
+        "Installs Basalt Auth's verifier into the app's Postgres database so the DATABASE checks each request's session and only returns rows the user owns (Row-Level Security). Do this for every app that stores per-user data in Postgres, then follow auth_integration_guide with framework 'database'. Safe to run again.",
+      inputSchema: { projectId },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ projectId }) =>
+      run(async () => {
+        const next = `Next: in a migration, give each per-user table an \`owner_id uuid NOT NULL DEFAULT basalt_auth.uid()\` column and run \`SELECT basalt_auth.protect('<table>')\`; query with \`auth.withUserDb(pool, req, fn)\`. Full instructions: ${name('integration_guide')} with framework "database".`;
+        if (cp.installDataProtection) {
+          const r = await cp.installDataProtection(projectId);
+          return text(`Installed data protection into ${r.database}. The app connects as "${r.appRole}" (restricted: cannot bypass row-level security or read the key).\n\n${next}`);
+        }
+        const sql = await cp.getDataProtectionSql(projectId);
+        return text(
+          [
+            'Run the SQL below ONCE against the app database as its admin/owner role, e.g. save it to a temporary file OUTSIDE the repository and run:',
+            '  psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f /tmp/basalt-auth.sql && rm /tmp/basalt-auth.sql',
+            'It contains the project\'s data-grant key. Do NOT commit it, put it in a migration file, or print it in logs.',
+            'The app itself must connect with a different, restricted role (not superuser, no BYPASSRLS, not the table owner).',
+            '',
+            next,
+            '',
+            '```sql',
+            sql.trim(),
+            '```',
+          ].join('\n'),
+        );
+      }),
+  );
+
+  server.registerTool(
     name('list_users'),
     {
       title: 'List users',

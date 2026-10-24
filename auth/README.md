@@ -32,6 +32,37 @@ db.query('SELECT * FROM todos WHERE owner_id = $1', [user.id]);
 
 Agents should call the `auth_integration_guide` MCP tool, which returns complete, tested code for React, Next.js, Express, Hono and native clients. Afterwards they should run `auth_review_code` on what they wrote.
 
+## Database-enforced data ownership
+
+Authentication only says who is asking. Most real breaches in small apps happen afterwards: a query that forgot `WHERE owner_id = ?`, an IDOR, an SQL injection. Basalt Auth extends the session into the app's own Postgres so **the database checks ownership itself**:
+
+1. Every access token carries a **data grant**: `bdg1.<keyVersion>.<projectId>.<userId>.<sessionId>.<exp>.<HMAC-SHA256>`, bound to one live session and expiring with the token.
+2. `auth_enable_data_protection` installs the `basalt_auth` schema into the app database. It holds the project's grant key, readable only via `SECURITY DEFINER` functions, and a verifier written against built-in `sha256()` (no extensions needed).
+3. `SELECT basalt_auth.protect('todos')` turns on forced RLS. `owner_id` then defaults to the verified user, and every read or write is limited to `owner_id = basalt_auth.uid()`.
+4. `auth.withUserDb(pool, req, fn)` runs `fn` in a transaction after `basalt_auth.authenticate(grant)`. Postgres checks the signature, project, expiry and revocation list before any row is visible.
+5. `auth.startRevocationSync(pool)` pulls revoked sessions (sign-out, password change or reset, disable, delete, theft detection) into the app database every 10 s. A trigger in the auth DB records every way a session can end, so no code path can forget.
+
+Properties (each is a test in `packages/server/test/data-protection.test.ts`, plus `scripts/e2e-data.mjs` on real Postgres):
+
+| Attack | Result |
+|---|---|
+| Unfiltered `SELECT * FROM todos` | Only the caller's rows. |
+| `INSERT ... owner_id = <someone else>` | Rejected by the RLS `WITH CHECK`. |
+| `UPDATE`/`DELETE` without a WHERE clause | Affects only the caller's rows. |
+| No grant (forgot `withUserDb`) | Zero rows; writes fail. Fail-closed. |
+| Tampered user id, bad signature, other project's grant, expired grant | `28000` error before any row is read. |
+| Stolen cookie used after sign-out | Rejected once revocations sync (≤10 s). |
+| Compromised app server or SQL injection | Can use grants for users currently making requests, but can't mint grants, read the key, or disable RLS. |
+| App misconfigured with the admin/superuser role | The SDK refuses to run in production and warns in development. |
+
+Patterns for shared data (public reads, teams, admins) and Prisma/Drizzle usage are in the `database` integration guide.
+
+**Platform requirement:** provision each app database with two roles, an admin/migration role that owns the schema and a restricted runtime role for `DATABASE_URL` (not superuser, no `BYPASSRLS`, not a table owner). Implement `installDataProtection` in the MCP control plane so the install SQL (which contains the key) never passes through the agent.
+
+## Step-up re-authentication
+
+Tokens carry `auth_time`. Backends call `auth.requireUser(req, { maxAgeSeconds: 300 })` before sensitive actions (payments, deleting data, changing roles), which returns 403 `reauthentication_required` when the proof is stale. The client calls `auth.reauthenticate({ password, code? })`, which requires the second factor when MFA is enabled, and retries. Other Basalt features can rely on the same claim.
+
 ## Security model
 
 | Threat | Mitigation |
@@ -50,6 +81,8 @@ Agents should call the `auth_integration_guide` MCP tool, which returns complete
 | Code guessing | 6-digit codes, HMAC'd with a server-side pepper (a DB leak doesn't allow offline brute force), 5 attempts per code then burned, single-use, 15–30 min expiry, issuance rate-limited. |
 | MFA bypass / replay | TOTP (RFC 6238) with ±1 step drift and last-used-step tracking (no code reuse). Recovery codes are single-use. Password reset and email verification never bypass MFA. |
 | Misconfiguration | Every setting is bounded (TTLs, lengths). Origins must be exact https (http only for localhost). Production refuses to start without Redis, https, secure cookies or a real mailer. |
+| Broken object-level authorization in app code | Database-enforced ownership via session-bound data grants and forced RLS (see above). |
+| Stale proof for sensitive actions | `auth_time` claim, `maxAgeSeconds`, step-up re-authentication. |
 | Cross-tenant access | Every query is scoped by `project_id`. Control-plane calls are scoped to the `X-Basalt-Owner` workspace, and foreign projects are indistinguishable from nonexistent ones. |
 | Secret leakage | Secret keys and tokens are stored only as hashes. Logs redact secret-looking fields, Redis rate-limit keys are hashed (no emails or IPs in Redis), and the MCP never shows secrets when the platform stores them. |
 
@@ -118,14 +151,14 @@ Per project, under `/v1/projects/:projectId` (browser path `/_basalt/auth`):
 | POST | `/signin`, `/signin/mfa` | Password, then TOTP or recovery code if enabled. |
 | POST | `/email/verify`, `/email/verification/send` | Verify email for existing accounts. |
 | POST | `/password/reset/request`, `/password/reset/confirm`, `/password/change` | |
-| POST | `/session/refresh`, `/session/signout` | |
+| POST | `/session/refresh`, `/session/signout`, `/session/reauthenticate` | |
 | GET | `/session`, `/sessions` | Current user; active sessions. |
 | DELETE / POST | `/sessions/:id`, `/sessions/revoke-others` | |
 | POST | `/mfa/totp/enroll`, `/mfa/totp/confirm`, `/mfa/totp/disable`, `/mfa/recovery-codes` | |
 | POST | `/account/delete` | Requires the password. |
 | * | `/admin/...` | Backend only, `Authorization: Bearer <project secret key>`: users, metadata, disable, delete, revoke, events, `sessions/verify`. |
 
-Control plane, under `/v1/platform` (platform key plus `X-Basalt-Owner`): project CRUD, key rotation, user administration and events.
+Control plane, under `/v1/platform` (platform key plus `X-Basalt-Owner`): project CRUD, key rotation, user administration, events, `data-protection/install.sql` and the `data-protection/revocations` feed. The backend reads the same feed with its secret key at `/admin/revocations`.
 
 Errors are always `{ "error": { "code", "message" } }`. Branch on `code`; `message` is safe to show to end users. 429 and 503 include `Retry-After`.
 
@@ -137,6 +170,7 @@ npm install
 npm test                      # server + SDK + MCP suites (real Postgres via PGlite, no Docker needed)
 docker compose up -d --build  # Postgres + Redis + auth on :8787 (console mailer: codes appear in logs)
 node scripts/e2e.mjs          # end-to-end checks against the real stack
+npm run build && node scripts/e2e-data.mjs   # database-enforced ownership on real Postgres
 ```
 
 ## Not yet built
@@ -148,5 +182,5 @@ Listed in roughly the order they'd add the most value:
 4. **Email change** flow (verify the new address and notify the old one).
 5. **Roles/claims in tokens**: a bounded `claims` field on users, signed into access tokens, so role checks need no lookup.
 6. **Bot defense** on sign-up (proof-of-work or captcha hook) and IP reputation.
-7. **KMS envelope encryption** for the master key, plus master-key rotation tooling.
+7. **KMS envelope encryption** for the master key, plus master-key and data-grant-key rotation tooling (grants already carry a key version).
 8. **Organizations / teams**, and enterprise SSO (SAML/OIDC).

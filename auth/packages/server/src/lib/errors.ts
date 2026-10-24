@@ -15,6 +15,7 @@ export const ErrorCodes = {
   too_many_attempts: 429,
   invalid_token: 401,
   mfa_required: 401,
+  reauthentication_required: 403,
   email_not_verified: 403,
   forbidden: 403,
   origin_not_allowed: 403,

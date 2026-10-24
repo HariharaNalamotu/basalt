@@ -17,6 +17,7 @@ export type AuditEventType =
   | 'user.disabled'
   | 'user.enabled'
   | 'user.metadata_updated'
+  | 'session.reauthenticated'
   | 'session.revoked'
   | 'session.revoked_all'
   | 'session.refresh_token_reuse';

@@ -50,6 +50,11 @@ export interface AuthClient {
   signIn(input: { email: string; password: string }): Promise<SignInResult>;
   submitMfaCode(input: { code: string }): Promise<{ status: 'signed_in'; user: User }>;
   signOut(): Promise<void>;
+  /**
+   * Re-confirm identity for a sensitive action (when your backend answers `reauthentication_required`).
+   * Pass `code` too if the user has two-factor enabled (the error code is `mfa_required` otherwise).
+   */
+  reauthenticate(input: { password: string; code?: string }): Promise<{ status: 'signed_in'; user: User }>;
 
   /** For accounts created while email verification was off, or when sign-in returns `email_not_verified`. */
   verifyEmail(input: { email: string; code: string }): Promise<{ status: 'signed_in' | 'email_verified'; user: User }>;
@@ -270,6 +275,10 @@ export function createAuthClient(options: AuthClientOptions = {}): AuthClient {
       } finally {
         setUser(null);
       }
+    },
+
+    async reauthenticate({ password, code }) {
+      return accept(await withRefresh(() => call<SessionBody>('POST', '/session/reauthenticate', { password, code })));
     },
 
     async verifyEmail({ email, code }) {

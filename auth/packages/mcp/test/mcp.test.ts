@@ -44,7 +44,7 @@ describe('MCP tools', () => {
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(
       [
-        'auth_create_project', 'auth_delete_user', 'auth_get_project', 'auth_get_user', 'auth_integration_guide',
+        'auth_create_project', 'auth_delete_user', 'auth_enable_data_protection', 'auth_get_project', 'auth_get_user', 'auth_integration_guide',
         'auth_list_events', 'auth_list_projects', 'auth_list_users', 'auth_review_code', 'auth_revoke_user_sessions',
         'auth_rotate_secret_key', 'auth_rotate_signing_key', 'auth_security_rules', 'auth_update_project', 'auth_update_user',
       ].sort(),
@@ -142,7 +142,59 @@ describe('MCP tools', () => {
   });
 });
 
+describe('data protection tools', () => {
+  it('returns install SQL with handling instructions when the platform cannot run it', async () => {
+    const { call } = await connect(controlPlane());
+    const created = await call('auth_create_project', { name: 'DP App' });
+    const projectId = /BASALT_PROJECT_ID=(prj_\w+)/.exec(created.text)![1]!;
+    const r = await call('auth_enable_data_protection', { projectId });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('CREATE OR REPLACE FUNCTION basalt_auth.uid()');
+    expect(r.text).toMatch(/Do NOT commit/);
+  });
+
+  it('never shows the SQL or key when the platform installs it', async () => {
+    const cp = controlPlane();
+    let installed = '';
+    const platformCp: ControlPlane = Object.assign(Object.create(Object.getPrototypeOf(cp)), cp, {
+      installDataProtection: async (id: string) => {
+        installed = await cp.getDataProtectionSql(id);
+        return { database: 'app_db', appRole: 'app_runtime' };
+      },
+    });
+    const { call } = await connect(platformCp);
+    const created = await call('auth_create_project', { name: 'DP Platform App' });
+    const projectId = /BASALT_PROJECT_ID=(prj_\w+)/.exec(created.text)![1]!;
+    const r = await call('auth_enable_data_protection', { projectId });
+    expect(installed).toContain('basalt_auth.keys');
+    expect(r.text).not.toContain('basalt_auth.keys');
+    expect(r.text).not.toMatch(/\\x[0-9a-f]{20}/);
+    expect(r.text).toContain('app_runtime');
+  });
+
+  it('cannot fetch another workspace\'s install SQL', async () => {
+    const alice = await connect(controlPlane('ws_alice_dp'));
+    const created = await alice.call('auth_create_project', { name: 'Alice DP' });
+    const projectId = /BASALT_PROJECT_ID=(prj_\w+)/.exec(created.text)![1]!;
+    const mallory = await connect(controlPlane('ws_mallory_dp'));
+    const r = await mallory.call('auth_enable_data_protection', { projectId });
+    expect(r.isError).toBe(true);
+    expect(r.text).not.toContain('basalt_auth');
+  });
+});
+
 describe('code review', () => {
+  it('flags attempts to weaken database-enforced ownership', () => {
+    const migration = `ALTER TABLE todos DISABLE ROW LEVEL SECURITY;\nALTER ROLE app BYPASSRLS;\nDROP POLICY basalt_owner ON todos;`;
+    const rules = new Set(reviewCode(migration, 'migrations/003.sql').map((f) => f.rule));
+    expect(rules).toContain('rls-disabled');
+    expect(rules).toContain('basalt-policy-dropped');
+    const leak = `console.log('grant', auth.dataGrant(user));\nawait client.query("SELECT set_config('basalt.grant', $1, true)", [g]);`;
+    const leakRules = new Set(reviewCode(leak, 'server/db.ts').map((f) => f.rule));
+    expect(leakRules).toContain('data-grant-leak');
+    expect(leakRules).toContain('manual-grant-setting');
+  });
+
   it('flags the classic mistakes', () => {
     const bad = `
 import jwt from 'jsonwebtoken';
@@ -178,7 +230,7 @@ const k = process.env.NEXT_PUBLIC_BASALT_AUTH_SECRET_KEY;`;
   it('every snippet in every integration guide passes the review (guides never teach a flagged pattern)', () => {
     for (const framework of FRAMEWORKS) {
       const guide = integrationGuide(framework);
-      const blocks = [...guide.matchAll(/```(?:ts|tsx)\n([\s\S]*?)```/g)].map((m) => m[1]!);
+      const blocks = [...guide.matchAll(/```(?:ts|tsx|sql)\n([\s\S]*?)```/g)].map((m) => m[1]!);
       if (framework !== 'native') expect(blocks.length, framework).toBeGreaterThan(0);
       for (const block of blocks) {
         const serious = reviewCode(block, framework === 'react' ? 'src/App.tsx' : 'server/index.ts').filter((f) => f.severity === 'critical' || f.severity === 'high');

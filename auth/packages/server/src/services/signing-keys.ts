@@ -19,6 +19,10 @@ export interface AccessTokenClaims {
   email: string;
   email_verified: boolean;
   amr: string[];
+  /** Seconds since epoch when the user last authenticated in this session (sign-in or step-up). */
+  auth_time: number;
+  /** Session-bound data grant, verified by the app's own database (see data-grants.ts). */
+  bdg: string;
 }
 
 interface KeyRow {
@@ -80,10 +84,16 @@ export class SigningKeyStore {
   }
 
   /** Pass `db` when called inside a transaction so a cache miss doesn't take a second pool connection. */
-  async signAccessToken(projectId: string, claims: AccessTokenClaims, ttlSeconds: number, db: Db = this.ctx.db) {
+  /** `claims` receives the token's expiry so expiry-bound claims (the data grant) match it exactly. */
+  async signAccessToken(
+    projectId: string,
+    claims: (expSec: number) => Promise<AccessTokenClaims>,
+    ttlSeconds: number,
+    db: Db = this.ctx.db,
+  ) {
     const signer = await this.activeSigner(projectId, db);
     const nowSec = Math.floor(this.ctx.now().getTime() / 1000);
-    const token = await new SignJWT({ ...claims })
+    const token = await new SignJWT({ ...(await claims(nowSec + ttlSeconds)) })
       .setProtectedHeader({ alg: 'EdDSA', kid: signer.kid, typ: 'at+jwt' })
       .setIssuer(this.issuer(projectId))
       .setAudience(projectId)

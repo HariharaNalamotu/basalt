@@ -42,10 +42,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: auth/package-lock.json
+      - run: npm ci && npm run build
       - name: Start Postgres, Redis and the auth image
         run: docker compose up -d --build --wait
       - name: End-to-end checks
         run: node scripts/e2e.mjs
+      - name: Database-enforced ownership on real Postgres
+        run: node scripts/e2e-data.mjs
       - name: Service logs
         if: failure()
         run: docker compose logs

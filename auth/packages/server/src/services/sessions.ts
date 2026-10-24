@@ -5,6 +5,7 @@ import { constantTimeEqual, hmacSha256, uuidv7 } from '../lib/crypto.js';
 import { AuthError } from '../lib/errors.js';
 import { audit } from './audit.js';
 import type { Project } from './projects.js';
+import type { DataGrantService } from './data-grants.js';
 import type { SigningKeyStore } from './signing-keys.js';
 import { type UserRow, toPublicUser } from './users.js';
 
@@ -21,6 +22,7 @@ export interface SessionRow {
   ip: string | null;
   user_agent: string | null;
   created_at: Date;
+  authenticated_at: Date;
   last_active_at: Date;
   idle_expires_at: Date;
   expires_at: Date;
@@ -45,7 +47,44 @@ export class SessionService {
   constructor(
     private readonly ctx: ServiceContext,
     private readonly signingKeys: SigningKeyStore,
+    private readonly dataGrants: DataGrantService,
   ) {}
+
+  /**
+   * The single place access tokens are minted: every token carries a data grant bound to the same
+   * session and expiry, and the time the user last authenticated.
+   */
+  async issueAccess(
+    db: Db,
+    project: Project,
+    user: UserRow,
+    session: { id: string; amr: string[]; authenticated_at: Date },
+  ): Promise<{ token: string; expiresAt: Date }> {
+    return this.signingKeys.signAccessToken(
+      project.id,
+      async (expSec) => ({
+        sub: user.id,
+        sid: session.id,
+        email: user.email,
+        email_verified: user.email_verified_at !== null,
+        amr: session.amr,
+        auth_time: Math.floor(session.authenticated_at.getTime() / 1000),
+        bdg: await this.dataGrants.mint(project.id, user.id, session.id, expSec, db),
+      }),
+      project.settings.accessTokenTtlSeconds,
+      db,
+    );
+  }
+
+  /** Step-up: records a fresh proof of identity on the session and issues a token reflecting it. */
+  async markAuthenticated(tx: Db, project: Project, user: UserRow, sessionId: string, amr: string[]) {
+    const { rows } = await tx.query<SessionRow>(
+      `UPDATE auth_sessions SET authenticated_at = $3, amr = $4 WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL RETURNING *`,
+      [sessionId, project.id, this.ctx.now(), amr],
+    );
+    if (!rows[0]) throw new AuthError('unauthenticated', 'Session expired. Please sign in again.');
+    return this.issueAccess(tx, project, user, rows[0]);
+  }
 
   async create(
     tx: Db,
@@ -62,8 +101,8 @@ export class SessionService {
     const idleExpiresAt = new Date(Math.min(expiresAt.getTime(), now.getTime() + s.sessionIdleTimeoutSeconds * 1000));
     await tx.query(
       `INSERT INTO auth_sessions
-         (id, project_id, user_id, amr, ip, user_agent, created_at, last_active_at, idle_expires_at, expires_at, refresh_secret_enc)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10)`,
+         (id, project_id, user_id, amr, ip, user_agent, created_at, authenticated_at, last_active_at, idle_expires_at, expires_at, refresh_secret_enc)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $8, $9, $10)`,
       [
         id,
         project.id,
@@ -78,12 +117,7 @@ export class SessionService {
       ],
     );
     await tx.query('UPDATE auth_users SET last_sign_in_at = $2 WHERE id = $1', [user.id, now]);
-    const access = await this.signingKeys.signAccessToken(
-      project.id,
-      { sub: user.id, sid: id, email: user.email, email_verified: user.email_verified_at !== null, amr },
-      s.accessTokenTtlSeconds,
-      tx,
-    );
+    const access = await this.issueAccess(tx, project, user, { id, amr, authenticated_at: now });
     return {
       sessionId: id,
       accessToken: access.token,
@@ -163,17 +197,7 @@ export class SessionService {
     if (outcome.kind !== 'ok') throw new AuthError('invalid_token', 'Session expired. Please sign in again.');
 
     const { session, user, secret, nextGen, idleExpiresAt } = outcome;
-    const access = await this.signingKeys.signAccessToken(
-      project.id,
-      {
-        sub: user.id,
-        sid: session.id,
-        email: user.email,
-        email_verified: user.email_verified_at !== null,
-        amr: session.amr,
-      },
-      project.settings.accessTokenTtlSeconds,
-    );
+    const access = await this.issueAccess(this.ctx.db, project, user, session);
     return {
       user: toPublicUser(user),
       tokens: {
