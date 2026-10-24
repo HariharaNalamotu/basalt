@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { dataUrlFor } from './data-link.js';
+import { dataUrlFor, setDataRules, type DataRulesResult } from './data-link.js';
 import { z } from 'zod';
 import { mergeConfig, readConfig, setRoutePolicy, writeConfig } from '@basalt/api-mcp';
 import { DEFAULT_PROTECTION, EMPTY_CSP, type AppRoute, type CspSettings, type ProtectionSettings, type Route, type RouteTable } from '@basalt/host-shared';
@@ -350,6 +350,19 @@ export class Host {
     const { env } = await this.env(ws, appName, envName);
     const { rows } = await this.ctx.db.query<{ name: string; managed: boolean; updated_at: Date }>('SELECT name, managed, updated_at FROM env_vars WHERE env_id = $1 ORDER BY managed, name', [env.id]);
     return { yours: rows.filter((r) => !r.managed).map((r) => ({ name: r.name, updatedAt: r.updated_at })), platformManaged: rows.filter((r) => r.managed).map((r) => r.name) };
+  }
+
+  /** Sets what an environment's data saves and who can see it (see data-link.ts). */
+  async dataRules(ws: string, appName: string, envName: string, contract: unknown): Promise<DataRulesResult> {
+    const { env } = await this.env(ws, appName, envName);
+    const link = this.ctx.cfg.dataLink;
+    const adminKey = this.envs.dataAdminKey(env);
+    if (!link || !env.data_project_id || !adminKey) throw new UserError('This environment has no Basalt data store. It needs Basalt Cloud configured on the platform.', 409);
+    const r = await setDataRules(link, { projectId: env.data_project_id, adminKey, kind: env.kind }, contract).catch((err: Error) => {
+      throw new UserError(err.message.replace(/^Basalt Cloud: /, ''), 400);
+    });
+    await this.audit(ws, 'data_rules.updated', `${appName}/${envName}`);
+    return r;
   }
 
   async apiConfig(ws: string, appName: string, envName: string) {

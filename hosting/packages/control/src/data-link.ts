@@ -13,24 +13,34 @@ export interface DataLinkConfig {
 
 const PROJECT_ID = /^[a-z0-9]{10}$/;
 
-async function cloudCall(cfg: DataLinkConfig, method: string, path: string, body: unknown, f: typeof fetch): Promise<any> {
+class CloudError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+async function cloudCall(cfg: DataLinkConfig, method: string, path: string, body: unknown, f: typeof fetch, key = cfg.platformKey): Promise<any> {
   const res = await f(`${cfg.url.replace(/\/+$/, '')}${path}`, {
     method,
-    headers: { authorization: `Bearer ${cfg.platformKey}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+    headers: { authorization: `Bearer ${key}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
   });
   const json = (await res.json().catch(() => null)) as { ok?: boolean; error?: { message?: string } } | null;
-  if (!res.ok || !json?.ok) throw new Error(`Basalt Cloud: ${json?.error?.message ?? `answered ${res.status}`}`);
+  if (!res.ok || !json?.ok) throw new CloudError(`Basalt Cloud: ${json?.error?.message ?? `answered ${res.status}`}`, res.status);
   return json;
 }
 
 export async function createDataProject(
   cfg: DataLinkConfig,
-  p: { name: string; authProjectId: string; authOwner: string },
+  p: { name: string; authProjectId: string; authOwner: string; externalId: string },
   f: typeof fetch = fetch,
 ): Promise<{ projectId: string; adminKey: string }> {
-  const out = await cloudCall(cfg, 'POST', '/api/platform/projects', { name: p.name, authProjectId: p.authProjectId, authOwner: p.authOwner }, f);
+  // externalId (the environment id) makes this safe to retry: Cloud returns the same project.
+  const out = await cloudCall(cfg, 'POST', '/api/platform/projects', { name: p.name, authProjectId: p.authProjectId, authOwner: p.authOwner, externalId: p.externalId }, f);
   const projectId = out.project?.id;
   if (typeof projectId !== 'string' || !PROJECT_ID.test(projectId) || typeof out.adminKey !== 'string') {
     throw new Error('Basalt Cloud sent back something unexpected.');
@@ -38,9 +48,41 @@ export async function createDataProject(
   return { projectId, adminKey: out.adminKey };
 }
 
+/** Already gone counts as done. Any other failure throws, so the caller can keep its record and retry. */
 export async function deleteDataProject(cfg: DataLinkConfig, projectId: string, f: typeof fetch = fetch): Promise<void> {
   if (!PROJECT_ID.test(projectId)) return;
-  await cloudCall(cfg, 'DELETE', `/api/platform/projects/${projectId}`, undefined, f);
+  try {
+    await cloudCall(cfg, 'DELETE', `/api/platform/projects/${projectId}`, undefined, f);
+  } catch (err) {
+    if (!(err instanceof CloudError && err.status === 404)) throw err;
+  }
+}
+
+export type DataRulesResult =
+  | { status: 'live'; summary: string }
+  | { status: 'waiting_for_owner'; approveUrl: string; why: string[]; summary: string };
+
+/**
+ * Sets what an environment's data project saves and who can see it. Test environments (only
+ * test data at stake) take the rules right away. Production goes through the owner's approval
+ * page whenever the rules would show data to more people.
+ */
+export async function setDataRules(
+  cfg: DataLinkConfig,
+  env: { projectId: string; adminKey: string; kind: 'preview' | 'staging' | 'production' },
+  contract: unknown,
+  f: typeof fetch = fetch,
+): Promise<DataRulesResult> {
+  if (!PROJECT_ID.test(env.projectId)) throw new Error('This environment has no data project.');
+  if (env.kind !== 'production') {
+    const out = await cloudCall(cfg, 'PUT', `/api/platform/projects/${env.projectId}/rules`, { contract }, f);
+    return { status: 'live', summary: String(out.summary ?? '') };
+  }
+  const out = await cloudCall(cfg, 'PUT', '/api/projects/me/rules', { contract }, f, env.adminKey);
+  if (out.status === 'waiting_for_owner') {
+    return { status: 'waiting_for_owner', approveUrl: String(out.approveUrl), why: Array.isArray(out.why) ? out.why.map(String) : [], summary: String(out.summary ?? '') };
+  }
+  return { status: 'live', summary: String(out.summary ?? '') };
 }
 
 /** Where the edge sends /_basalt/data for an environment, or null when it has no data project. */

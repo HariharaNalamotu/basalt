@@ -468,3 +468,56 @@ describe('the hosting platform API', () => {
     }
   });
 });
+
+describe('hosted environments on the platform API', () => {
+  const platformKey = 'q'.repeat(64);
+  let host: ReturnType<typeof createCloudServer>;
+  let url: string;
+  before(async () => {
+    host = createCloudServer({ projects, auth, platformKey, publicUrl: 'https://cloud.example.com', trustProxy: true });
+    await new Promise<void>((r) => host.server.listen(0, '127.0.0.1', () => r()));
+    url = `http://127.0.0.1:${(host.server.address() as AddressInfo).port}`;
+  });
+  after(async () => {
+    await host.close();
+    await new Promise((r) => host.server.close(r));
+  });
+  const make = (authProjectId: string, externalId: string) =>
+    fetch(`${url}/api/platform/projects`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${platformKey}` },
+      body: JSON.stringify({ name: 'Env', authProjectId, authOwner: auth.defaultOwner, externalId }),
+    }).then(async (r) => ({ status: r.status, body: (await r.json()) as any }));
+
+  test('asking twice for the same environment returns the same database, with a fresh key', async () => {
+    const { projectId } = await auth.createProject('Env');
+    const a = await make(projectId, 'env_same1');
+    const b = await make(projectId, 'env_same1');
+    assert.equal(a.status, 201);
+    assert.equal(b.body.project.id, a.body.project.id);
+    assert.notEqual(b.body.adminKey, a.body.adminKey);
+    const me = (key: string) => fetch(`${url}/api/projects/me`, { headers: { authorization: `Bearer ${key}` } }).then((r) => r.status);
+    assert.equal(await me(b.body.adminKey), 200);
+    assert.equal(await me(a.body.adminKey), 401);
+  });
+
+  test("a hosted environment's data is only served on the app's own site, not on Cloud's public address", async () => {
+    const { projectId } = await auth.createProject('Env');
+    const made = await make(projectId, 'env_public1');
+    const id = made.body.project.id;
+    await fetch(`${url}/api/platform/projects/${id}/rules`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${platformKey}` },
+      body: JSON.stringify({ contract: { tables: { notes: { fields: { text: { type: 'text' } } } } } }),
+    });
+    const list = (forwardedHost: string) =>
+      fetch(`${url}/p/${id}/v1/data/list`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer a.b.c', 'x-forwarded-for': '203.0.113.9', 'x-forwarded-host': forwardedHost },
+        body: '{"table":"notes"}',
+      }).then((r) => r.status);
+    assert.equal(await list('cloud.example.com'), 404);
+    // Through the app's own site the request reaches the Data service (and fails on the bad token there).
+    assert.equal(await list('todo.example.com'), 401);
+  });
+});

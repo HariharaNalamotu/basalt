@@ -125,6 +125,17 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
     await host.deleteSecret(ws, a.app, a.env, a.name);
     return text(`Deleted ${a.name}.`);
   }, { destructiveHint: true });
+  tool(
+    'host_data_rules',
+    'Sets what an environment\'s data saves and who can see it (the Basalt Data block, reached from the browser with basalt() at /_basalt/data, or ctx.data in the backend). Each signed-in person only ever reaches their own rows. Rules: { "tables": { "<table>": { "fields": { "<field>": { "type": "text" | "integer" | "number" | "boolean" | "timestamp" | "user" | "file", "required"?: true } }, "shareWith"?: "<user field>" } } }. Preview and staging take the rules right away. Production returns an approval link the human must open and approve before anything changes: show it to them.',
+    { app, env, rules: z.record(z.string(), z.unknown()) },
+    async (a) => {
+      const r = await host.dataRules(ws, a.app, a.env, a.rules);
+      return r.status === 'live'
+        ? text(`Live. ${r.summary}`)
+        : text(`Waiting for the owner. Show them this link and ask them to approve:\n${r.approveUrl}\n\nWhy: ${r.why.join(' ')}\n\n${r.summary}`);
+    },
+  );
   tool('host_api_config', 'Reads the backend service config (BASALT_API_CONFIG) of an environment.', { app, env }, async (a) => json(await host.apiConfig(ws, a.app, a.env)), { readOnlyHint: true });
   tool(
     'host_update_api_config',

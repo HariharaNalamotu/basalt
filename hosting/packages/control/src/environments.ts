@@ -130,21 +130,21 @@ export class Environments {
         BASALT_ENVIRONMENT: { value: kind, secret: false },
         BASALT_APP_HOST: { value: env.host, secret: false },
       });
-      // The Data block: a Cloud data project that accepts this environment's Auth tokens.
-      let data: { projectId: string; adminKey: string } | null = null;
+      // The Data block: a Cloud data project that accepts this environment's Auth tokens. Keyed on
+      // the environment id, so a retry gets the same project back, and recorded before anything
+      // else can fail so deleting the environment always finds it.
       if (this.ctx.cfg.dataLink) {
-        data = env.data_project_id ? null : await createDataProject(this.ctx.cfg.dataLink, { name: `${app.name} (${slug})`, authProjectId: r.projectId, authOwner: app.workspace_id });
-        const projectId = data?.projectId ?? env.data_project_id;
-        await platform.writeEnv(envKey(app.name, slug), { BASALT_DATA_URL: { value: dataUrlFor(this.ctx.cfg.dataLink, projectId)!, secret: false } });
+        const data = await createDataProject(this.ctx.cfg.dataLink, { name: `${app.name} (${slug})`, authProjectId: r.projectId, authOwner: app.workspace_id, externalId: env.id });
+        env = (
+          await this.ctx.db.query<EnvRow>(`UPDATE environments SET data_project_id = $2, data_admin_key_enc = $3 WHERE id = $1 RETURNING *`, [
+            env.id,
+            data.projectId,
+            this.ctx.box.seal(data.adminKey, `data:${env.id}`),
+          ])
+        ).rows[0]!;
+        await platform.writeEnv(envKey(app.name, slug), { BASALT_DATA_URL: { value: dataUrlFor(this.ctx.cfg.dataLink, data.projectId)!, secret: false } });
       }
-      env = (
-        await this.ctx.db.query<EnvRow>(
-          `UPDATE environments SET status = 'ready', auth_project_id = $2, error = NULL,
-             data_project_id = COALESCE($3, data_project_id), data_admin_key_enc = COALESCE($4, data_admin_key_enc)
-           WHERE id = $1 RETURNING *`,
-          [env.id, r.projectId, data?.projectId ?? null, data ? this.ctx.box.seal(data.adminKey, `data:${env.id}`) : null],
-        )
-      ).rows[0]!;
+      env = (await this.ctx.db.query<EnvRow>(`UPDATE environments SET status = 'ready', auth_project_id = $2, error = NULL WHERE id = $1 RETURNING *`, [env.id, r.projectId])).rows[0]!;
       this.ctx.routes.bump();
       return env;
     } catch (err) {
@@ -182,6 +182,11 @@ export class Environments {
     }
   }
 
+  /** The sealed admin key of an environment's data project. */
+  dataAdminKey(env: EnvRow): string | null {
+    return env.data_admin_key_enc ? this.ctx.box.open(env.data_admin_key_enc, `data:${env.id}`) : null;
+  }
+
   /** Removes everything an environment owns. Irreversible. */
   async destroy(app: AppRow, env: EnvRow) {
     await this.ctx.db.query(`UPDATE environments SET status = 'deleting' WHERE id = $1`, [env.id]);
@@ -198,7 +203,9 @@ export class Environments {
       }).catch(() => {});
     }
     step('auth');
-    if (env.data_project_id && this.ctx.cfg.dataLink) await deleteDataProject(this.ctx.cfg.dataLink, env.data_project_id).catch(() => {});
+    // Not swallowed: if Cloud can't delete it now, the environment stays 'deleting' with its
+    // data project recorded, and deleting again finishes the job.
+    if (env.data_project_id && this.ctx.cfg.dataLink) await deleteDataProject(this.ctx.cfg.dataLink, env.data_project_id);
     step('data');
     await this.ctx.redis.call('ACL', 'DELUSER', `u_${env.id}`).catch(() => {});
     await this.ctx.redis.call('ACL', 'SAVE').catch(() => {});

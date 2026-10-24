@@ -16,4 +16,4 @@ export const envKey = (app: string, slug: string) => `${app}-${slug}`;
 export const networkName = (envId: string) => `basalt-env-${envId}`;
 export const subnetFor = (index: number) => `10.201.${index}.0/24`;
 export const imageTag = (app: string, deploymentId: string) => `basalt-app/${app}:${deploymentId}`;
-export const RESERVED_APP_NAMES = new Set(['www', 'api', 'auth', 'host', 'registry', 'admin', 'mail', 'status', 'app', 'edge', 'internal', 'staging', 'preview', 'static', 'cdn']);
+export const RESERVED_APP_NAMES = new Set(['www', 'api', 'auth', 'host', 'registry', 'admin', 'mail', 'status', 'app', 'edge', 'internal', 'staging', 'preview', 'static', 'cdn', 'cloud']);

@@ -122,7 +122,8 @@ export function createCloudServer(options: CloudServerOptions) {
   const perIp = options.projectsPerIpPerHour ?? 10;
   const created = new Map<string, number[]>();
   let projectCount = 0;
-  const handlers = new Map<string, { handler: DataHandler; data: BasaltData }>();
+  const handlers = new Map<string, { handler: DataHandler; data: BasaltData; hosted: boolean }>();
+  const publicHost = new URL(base).host;
   // Guard runs one check per app at a time, and a few across all apps.
   const checking = new Set<string>();
   const maxChecks = 4;
@@ -145,16 +146,21 @@ export function createCloudServer(options: CloudServerOptions) {
     await h?.data.close().catch(() => {});
   }
 
-  async function dataHandler(id: string): Promise<DataHandler | null> {
+  // Hosted environments' data is served only on their app's own site (/_basalt/data through the
+  // edge), where the preview gate and attack shield apply, never on Cloud's public address.
+  const onPublicAddress = (req: IncomingMessage) => Boolean(options.trustProxy) && req.headers['x-forwarded-host'] === publicHost;
+
+  async function dataHandler(id: string, req: IncomingMessage): Promise<DataHandler | null | 'hidden'> {
     const cached = handlers.get(id);
-    if (cached) return cached.handler;
+    if (cached) return cached.hosted && onPublicAddress(req) ? 'hidden' : cached.handler;
     const p = await projects.get(id);
+    if (p?.hosted && onPublicAddress(req)) return 'hidden';
     if (!p || !p.approvedContract) return null;
     const data = new BasaltData({ connectionString: projects.dataUrl(p), contract: parseContract(p.approvedContract), poolSize: 3 });
     const handler = createDataHandler({ data });
     // Keep a bounded number of apps' connection pools open at once.
     if (handlers.size >= 200) await dropHandler(handlers.keys().next().value!);
-    handlers.set(id, { handler, data });
+    handlers.set(id, { handler, data, hosted: p.hosted });
     return handler;
   }
 
@@ -191,7 +197,8 @@ export function createCloudServer(options: CloudServerOptions) {
       const authProjectId = typeof body.authProjectId === 'string' && /^prj_[A-Za-z0-9]{8,40}$/.test(body.authProjectId) ? body.authProjectId : '';
       const authOwner = typeof body.authOwner === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(body.authOwner) ? body.authOwner : '';
       if (!name || !authProjectId || !authOwner) throw new HttpError(400, 'name, authProjectId and authOwner are required.');
-      const { project, adminKey } = await projects.create(name, { authProjectId, authOwner });
+      if (body.externalId !== undefined && (typeof body.externalId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(body.externalId))) throw new HttpError(400, 'externalId must be 1 to 64 letters, numbers, _ or -.');
+      const { project, adminKey } = await projects.create(name, { authProjectId, authOwner, externalId: body.externalId as string | undefined });
       return sendJson(res, 201, { ok: true, project: await status(project), adminKey });
     }
     const m = /^\/api\/platform\/projects\/([a-z0-9]{10})(\/rules)?$/.exec(path);
@@ -416,7 +423,8 @@ ${summaryHtml(contract)}
 
       const appMatch = /^\/p\/([a-z0-9]{10})(\/.*)$/.exec(path);
       if (appMatch) {
-        const handler = await dataHandler(appMatch[1]);
+        const handler = await dataHandler(appMatch[1], req);
+        if (handler === 'hidden') return sendJson(res, 404, { ok: false, error: { code: 'not_found', message: 'Unknown route.' } });
         if (!handler) {
           if (req.method === 'OPTIONS') return void res.writeHead(204, { 'access-control-allow-origin': '*' }).end();
           res.setHeader('access-control-allow-origin', '*');

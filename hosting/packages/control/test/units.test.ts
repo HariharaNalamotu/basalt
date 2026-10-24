@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import * as tar from 'tar';
 import { describe, expect, it } from 'vitest';
 import { SecretBox } from '../src/crypto.js';
-import { hostFor } from '../src/naming.js';
+import { hostFor, RESERVED_APP_NAMES } from '../src/naming.js';
 import { detectManifest } from '../src/pipeline.js';
 import { scanSource } from '../src/scanner.js';
 import { CspPatch, ProtectionPatch } from '../src/service.js';
@@ -103,6 +103,10 @@ describe('bounded settings', () => {
     expect(hostFor('todo', 'production', 'prod', 'apps.dev')).toBe('todo.apps.dev');
     expect(hostFor('todo', 'staging', 'staging', 'apps.dev')).toBe('todo--staging.apps.dev');
     expect(hostFor('todo', 'preview', 'pabc123', 'apps.dev')).toBe('todo--pabc123.apps.dev');
+  });
+
+  it('platform service names (including cloud, where Basalt Cloud lives) are never app names', () => {
+    for (const name of ['host', 'registry', 'auth', 'cloud']) expect(RESERVED_APP_NAMES.has(name), name).toBe(true);
   });
 
   it('secrets are bound to their owner', () => {

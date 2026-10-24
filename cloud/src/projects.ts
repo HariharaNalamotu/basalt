@@ -28,6 +28,8 @@ export interface Project {
   authProjectId: string | null;
   authOwner: string;
   approvedContract: unknown | null;
+  // Made by the hosting platform for one of its environments, served on that app's own site.
+  hosted: boolean;
 }
 
 export interface Approval {
@@ -106,6 +108,9 @@ export class Projects {
         alter table cloud.approvals alter column contract drop not null;
         alter table cloud.projects add column if not exists auth_project_id text;
         alter table cloud.projects add column if not exists auth_owner text;
+        -- The hosting platform's id for the environment a project belongs to (one each).
+        alter table cloud.projects add column if not exists external_id text;
+        create unique index if not exists projects_external_id on cloud.projects (external_id) where external_id is not null;
 
         create table if not exists cloud.checks (
           id bigint generated always as identity primary key,
@@ -151,7 +156,28 @@ export class Projects {
   // the data tokens Basalt Auth issues for the app's Auth project.
   // `attach` binds the database to an existing Auth project (the hosting platform's environments)
   // instead of making a new one; only the platform API can ask for that.
-  async create(name: string, attach?: { authProjectId: string; authOwner: string }): Promise<{ project: Project; adminKey: string }> {
+  async create(name: string, attach?: { authProjectId: string; authOwner: string; externalId?: string }): Promise<{ project: Project; adminKey: string }> {
+    if (!attach?.externalId) return this.#create(name, attach);
+    // Asking again for the same environment (a retry, or a lost reply) returns its database
+    // with a fresh admin key instead of making a second one.
+    const lock = await this.#pool.connect();
+    const tag = `basalt cloud env ${attach.externalId}`;
+    try {
+      await lock.query('select pg_advisory_lock(hashtext($1))', [tag]);
+      const row = (await lock.query('select id from cloud.projects where external_id = $1', [attach.externalId])).rows[0];
+      if (row) {
+        const adminKey = `bsk_${row.id}_${randomSecret()}`;
+        await lock.query('update cloud.projects set admin_key_hash = $2 where id = $1', [row.id, sha256(adminKey)]);
+        return { project: (await this.get(row.id))!, adminKey };
+      }
+      return await this.#create(name, attach);
+    } finally {
+      await lock.query('select pg_advisory_unlock(hashtext($1))', [tag]).catch(() => {});
+      lock.release();
+    }
+  }
+
+  async #create(name: string, attach?: { authProjectId: string; authOwner: string; externalId?: string }): Promise<{ project: Project; adminKey: string }> {
     const id = randomId();
     const dbName = `app_${id}`;
     const roles = { owner: `${dbName}_owner`, exec: `${dbName}_exec`, data: `${dbName}_data` };
@@ -173,12 +199,12 @@ export class Projects {
 
     {
       await this.#pool.query(
-        `insert into cloud.projects (id, name, db_name, owner_role, exec_role, data_role, data_password, jwt_secret, admin_key_hash, auth_project_id, auth_owner)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [id, name, dbName, roles.owner, roles.exec, roles.data, encrypt(this.#cfg.masterKey, dataPassword), encrypt(this.#cfg.masterKey, jwtSecret), sha256(adminKey), authProjectId, authOwner],
+        `insert into cloud.projects (id, name, db_name, owner_role, exec_role, data_role, data_password, jwt_secret, admin_key_hash, auth_project_id, auth_owner, external_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [id, name, dbName, roles.owner, roles.exec, roles.data, encrypt(this.#cfg.masterKey, dataPassword), encrypt(this.#cfg.masterKey, jwtSecret), sha256(adminKey), authProjectId, authOwner, attach?.externalId ?? null],
       );
     }
-    return { project: { id, name, dbName, roles, dataPassword, authProjectId, authOwner, approvedContract: null }, adminKey };
+    return { project: { id, name, dbName, roles, dataPassword, authProjectId, authOwner, approvedContract: null, hosted: Boolean(attach?.externalId) }, adminKey };
   }
 
   /** Removes an app's database, roles and records. Irreversible. Only for the platform. */
@@ -204,6 +230,7 @@ export class Projects {
         authProjectId: r.auth_project_id ?? null,
         authOwner: r.auth_owner ?? this.#auth.defaultOwner,
         approvedContract: r.approved_contract,
+        hosted: r.external_id !== null && r.external_id !== undefined,
       };
     }
   }

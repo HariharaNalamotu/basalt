@@ -31,6 +31,11 @@ ENV
   echo "Generated .env (keep it secret; back it up offline)."
 fi
 
+# Upgrades: add secrets introduced after this .env was generated, without touching existing ones.
+for key in CLOUD_MASTER_KEY CLOUD_PLATFORM_KEY; do
+  grep -q "^${key}=" .env || echo "${key}=$(hex)" >> .env
+done
+
 docker build -t basalt/runtime:1 ../images/runtime
 docker pull mcr.microsoft.com/playwright:v1.64.1-noble
 docker compose build
