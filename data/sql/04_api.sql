@@ -231,6 +231,14 @@ begin
       if bad is not null then
         return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'That is not a field you can set.');
       end if;
+      -- A file field can only point at a file the caller can already see.
+      select k into bad from unnest(coalesce(keys, '{}')) k
+      where reg.spec->'fields'->k->>'type' = 'file' and jsonb_typeof(input->k) <> 'null'
+        and not exists (select 1 from files f where f.id = (input->>k)::uuid)
+      limit 1;
+      if bad is not null then
+        return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'That file doesn''t exist or isn''t yours.');
+      end if;
 
       if op = 'create' then
         rkey := args->>'key';

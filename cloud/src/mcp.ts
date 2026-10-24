@@ -58,7 +58,7 @@ function need(): Saved {
 
 const CONTRACT_HELP = `The rules are a JSON object: { "tables": { "<table>": { "fields": { "<field>": { "type": ..., ... } }, "shareWith": "<field>"? } } }.
 Names: lowercase letters, numbers and underscores, starting with a letter (like "bookings", "starts_at").
-Field types: "text" (maxLength 1 to 10000, default 1000; optional "format": "email" | "phone" | "url" | "postal_code" | "slug"), "integer" and "number" (optional "min", "max"), "boolean", "timestamp" (ISO date and time) and "user" (another person's user id).
+Field types: "text" (maxLength 1 to 10000, default 1000; optional "format": "email" | "phone" | "url" | "postal_code" | "slug"), "integer" and "number" (optional "min", "max"), "boolean", "timestamp" (ISO date and time), "user" (another person's user id) and "file" (an uploaded photo or document).
 Add "required": true for fields that must always be filled in.
 Every row automatically gets id, owner_id (who added it), created_at and updated_at. Don't add those.
 Each person only ever sees and changes the rows they added. To let one other person read a row (like the staff member assigned to a booking), add a "user" field and set "shareWith" to its name. They can read it but never change it.
@@ -72,7 +72,7 @@ const BASALT_URL = ${JSON.stringify(dataUrl)};
 // getToken returns the signed in person's login token.
 export function basalt(getToken) {
   async function call(op, body) {
-    const res = await fetch(\`\${BASALT_URL}/v1/data/\${op}\`, {
+    const res = await fetch(\`\${BASALT_URL}\${op.startsWith('/') ? op : '/v1/data/' + op}\`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: \`Bearer \${await getToken()}\` },
       body: JSON.stringify(body),
@@ -98,6 +98,23 @@ export function basalt(getToken) {
     // booking) and restore brings it back. list(table, { archived: true }) shows archived ones.
     archive: (table, id) => call('archive', { table, id }),
     restore: (table, id) => call('restore', { table, id }),
+    // Uploads a File from an <input type="file">. PNG, JPEG, GIF, WebP, PDF,
+    // plain text and CSV, up to 5 MB. Save the returned id in a "file" field.
+    async upload(file) {
+      const res = await fetch(\`\${BASALT_URL}/v1/files\`, {
+        method: 'POST',
+        headers: { 'content-type': file.type, 'x-file-name': encodeURIComponent(file.name), authorization: \`Bearer \${await getToken()}\` },
+        body: file,
+      });
+      const json = await res.json();
+      if (!json.ok) { const err = new Error(json.error.message); err.code = json.error.code; throw err; }
+      return json.data;
+    },
+    // A link to show or download a file (works in <img src>). Good for 5 minutes.
+    async fileUrl(id) {
+      const { path } = await call('/v1/files/link', { id });
+      return BASALT_URL + path;
+    },
   };
 }
 `;

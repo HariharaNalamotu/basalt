@@ -32,6 +32,9 @@
         },
         "staff_id": {
           "type": "user"
+        },
+        "photo": {
+          "type": "file"
         }
       },
       "shareWith": "staff_id"

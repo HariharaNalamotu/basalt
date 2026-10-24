@@ -201,6 +201,53 @@ export class BasaltData {
     return (await this.#call(token, 'restore', spec.name, { id: checkId(id) })) as Row;
   }
 
+  // Stores a file. The database checks the type, the bytes, the size and the
+  // user's quota, and cleans the name.
+  async uploadFile(token: string, name: string, contentType: string, body: Buffer): Promise<Row> {
+    this.#checkToken(token);
+    return this.#reply(await this.#query('select basalt.file_put($1, $2, $3, $4) as r', [token, name, contentType, body])) as Row;
+  }
+
+  // A download link for a file the caller can see, good for 5 minutes.
+  async fileLink(token: string, id: string): Promise<{ ticket: string; expires_in: number }> {
+    this.#checkToken(token);
+    return this.#reply(await this.#query('select basalt.file_link($1, $2) as r', [token, checkId(id)])) as { ticket: string; expires_in: number };
+  }
+
+  async fetchFile(ticket: string): Promise<{ name: string; content_type: string; data: Buffer } | null> {
+    if (!/^[0-9a-f]{64}$/.test(ticket)) return null;
+    const res = await this.#pool.query('select * from basalt.file_fetch($1)', [ticket]).catch(() => {
+      throw new BasaltError('unavailable', 'The database is unavailable right now. Try again.');
+    });
+    return res.rows[0] ?? null;
+  }
+
+  #checkToken(token: string): void {
+    if (typeof token !== 'string' || !TOKEN.test(token)) {
+      throw new BasaltError('denied', 'Your login is missing, expired or not valid. Log in again.');
+    }
+  }
+
+  async #query(sql: string, params: unknown[]): Promise<unknown> {
+    try {
+      return (await this.#pool.query(sql, params)).rows[0]?.r;
+    } catch (err) {
+      const code = (err as { code?: string })?.code ?? '';
+      if (code === '57014' || code === '25P04' || code === '55P03') {
+        throw new BasaltError('unavailable', 'That took too long and was stopped. Try again.');
+      }
+      throw new BasaltError('unavailable', 'The database is unavailable right now. Try again.');
+    }
+  }
+
+  #reply(reply: unknown): unknown {
+    const r = reply as { ok: boolean; data?: unknown; code?: string; message?: string } | undefined;
+    if (!r) throw new BasaltError('unavailable', 'The database sent back something unexpected.');
+    if (r.ok) return r.data;
+    const code = CODES.has(r.code as BasaltErrorCode) ? (r.code as BasaltErrorCode) : 'unavailable';
+    throw new BasaltError(code, typeof r.message === 'string' ? r.message : 'Something went wrong.');
+  }
+
   async close(): Promise<void> {
     await this.#pool.end();
   }

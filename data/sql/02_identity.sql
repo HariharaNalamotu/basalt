@@ -250,5 +250,4 @@ alter function basalt.prune_usage() owner to :"owner_role";
 revoke execute on function basalt.prune_usage() from public;
 
 -- Removed in this version. Upgrades drop them so nothing old lingers.
-drop function if exists basalt.charge(text, int, int);
 drop function if exists basalt.login(text, int, int);

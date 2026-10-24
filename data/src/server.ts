@@ -7,6 +7,9 @@
 //   POST /v1/data/update  { table, id, input }
 //   POST /v1/data/archive { table, id }
 //   POST /v1/data/restore { table, id }
+//   POST /v1/files        raw file body, content-type and x-file-name headers
+//   POST /v1/files/link   { id } -> a download path good for 5 minutes
+//   GET  /v1/files/download/<ticket>
 //   GET  /healthz         (never touches the database)
 //
 // Every request needs  Authorization: Bearer <user login token>.
@@ -26,6 +29,7 @@ export interface DataServerOptions {
   // List pages are trimmed to fit, and the next cursor picks up where they stop.
   maxListBytes?: number;
   bodyTimeoutMs?: number;
+  maxFileBytes?: number;
 }
 
 const STATUS: Record<BasaltErrorCode, number> = {
@@ -45,7 +49,7 @@ const OPS = new Set(['get', 'list', 'create', 'update', 'archive', 'restore']);
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'POST, GET, OPTIONS',
-  'access-control-allow-headers': 'authorization, content-type',
+  'access-control-allow-headers': 'authorization, content-type, x-file-name',
   'access-control-max-age': '600',
 };
 const TOKEN = /^[A-Za-z0-9_-]{2,1024}\.[A-Za-z0-9_-]{2,3000}\.[A-Za-z0-9_-]{43}$/;
@@ -100,6 +104,27 @@ async function readJson(req: IncomingMessage, maxBytes: number, timeoutMs: numbe
   return body as Record<string, unknown>;
 }
 
+async function readRaw(req: IncomingMessage, maxBytes: number, timeoutMs: number): Promise<Buffer> {
+  const declared = Number(req.headers['content-length'] ?? 0);
+  if (declared > maxBytes) throw new BasaltError('invalid_input', `Files can be up to ${Math.floor(maxBytes / 1048576)} MB.`);
+  const chunks: Buffer[] = [];
+  let size = 0;
+  const timer = setTimeout(() => req.destroy(), timeoutMs * 6);
+  try {
+    for await (const chunk of req) {
+      size += (chunk as Buffer).length;
+      if (size > maxBytes) throw new BasaltError('invalid_input', `Files can be up to ${Math.floor(maxBytes / 1048576)} MB.`);
+      chunks.push(chunk as Buffer);
+    }
+  } catch (err) {
+    if (err instanceof BasaltError) throw err;
+    throw new BasaltError('invalid_input', 'The upload took too long or was cut off.');
+  } finally {
+    clearTimeout(timer);
+  }
+  return Buffer.concat(chunks);
+}
+
 function bearer(req: IncomingMessage): string {
   const header = req.headers.authorization ?? '';
   const match = /^Bearer (\S{1,4096})$/.exec(header);
@@ -129,6 +154,8 @@ export function createDataHandler(options: DataServerOptions): DataHandler {
   const maxInFlight = options.maxInFlight ?? 256;
   const maxListBytes = options.maxListBytes ?? 1024 * 1024;
   const bodyTimeoutMs = options.bodyTimeoutMs ?? 5000;
+  // A little over the database's own 5 MB default, so the database gives the clear message.
+  const maxFileBytes = options.maxFileBytes ?? 6 * 1024 * 1024;
   let inFlight = 0;
 
   return async (req, res, path) => {
@@ -137,6 +164,59 @@ export function createDataHandler(options: DataServerOptions): DataHandler {
       return void res.end();
     }
     if (req.method === 'GET' && path === '/healthz') return send(res, 200, { ok: true });
+
+    // Downloads: the ticket in the link is the proof, so no login header is
+    // needed, which lets an <img> tag show it.
+    const dl = /^\/v1\/files\/download\/([0-9a-f]{64})$/.exec(path);
+    if (req.method === 'GET' && (dl || path.startsWith('/v1/files/download/'))) {
+      const file = dl ? await data.fetchFile(dl[1]).catch(() => null) : null;
+      if (!file) return send(res, 404, { ok: false, error: { code: 'not_found', message: 'That link is wrong or has expired.' } });
+      const inline = file.content_type.startsWith('image/') || file.content_type === 'application/pdf';
+      res.writeHead(200, {
+        'content-type': file.content_type,
+        'content-length': file.data.length,
+        'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${file.name.replace(/[^A-Za-z0-9 ._-]/g, '_')}"`,
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; sandbox",
+        'cache-control': 'private, max-age=300',
+        ...CORS,
+      });
+      return void res.end(file.data);
+    }
+
+    if (req.method === 'POST' && path === '/v1/files') {
+      if (inFlight >= maxInFlight) {
+        res.setHeader('retry-after', '1');
+        return fail(res, new BasaltError('unavailable', 'The service is busy. Try again in a moment.'));
+      }
+      inFlight++;
+      res.once('close', () => inFlight--);
+      try {
+        const token = bearer(req);
+        const type = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+        let name = 'file';
+        try {
+          name = decodeURIComponent(String(req.headers['x-file-name'] ?? 'file')).slice(0, 300);
+        } catch {}
+        const body = await readRaw(req, maxFileBytes, bodyTimeoutMs);
+        return send(res, 200, { ok: true, data: await data.uploadFile(token, name, type, body) });
+      } catch (err) {
+        if (res.destroyed) return;
+        return fail(res, err instanceof BasaltError ? err : new BasaltError('unavailable', 'Something went wrong. Try again.'));
+      }
+    }
+
+    if (req.method === 'POST' && path === '/v1/files/link') {
+      try {
+        const token = bearer(req);
+        const body = await readJson(req, maxBodyBytes, bodyTimeoutMs);
+        const link = await data.fileLink(token, body.id as string);
+        return send(res, 200, { ok: true, data: { path: `/v1/files/download/${link.ticket}`, expires_in: link.expires_in } });
+      } catch (err) {
+        if (res.destroyed) return;
+        return fail(res, err instanceof BasaltError ? err : new BasaltError('unavailable', 'Something went wrong. Try again.'));
+      }
+    }
 
     const match = /^\/v1\/data\/([a-z]+)$/.exec(path);
     if (req.method !== 'POST' || !match || !OPS.has(match[1])) {
