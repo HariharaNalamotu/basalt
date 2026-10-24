@@ -17,4 +17,8 @@ For a table other than `bookings`, pass its name: `basaltAttack(undefined, undef
 
 ## How we know it isn't always green
 
-Against a fake backend that hands everything to everyone, all nine attacks show as LEAKED (checked 2026-10-24). Against the local platform's production salon app, all nine are refused and B's own booking still opens.
+`node demo/check.mjs` runs it against fake backends: one that behaves like Basalt, one that hands everything to everyone, one with the false greens Codex found in review (another customer's rows in a search, a validation error, an outage) and one that leaks on page two. Every leak shows as LEAKED and anything that isn't a clear "no" shows as CAN'T TELL. (The forged-login check shows CAN'T TELL on the Basalt-like fake only because the fake doesn't check logins.)
+
+Against the local platform's production salon app (2026-10-24), all nine attacks are refused and B's own booking still opens. The script saves one throwaway test entry as B, far in the future, to learn who B is, and archives it at the end. If an attack ever does get through on A's booking, the script puts the booking back.
+
+Only run it on demo customers' accounts.

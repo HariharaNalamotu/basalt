@@ -65,7 +65,7 @@
         <div style="font-size:24px;font-weight:800;margin-bottom:14px;color:${good ? '#7ee787' : '#ffa198'}">${esc(footer)}</div>
         ${rows.map((r) => `
           <div style="display:flex;gap:16px;align-items:center;padding:8px 0;border-top:1px solid #21262d">
-            <span style="flex:none;min-width:132px;text-align:center;font-weight:800;letter-spacing:.04em;padding:6px 10px;border-radius:8px;${r.pass ? 'background:#0f5323;color:#7ee787' : r.pass === null ? 'background:#3d2e00;color:#e3b341' : 'background:#67060c;color:#ffa198'}">${r.pass ? esc(r.badge || 'REFUSED') : r.pass === null ? "CAN'T TELL" : 'LEAKED'}</span>
+            <span style="flex:none;min-width:132px;text-align:center;font-weight:800;letter-spacing:.04em;padding:6px 10px;border-radius:8px;${r.pass ? 'background:#0f5323;color:#7ee787' : r.pass === null ? 'background:#3d2e00;color:#e3b341' : 'background:#67060c;color:#ffa198'}">${r.pass ? esc(r.badge || 'REFUSED') : r.pass === null ? "CAN'T TELL" : r.badge ? 'BROKEN' : 'LEAKED'}</span>
             <span style="flex:1"><b>${esc(r.title)}</b><br><span style="color:#8b949e;font-size:15px">${esc(r.detail)}</span></span>
           </div>`).join('')}
       </div>`;
@@ -87,76 +87,114 @@
 
     const rows = [];
     const add = (title, pass, detail, badge) => rows.push({ title, pass, detail, badge });
-    const mine = await data('list', { table });
-    if (!mine.ok) return console.log(`%cSign in as customer B first (Basalt said${said(mine)}).`, 'font-size:16px');
-    const listed = mine.data.rows;
-    if (listed.length > 0 && listed.every((r) => r.owner_id === targetOwner)) return console.log('%cThis is customer A\'s own login. Sign in as a different customer.', 'font-size:16px');
-    // Judged by owner, so a leak shows as a leak instead of looking like A's own login.
-    const own = listed.filter((r) => r.owner_id !== targetOwner);
-    const leakedRows = listed.filter((r) => r.owner_id === targetOwner || r.id === targetId);
+    // REFUSED only for the specific "no" each attack should get. Anything else (a validation
+    // error, an outage, a busy signal) can't prove the data is safe, so it shows CAN'T TELL.
+    const verdict = (r, codes, status) => (r.ok ? false : r.status === status && (!codes || codes.includes(r.error && r.error.code)) ? true : null);
+    const why = (r, leakText) => (r.ok ? leakText : r.status === 0 || r.status >= 500 || r.status === 429 ? `Couldn't tell (status ${r.status}).` : `Basalt said${said(r)}`);
 
-    // 1. List everything.
-    add('List every booking in the app', leakedRows.length === 0,
-      leakedRows.length ? `Customer A's bookings came back in customer B's list (${leakedRows.length}).` : `Basalt sent back only this customer's own ${own.length}. Customer A's never shows up.`);
+    // Every page of a list, so nothing hides on page two.
+    async function all(body) {
+      let out = [];
+      let after;
+      for (let page = 0; page < 20; page++) {
+        const r = await data('list', { ...body, limit: 100, ...(after ? { after } : {}) });
+        if (!r.ok) return { r, rows: null };
+        out = out.concat(r.data.rows);
+        if (!r.data.next) return { r, rows: out, complete: true };
+        after = r.data.next;
+      }
+      return { rows: out, complete: false };
+    }
+
+    const first = await all({ table });
+    if (!first.rows) return console.log(`%cSign in as customer B first (Basalt said${said(first.r)}).`, 'font-size:16px');
+    const template = first.rows.find((r) => r.owner_id !== targetOwner);
+    if (!template) return console.log(`%cBook something as this customer first (and make sure it isn't customer A's login).`, 'font-size:16px');
+    // Who B really is, from a throwaway test entry B saves now (far in the future, archived at the end).
+    const probe = await data('create', { table, input: copyOf(template) });
+    if (!probe.ok) return console.log(`%cCouldn't save a test entry to start (Basalt said${said(probe)}).`, 'font-size:16px');
+    const me = probe.data.owner_id;
+    if (me === targetOwner) {
+      await data('archive', { table, id: probe.data.id });
+      return console.log("%cThis is customer A's own login. Sign in as a different customer.", 'font-size:16px');
+    }
+    const field = Object.keys(copyOf(probe.data)).find((k) => typeof probe.data[k] === 'string');
+
+    // 1. List everything: anything not B's is a leak, whoever it belongs to.
+    const listed = await all({ table });
+    const foreign = (listed.rows || []).filter((r) => r.owner_id !== me);
+    add('List every booking in the app', !listed.rows ? null : foreign.length ? false : listed.complete ? true : null,
+      !listed.rows ? why(listed.r) : foreign.length ? `${foreign.length} booking${foreign.length === 1 ? '' : 's'} from other customers came back.`
+        : listed.complete ? `Basalt sent back only this customer's own ${listed.rows.length - 1}, plus the test entry. Nobody else's shows up.` : `Only this customer's in the first 2,000, but there were more to check.`);
 
     // 2. Open A's entry by its id.
     const get = await data('get', { table, id: targetId });
-    add("Open customer A's booking by its id", refused(get) && !get.ok, get.ok ? 'It opened.' : `Basalt said${said(get)}`);
+    add("Open customer A's booking by its id", verdict(get, ['not_found'], 404), why(get, "It opened customer A's booking."));
+    const original = get.ok ? get.data : null;
 
-    // 3. Change it.
-    const field = own[0] && Object.keys(copyOf(own[0])).find((k) => typeof own[0][k] === 'string');
+    // 3. Change it, with a value the rules accept (B's own), so a refusal is about whose it is.
     if (field) {
-      const upd = await data('update', { table, id: targetId, input: { [field]: own[0][field] } });
-      add("Change customer A's booking", refused(upd), upd.ok ? 'The change went through.' : `Basalt said${said(upd)}`);
-    } else {
-      add("Change customer A's booking", null, "Book something as this customer first, so there's a valid change to try.");
+      const upd = await data('update', { table, id: targetId, input: { [field]: probe.data[field] } });
+      add("Change customer A's booking", verdict(upd, ['not_found'], 404), why(upd, "The change went through. (Put back.)"));
+      if (upd.ok && original) await data('update', { table, id: targetId, input: { [field]: original[field] } });
     }
 
     // 4. Cancel it.
     const arc = await data('archive', { table, id: targetId });
-    add("Cancel customer A's booking", refused(arc), arc.ok ? 'It was cancelled.' : `Basalt said${said(arc)}`);
+    add("Cancel customer A's booking", verdict(arc, ['not_found'], 404), why(arc, 'It was cancelled. (Brought back.)'));
+    if (arc.ok) await data('restore', { table, id: targetId });
 
-    // 5. Delete everything. Basalt has no delete at all.
+    // 5. Delete, or run database code directly. Neither door exists (a harmless read is used).
     const del = await data('delete', { table, id: targetId });
-    const sql = await call('/v1/sql', { query: `delete from ${table}` });
-    add('Delete bookings, or run raw database code', refused(del) && refused(sql),
-      del.ok || sql.ok ? 'Something was deleted.' : `There is no delete and no raw database access (${del.status}, ${sql.status}).`);
+    const sql = await call('/v1/sql', { query: `select * from ${table}` });
+    const noDoor = verdict(del, null, 404) && verdict(sql, null, 404);
+    add('Delete a booking, or run raw database code', del.ok || sql.ok ? false : noDoor ? true : null,
+      del.ok || sql.ok ? 'One of them worked.' : noDoor ? 'There is no delete and no raw database access (404, 404).' : `Couldn't tell (${del.status}, ${sql.status}).`);
 
     // 6. Save an entry in A's name.
-    if (own[0] && targetOwner) {
-      const fake = await data('create', { table, input: { ...copyOf(own[0]), owner_id: targetOwner } });
+    if (targetOwner) {
+      const fake = await data('create', { table, input: { ...copyOf(template), owner_id: targetOwner } });
       if (fake.ok && fake.data.id) await data('archive', { table, id: fake.data.id });
-      add("Book in customer A's name", !(fake.ok && fake.data.owner_id === targetOwner),
-        fake.ok ? (fake.data.owner_id === targetOwner ? "The entry says customer A made it." : 'Basalt ignored the name and recorded customer B.') : `Basalt said${said(fake)}`);
+      const faked = fake.ok && fake.data.owner_id !== me;
+      add("Book in customer A's name", faked ? false : fake.ok ? true : verdict(fake, ['invalid_input'], 400),
+        faked ? 'The entry says someone else made it.' : fake.ok ? 'Basalt ignored the name and recorded customer B.' : why(fake));
     }
 
-    // 7. A search that tries to sneak in database code.
-    if (field) {
-      const inj = await data('list', { table, where: { [field]: "x' or '1'='1" } });
-      const leaked = inj.ok && inj.data.rows.some((r) => r.id === targetId);
-      add('A search that sneaks in database code', !leaked && (inj.ok || refused(inj)),
-        leaked ? "It returned customer A's booking." : 'Treated as plain text. Nothing leaked.');
+    // 7. A search that tries to sneak in database code. It has to actually run to prove anything,
+    // so each text field is tried until one isn't turned away for its format (like a phone).
+    let inj = null;
+    for (const k of Object.keys(copyOf(probe.data)).filter((k) => typeof probe.data[k] === 'string' && !/^\d{4}-\d\d-\d\dT/.test(probe.data[k]))) {
+      inj = await all({ table, where: { [k]: "x' or '1'='1" } });
+      if (inj.rows) break;
+    }
+    if (inj) {
+      const leaked = (inj.rows || []).filter((r) => r.owner_id !== me);
+      add('A search that sneaks in database code', leaked.length ? false : inj.rows ? true : null,
+        leaked.length ? `It returned ${leaked.length} booking${leaked.length === 1 ? '' : 's'} from other customers.` : inj.rows ? 'Treated as plain text. Nothing leaked.' : why(inj.r));
     }
 
     // 8. The database's own tables.
     const sys = await data('list', { table: 'pg_authid' });
-    add("Read the database's password table", refused(sys), sys.ok ? 'It answered.' : `Basalt said${said(sys)}`);
+    add("Read the database's password table", verdict(sys, ['invalid_input'], 400), why(sys, 'It answered.'));
 
     // 9. A forged login for customer A.
     if (targetOwner) {
       const forged = await data('get', { table, id: targetId }, { authorization: `Bearer ${forgedLogin(targetOwner)}` });
-      add('A forged login that claims to be customer A', refused(forged), forged.ok ? 'The forged login worked.' : `The database checked the signature itself and said${said(forged)}`);
+      add('A forged login that claims to be customer A', verdict(forged, ['denied'], 401),
+        forged.ok ? 'The forged login worked.' : forged.status === 401 ? `The database checked the signature itself and said${said(forged)}` : why(forged));
     }
 
-    // The door still works for the real owner of an entry.
-    const back = own[0] ? await data('get', { table, id: own[0].id }) : null;
-    if (back) add("Customer B opens their own booking", back.ok, back.ok ? 'Works as normal.' : `Unexpected:${said(back)}`, 'WORKS');
+    // The door still works for the real owner of an entry, then the test entry is tidied away.
+    const back = await data('get', { table, id: probe.data.id });
+    add('Customer B opens their own booking', back.ok, back.ok ? 'Works as normal.' : `Unexpected:${said(back)}`, 'WORKS');
+    await data('archive', { table, id: probe.data.id });
 
-    const bad = rows.filter((r) => r.pass === false && r.badge !== 'WORKS').length + (back && !back.ok ? 1 : 0);
+    const bad = rows.filter((r) => r.pass === false).length;
+    const unsure = rows.filter((r) => r.pass === null).length;
     const attacks = rows.filter((r) => r.badge !== 'WORKS');
     panel('Attacking this app from inside its own page', rows,
-      bad === 0 ? `${attacks.filter((r) => r.pass).length} of ${attacks.length} attacks refused by the database.` : `${bad} problem${bad === 1 ? '' : 's'} found.`, bad === 0);
-    console.table(rows.map((r) => ({ attack: r.title, result: r.pass ? r.badge || 'REFUSED' : r.pass === null ? "can't tell" : 'LEAKED', detail: r.detail })));
+      bad ? `${bad} problem${bad === 1 ? '' : 's'} found.` : unsure ? `${unsure} check${unsure === 1 ? '' : 's'} couldn't tell. Run it again.` : `${attacks.length} of ${attacks.length} attacks refused by the database.`, !bad && !unsure);
+    console.table(rows.map((r) => ({ attack: r.title, result: r.pass ? r.badge || 'REFUSED' : r.pass === null ? "can't tell" : r.badge ? 'BROKEN' : 'LEAKED', detail: r.detail })));
     return rows;
   };
   console.log('%cBasalt attack demo loaded. Run basaltAttack() as customer A, or the copied command as customer B.', 'font-size:16px');
