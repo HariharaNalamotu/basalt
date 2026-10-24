@@ -1,0 +1,21 @@
+{
+  "name": "@basalt/data",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Basalt Data block: the only way an app reads or writes its database",
+  "main": "src/index.ts",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "db:up": "scripts/db.sh up",
+    "db:down": "scripts/db.sh down",
+    "db:reset": "scripts/db.sh reset",
+    "migrate": "node --env-file=.env src/migrate.ts contract.example.json",
+    "test": "node --env-file=.env --test test/*.test.ts"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
+  }
+}
