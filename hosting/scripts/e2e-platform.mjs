@@ -246,6 +246,32 @@ try {
   await tool('browser_close', { session: sessionId });
   void signedIn;
 
+  // The Data block on the app's own site: rules set by the agent, enforced in Postgres per user,
+  // reached with only the session cookie (no token in page code).
+  const access = new URL(share).searchParams.get('t');
+  const rules = await tool('host_data_rules', { app: APP, env: preview.env, rules: { tables: { notes: { fields: { text: { type: 'text', required: true, maxLength: 200 } } } } } });
+  ok(/^Live/.test(rules.text), 'host_data_rules: preview rules go live right away');
+  const origin = `https://${previewHost}`;
+  const signInCookie = async (c) => {
+    const r = await edge(previewHost, '/_basalt/auth/signin', { method: 'POST', headers: { 'content-type': 'application/json', origin, 'x-basalt-access': access }, body: JSON.stringify({ email: c.email, password: c.password }) });
+    const cookie = [].concat(r.headers['set-cookie'] ?? []).find((x) => x.startsWith('__Host-basalt_at='));
+    if (r.status !== 200 || !cookie) throw new Error(`sign in failed: ${r.status} ${r.body}`);
+    return cookie.split(';')[0];
+  };
+  const dataCall = (cookie, op, body, from = origin) =>
+    edge(previewHost, `/_basalt/data/v1/data/${op}`, { method: 'POST', headers: { 'content-type': 'application/json', origin: from, 'x-basalt-access': access, ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) }).then((r) => ({ status: r.status, body: JSON.parse(r.body || '{}') }));
+  const aliceCookie = await signInCookie(creds);
+  const bobCookie = await signInCookie(JSON.parse((await tool('host_test_user', { app: APP, env: preview.env })).text));
+  const note = await dataCall(aliceCookie, 'create', { table: 'notes', input: { text: 'alice only' } });
+  ok(note.status === 200 && note.body.data?.text === 'alice only', `signed-in user saves through /_basalt/data with only the cookie (${note.status})`);
+  const aliceList = await dataCall(aliceCookie, 'list', { table: 'notes' });
+  const bobList = await dataCall(bobCookie, 'list', { table: 'notes' });
+  ok(aliceList.body.data.rows.length === 1 && bobList.body.data.rows.length === 0, 'each person only sees their own rows (enforced in Postgres)');
+  ok((await dataCall(bobCookie, 'get', { table: 'notes', id: note.body.data.id })).status === 404, "another person can't read the row by id");
+  ok((await dataCall(bobCookie, 'update', { table: 'notes', id: note.body.data.id, input: { text: 'pwned' } })).status === 404, "another person can't change it");
+  ok((await dataCall(aliceCookie, 'list', { table: 'notes' }, 'https://evil.example')).status === 401, 'cross-site use of the cookie is refused (CSRF)');
+  ok((await dataCall(null, 'list', { table: 'notes' })).status === 401, 'no login, no data');
+
   // Sandbox network policy, from inside the running backend.
   const probe = JSON.parse((await edge(previewHost, '/api/probe', { headers: { 'x-basalt-access': new URL(share).searchParams.get('t') } })).body);
   ok(probe.metadata.startsWith('blocked'), `backend cannot reach cloud metadata (${probe.metadata})`);
@@ -268,6 +294,8 @@ try {
   ok((await edge(prodHost, '/api/todos')).status === 401, 'production API requires sign-in');
   ok((await edge(prodHost, '/_basalt/introspect')).status === 404, 'backend internals are not reachable publicly');
   ok((await edge(prodHost, '/.env')).status === 404 && (await edge(prodHost, '/wp-login.php')).status === 404, 'scanner probes get nothing');
+  const prodRules = await tool('host_data_rules', { app: APP, env: 'production', rules: { tables: { notes: { fields: { text: { type: 'text', required: true, maxLength: 200 } } } } } });
+  ok(/Waiting for the owner/.test(prodRules.text) && /\/approve\//.test(prodRules.text), 'production data rules wait for the human owner to approve');
 
   // Operate it.
   await tool('host_set_secret', { app: APP, env: 'production', name: 'E2E_SECRET', value: 'sesame' });
