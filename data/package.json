@@ -16,7 +16,7 @@
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d --wait",
     "migrate": "node --env-file=.env src/migrate.ts contract.example.json",
-    "test": "node --env-file=.env --test test/*.test.ts",
+    "test": "node --env-file=.env --test --test-concurrency=1 test/*.test.ts",
     "serve": "node --env-file=.env src/server.ts contract.example.json",
     "db:upgrade": "docker compose exec -T db sh /docker-entrypoint-initdb.d/00_init.sh",
     "pretest": "npm run db:reset"

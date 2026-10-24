@@ -4,8 +4,34 @@
 
 -- Nobody gets anything by default, in every database that accepts connections.
 revoke create on schema public from public;
-select format('revoke connect, temporary on database %I from public', datname)
-from pg_database where datallowconn \gexec
+-- Another database can be created or dropped while this runs (other apps on the same
+-- server). One that is dropped meanwhile is skipped and a clash is retried. This
+-- database is always done.
+do $$
+declare
+  d text;
+begin
+  for d in select datname from pg_database where datallowconn and datname <> current_database() loop
+    for attempt in 1..5 loop
+      begin
+        execute format('revoke connect, temporary on database %I from public', d);
+        exit;
+      exception
+        when invalid_catalog_name then
+          exit; -- dropped meanwhile
+        when others then
+          -- Only a database that vanished or a clash with another change is expected here.
+          -- A clash is retried, anything that keeps failing stops the setup.
+          exit when not exists (select 1 from pg_database where datname = d);
+          if attempt = 5 then
+            raise;
+          end if;
+          perform pg_sleep(0.05 * attempt);
+      end;
+    end loop;
+  end loop;
+end $$;
+select format('revoke connect, temporary on database %I from public', current_database()) \gexec
 
 -- The owner role owns every Basalt table. It can't log in.
 -- The exec role runs the API function. It can't log in and nobody can become it.

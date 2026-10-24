@@ -40,10 +40,17 @@ declare
   bad text;
   rkey text;
   rid uuid;
-  after_ts timestamptz;
   after_id uuid;
   result jsonb;
   cond text;
+  w_key text;
+  w_val jsonb;
+  op_key text;
+  ops jsonb := '{"gte": {}, "gt": {}, "lte": {}, "lt": {}}';
+  eqs jsonb := '{}';
+  sort_col text := 'created_at';
+  sort_dir text := 'desc';
+  sortable text[];
   st text;
   col text;
 begin
@@ -121,38 +128,86 @@ begin
       end if;
       -- Archived rows only show up when asked for.
       cond := case when (args->>'archived')::boolean then '"archived_at" is not null' else '"archived_at" is null' end;
-      if args ? 'after_ts' or args ? 'after_id' then
-        after_ts := (args->>'after_ts')::timestamptz;
+
+      -- Filters. Field names must be the table's own columns, and every value
+      -- is typed through the table's row type, so nothing a caller sends ends
+      -- up as SQL text.
+      if args ? 'where' then
+        if jsonb_typeof(args->'where') <> 'object' or (select count(*) from jsonb_object_keys(args->'where')) > 10 then
+          return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'where must be an object with up to 10 fields.');
+        end if;
+        for w_key, w_val in select * from jsonb_each(args->'where') loop
+          if not (w_key = any (reg.columns)) then
+            return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'You can only filter on the table''s own fields.');
+          end if;
+          if jsonb_typeof(w_val) = 'object' then
+            if (select count(*) from jsonb_object_keys(w_val)) = 0
+               or exists (select 1 from jsonb_object_keys(w_val) k where k not in ('gte', 'gt', 'lte', 'lt')) then
+              return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'A range filter can use gte, gt, lte and lt.');
+            end if;
+            for op_key in select jsonb_object_keys(w_val) loop
+              if jsonb_typeof(w_val->op_key) not in ('string', 'number') then
+                return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'Range filter values must be numbers or text.');
+              end if;
+              ops := jsonb_set(ops, array[op_key, w_key], w_val->op_key);
+              cond := cond || format(' and %1$I %2$s (select (jsonb_populate_record(null::app.%3$I, $%4$s)).%1$I)',
+                w_key, case op_key when 'gte' then '>=' when 'gt' then '>' when 'lte' then '<=' else '<' end, tbl,
+                case op_key when 'gte' then 6 when 'gt' then 7 when 'lte' then 8 else 9 end);
+            end loop;
+          elsif jsonb_typeof(w_val) in ('string', 'number', 'boolean') then
+            eqs := eqs || jsonb_build_object(w_key, w_val);
+            cond := cond || format(' and %1$I = (select (jsonb_populate_record(null::app.%2$I, $5)).%1$I)', w_key, tbl);
+          else
+            return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'Filter values must be text, numbers or true/false.');
+          end if;
+        end loop;
+      end if;
+
+      -- Sorting: newest first by default. Any field that's always filled in can be used.
+      if args ? 'sort' then
+        sortable := array['created_at', 'updated_at'] || array(
+          select f.key from jsonb_each(reg.spec->'fields') f where (f.value->>'required')::boolean);
+        if jsonb_typeof(args->'sort') <> 'object' or not ((args->'sort'->>'field') = any (sortable))
+           or coalesce(args->'sort'->>'direction', 'desc') not in ('asc', 'desc') then
+          return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message',
+            'You can sort by created_at, updated_at or a required field, asc or desc.');
+        end if;
+        sort_col := args->'sort'->>'field';
+        sort_dir := coalesce(args->'sort'->>'direction', 'desc');
+      end if;
+
+      if args ? 'after' or args ? 'after_id' then
         after_id := (args->>'after_id')::uuid;
-        if after_ts is null or after_id is null or not isfinite(after_ts) then
+        if after_id is null or jsonb_typeof(args->'after') <> 'object' or not (args->'after' ? sort_col) then
           return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'That page cursor is not valid.');
         end if;
-        cond := cond || ' and ("created_at", "id") < ($2, $3)';
+        cond := cond || format(' and (%1$I, "id") %2$s ((select (jsonb_populate_record(null::app.%3$I, $2)).%1$I), $3)',
+          sort_col, case when sort_dir = 'asc' then '>' else '<' end, tbl);
       end if;
 
       if is_admin() then
-        -- Admins see every row: one scan on the newest-first index.
+        -- Admins see every row.
         execute format(
-          'select coalesce(jsonb_agg(to_jsonb(r) order by r."created_at" desc, r."id" desc), ''[]''::jsonb) from (
-             select %s from app.%I where %s order by "created_at" desc, "id" desc limit $1) r',
-          cols, tbl, cond)
-          into result using lim + 1, after_ts, after_id;
+          'select coalesce(jsonb_agg(to_jsonb(r) order by r.%4$I %5$s, r."id" %5$s), ''[]''::jsonb) from (
+             select %1$s from app.%2$I where %3$s order by %4$I %5$s, "id" %5$s limit $1) r',
+          cols, tbl, cond, sort_col, sort_dir)
+          into result using lim + 1, args->'after', after_id, u, eqs, ops->'gte', ops->'gt', ops->'lte', ops->'lt';
       else
-        -- Without a share field: one scan on the owner index. With one: a scan
-        -- on each index, merged, so both stay fast however many rows a user
-        -- can see. Row rules still apply to both.
+        -- Without a share field: one scan on the owner's rows. With one: a scan
+        -- on each side, merged. Row rules still apply to both.
         execute format(
-          'select coalesce(jsonb_agg(to_jsonb(r) order by r."created_at" desc, r."id" desc), ''[]''::jsonb) from (
+          'select coalesce(jsonb_agg(to_jsonb(r) order by r.%5$I %6$s, r."id" %6$s), ''[]''::jsonb) from (
              select %1$s from (
-               (select %1$s from app.%2$I where "owner_id" = $4 and %3$s order by "created_at" desc, "id" desc limit $1)
+               (select %1$s from app.%2$I where "owner_id" = $4 and %3$s order by %5$I %6$s, "id" %6$s limit $1)
                %4$s
-             ) both_sides order by "created_at" desc, "id" desc limit $1
+             ) both_sides order by %5$I %6$s, "id" %6$s limit $1
            ) r',
           cols, tbl, cond,
           case when reg.share_field is null then '' else format(
-            'union (select %1$s from app.%2$I where %3$I = $4 and %4$s order by "created_at" desc, "id" desc limit $1)',
-            cols, tbl, reg.share_field, cond) end)
-          into result using lim + 1, after_ts, after_id, u;
+            'union (select %1$s from app.%2$I where %3$I = $4 and %4$s order by %5$I %6$s, "id" %6$s limit $1)',
+            cols, tbl, reg.share_field, cond, sort_col, sort_dir) end,
+          sort_col, sort_dir)
+          into result using lim + 1, args->'after', after_id, u, eqs, ops->'gte', ops->'gt', ops->'lte', ops->'lt';
       end if;
 
     elsif op in ('archive', 'restore') then
@@ -175,6 +230,14 @@ begin
       select k into bad from unnest(coalesce(keys, '{}')) k where k <> all (reg.writable) limit 1;
       if bad is not null then
         return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'That is not a field you can set.');
+      end if;
+      -- A file field can only point at a file the caller can already see.
+      select k into bad from unnest(coalesce(keys, '{}')) k
+      where reg.spec->'fields'->k->>'type' = 'file' and jsonb_typeof(input->k) <> 'null'
+        and not exists (select 1 from files f where f.id = (input->>k)::uuid)
+      limit 1;
+      if bad is not null then
+        return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'That file doesn''t exist or isn''t yours.');
       end if;
 
       if op = 'create' then

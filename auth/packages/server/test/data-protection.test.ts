@@ -53,11 +53,28 @@ async function signUp(email = `dp${++n}-${Date.now()}@example.com`) {
 const sqlError = (p: Promise<unknown>) => p.then(() => null, (e: any) => ({ code: e.code as string, message: String(e.message) }));
 
 describe('database-enforced ownership', () => {
-  it('every access token carries a session-bound data grant', async () => {
+  it('every access token carries a session-bound data token in the Data block format', async () => {
     const a = await signUp();
     const claims = decodeJwt(a.accessToken);
-    expect(a.grant).toMatch(new RegExp(`^bdg1\\.1\\.${pid}\\.${a.userId}\\.${claims.sid}\\.${claims.exp}\\.[0-9a-f]{64}$`));
+    const [h, p, sig] = a.grant.split('.');
+    expect(JSON.parse(Buffer.from(h!, 'base64url').toString())).toEqual({ alg: 'HS256', typ: 'JWT', kid: 'v1' });
+    const payload = JSON.parse(Buffer.from(p!, 'base64url').toString());
+    expect(payload).toEqual({ sub: a.userId, sid: claims.sid, iat: expect.any(Number), exp: claims.exp, aud: 'authenticated', role: 'authenticated', iss: `https://auth.test/v1/projects/${pid}` });
+    expect(payload.exp - payload.iat).toBeLessThanOrEqual(3600);
+    expect(sig).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(typeof claims.auth_time).toBe('number');
+  });
+
+  it('publishes signing config only to the owning workspace', async () => {
+    const ok = await h.request('GET', `/v1/platform/projects/${pid}/data-protection/signing`, { bearer: PLATFORM_KEY });
+    const body = (await ok.json()) as any;
+    expect(body).toMatchObject({ algorithm: 'HS256', keyVersion: 1, issuer: `https://auth.test/v1/projects/${pid}`, maxTokenSeconds: 3600 });
+    expect(body.secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const a = await signUp();
+    const { createHmac } = await import('node:crypto');
+    const [hh, pp, sig] = a.grant.split('.');
+    expect(createHmac('sha256', body.secret).update(`${hh}.${pp}`).digest('base64url')).toBe(sig);
+    expect((await h.request('GET', `/v1/platform/projects/${pid}/data-protection/signing`, { bearer: PLATFORM_KEY, owner: 'ws_other' })).status).toBe(404);
   });
 
   it('returns only the caller\'s rows, even for queries with no WHERE clause', async () => {
@@ -94,10 +111,13 @@ describe('database-enforced ownership', () => {
   it('rejects tampered, forged-signature, expired and foreign-project grants', async () => {
     const a = await signUp();
     const b = await signUp();
-    const parts = b.grant.split('.');
-    const impersonate = [...parts.slice(0, 3), a.userId, ...parts.slice(4)].join('.');
-    const badSig = [...parts.slice(0, 6), 'f'.repeat(64)].join('.');
-    for (const g of [impersonate, badSig, 'garbage', `${b.grant}x`]) {
+    const [hb, pb, sb] = b.grant.split('.');
+    const payload = JSON.parse(Buffer.from(pb!, 'base64url').toString());
+    const impersonate = `${hb}.${Buffer.from(JSON.stringify({ ...payload, sub: a.userId })).toString('base64url')}.${sb}`;
+    const badSig = `${hb}.${pb}.${'A'.repeat(43)}`;
+    const noneAlg = `${Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT', kid: 'v1' })).toString('base64url')}.${pb}.${sb}`;
+    const nonCanonical = `${hb}.${pb}.${sb!.slice(0, 42)}${sb!.endsWith('A') ? 'B' : 'A'}`;
+    for (const g of [impersonate, badSig, noneAlg, nonCanonical, 'garbage', `${b.grant}x`]) {
       const err = await sqlError(asApp(g, 'SELECT 1'));
       expect(err?.code, g.slice(0, 40)).toBe('28000');
     }
@@ -192,14 +212,15 @@ describe('step-up re-authentication', () => {
   it('refreshes auth_time after the password is re-entered', async () => {
     const a = await signUp();
     const before = decodeJwt(a.accessToken).auth_time as number;
-    h.clock.offsetMs = 300_000;
+    // Within the verifier's 60s clock-skew tolerance (tokens "issued in the future" are rejected).
+    h.clock.offsetMs = 50_000;
     const bad = await h.request('POST', `${base()}/session/reauthenticate`, { bearer: a.accessToken, body: { password: 'wrong-password-1' } });
     expect(bad.status).toBe(401);
     const res = await h.request('POST', `${base()}/session/reauthenticate`, { bearer: a.accessToken, body: { password: GOOD_PASSWORD } });
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     const after = decodeJwt(body.accessToken);
-    expect((after.auth_time as number) - before).toBeGreaterThanOrEqual(300);
+    expect((after.auth_time as number) - before).toBeGreaterThanOrEqual(50);
     expect(after.sid).toBe(decodeJwt(a.accessToken).sid); // same session, new proof
     // The new token's grant works in the app database.
     await asApp(after.bdg as string, `INSERT INTO todos (title) VALUES ('after step-up')`);

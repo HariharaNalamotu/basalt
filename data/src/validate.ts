@@ -20,7 +20,7 @@ export function checkId(id: unknown): string {
   return id.toLowerCase();
 }
 
-function checkValue(table: string, name: string, spec: FieldSpec, value: unknown): unknown {
+export function checkValue(table: string, name: string, spec: FieldSpec, value: unknown): unknown {
   const where = `${table}.${name}`;
 
   if (value === null) {
@@ -55,8 +55,9 @@ function checkValue(table: string, name: string, spec: FieldSpec, value: unknown
       if (typeof value !== 'boolean') bad(`${where} must be true or false.`);
       return value;
     }
+    case 'file':
     case 'user': {
-      if (typeof value !== 'string' || !UUID.test(value)) bad(`${where} must be a user id.`);
+      if (typeof value !== 'string' || !UUID.test(value)) bad(`${where} must be ${spec.type === 'file' ? 'a file id from an upload' : 'a user id'}.`);
       return value.toLowerCase();
     }
     case 'timestamp': {

@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS basalt_auth.keys (
   k_opad      bytea NOT NULL CHECK (length(k_opad) = 64),
   installed_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE basalt_auth.keys ADD COLUMN IF NOT EXISTS issuer text;
 REVOKE ALL ON basalt_auth.keys FROM PUBLIC;
 
 CREATE TABLE IF NOT EXISTS basalt_auth.revoked_sessions (
@@ -42,45 +43,92 @@ CREATE TABLE IF NOT EXISTS basalt_auth.sync_state (
 );
 REVOKE ALL ON basalt_auth.sync_state FROM PUBLIC;
 
-INSERT INTO basalt_auth.keys (version, project_id, k_ipad, k_opad)
-VALUES ({{VERSION}}, '{{PROJECT_ID}}', '\\x{{K_IPAD}}'::bytea, '\\x{{K_OPAD}}'::bytea)
+INSERT INTO basalt_auth.keys (version, project_id, k_ipad, k_opad, issuer)
+VALUES ({{VERSION}}, '{{PROJECT_ID}}', '\\x{{K_IPAD}}'::bytea, '\\x{{K_OPAD}}'::bytea, '{{ISSUER}}')
 ON CONFLICT (version) DO UPDATE SET project_id = EXCLUDED.project_id, k_ipad = EXCLUDED.k_ipad,
-  k_opad = EXCLUDED.k_opad, installed_at = now();
+  k_opad = EXCLUDED.k_opad, issuer = EXCLUDED.issuer, installed_at = now();
 
--- The verified user for this transaction, from the grant in the 'basalt.grant' setting.
--- NULL when no grant is set; raises (SQLSTATE 28000) when a grant is present but invalid.
+CREATE OR REPLACE FUNCTION basalt_auth.b64url_decode(s text) RETURNS bytea
+LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog, pg_temp AS $fn$
+  SELECT decode(rpad(translate(s, '-_', '+/'), ((length(s) + 3) / 4) * 4, '='), 'base64')
+$fn$;
+
+-- True only for the one exact base64url spelling of its bytes (blocks alternate encodings).
+CREATE OR REPLACE FUNCTION basalt_auth.b64url_canonical(s text) RETURNS boolean
+LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog, pg_temp AS $fn$
+  SELECT rtrim(translate(replace(encode(basalt_auth.b64url_decode(s), 'base64'), E'\\n', ''), '+/', '-_'), '=') = s
+$fn$;
+
+-- The verified user for this transaction, from the data token in the 'basalt.grant' setting.
+-- The token is the HS256 JWT Basalt Auth issues (the same one the Data block's basalt.uid()
+-- accepts). NULL when no token is set; raises (SQLSTATE 28000) when a token is present but invalid.
 CREATE OR REPLACE FUNCTION basalt_auth.uid() RETURNS uuid
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $fn$
 DECLARE
-  g      text := current_setting('basalt.grant', true);
-  parts  text[];
-  k      record;
-  mac    bytea;
+  g        text := current_setting('basalt.grant', true);
+  parts    text[];
+  header   jsonb;
+  payload  jsonb;
+  k        record;
+  mac      bytea;
+  -- This statement's start, not the transaction's: an old transaction can't outlive its token.
+  now_s    numeric := extract(epoch FROM statement_timestamp());
+  exp_s    numeric;
+  iat_s    numeric;
 BEGIN
   IF g IS NULL OR g = '' THEN
     RETURN NULL;
   END IF;
-  -- bdg1.<keyVersion>.<projectId>.<userId>.<sessionId>.<expEpoch>.<hmacHex>
-  IF g !~ '^bdg1\\.[0-9]{1,6}\\.prj_[A-Za-z0-9]{1,64}\\.[0-9a-f-]{36}\\.[0-9a-f-]{36}\\.[0-9]{1,12}\\.[0-9a-f]{64}$' THEN
-    RAISE EXCEPTION 'basalt_auth: malformed data grant' USING ERRCODE = '28000';
+  IF length(g) > 4096 OR g !~ '^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{43}$' THEN
+    RAISE EXCEPTION 'basalt_auth: malformed data token' USING ERRCODE = '28000';
   END IF;
   parts := string_to_array(g, '.');
-  SELECT * INTO k FROM basalt_auth.keys WHERE version = parts[2]::integer AND project_id = parts[3];
+  BEGIN
+    IF NOT (basalt_auth.b64url_canonical(parts[1]) AND basalt_auth.b64url_canonical(parts[2]) AND basalt_auth.b64url_canonical(parts[3])) THEN
+      RAISE EXCEPTION 'basalt_auth: malformed data token' USING ERRCODE = '28000';
+    END IF;
+    header := convert_from(basalt_auth.b64url_decode(parts[1]), 'UTF8')::jsonb;
+    payload := convert_from(basalt_auth.b64url_decode(parts[2]), 'UTF8')::jsonb;
+  EXCEPTION WHEN data_exception THEN
+    RAISE EXCEPTION 'basalt_auth: malformed data token' USING ERRCODE = '28000';
+  END;
+  IF jsonb_typeof(header) IS DISTINCT FROM 'object' OR header->>'alg' IS DISTINCT FROM 'HS256' OR header ? 'crit'
+     OR coalesce(header->>'kid', '') !~ '^v[0-9]{1,6}$' THEN
+    RAISE EXCEPTION 'basalt_auth: malformed data token' USING ERRCODE = '28000';
+  END IF;
+  SELECT * INTO k FROM basalt_auth.keys WHERE version = substr(header->>'kid', 2)::integer;
   IF NOT FOUND THEN
-    RAISE EXCEPTION 'basalt_auth: data grant is for another project or an unknown key' USING ERRCODE = '28000';
+    RAISE EXCEPTION 'basalt_auth: data token signed with an unknown key' USING ERRCODE = '28000';
   END IF;
-  mac := sha256(k.k_opad || sha256(k.k_ipad || convert_to(array_to_string(parts[1:6], '.'), 'UTF8')));
-  -- Compare digests of the MACs so the comparison time doesn't depend on a matching prefix.
-  IF sha256(mac) <> sha256(decode(parts[7], 'hex')) THEN
-    RAISE EXCEPTION 'basalt_auth: invalid data grant' USING ERRCODE = '28000';
+  mac := sha256(k.k_opad || sha256(k.k_ipad || convert_to(parts[1] || '.' || parts[2], 'UTF8')));
+  -- Compare digests of the MACs so timing doesn't depend on a matching prefix.
+  IF sha256(mac) <> sha256(basalt_auth.b64url_decode(parts[3])) THEN
+    IF jsonb_typeof(payload) = 'object' AND payload->>'iss' IS DISTINCT FROM k.issuer THEN
+      RAISE EXCEPTION 'basalt_auth: data token is for another project' USING ERRCODE = '28000';
+    END IF;
+    RAISE EXCEPTION 'basalt_auth: invalid data token signature' USING ERRCODE = '28000';
   END IF;
-  IF parts[6]::bigint <= extract(epoch FROM now()) THEN
-    RAISE EXCEPTION 'basalt_auth: data grant expired' USING ERRCODE = '28000';
+  -- Signature verified: the payload below came from Basalt Auth.
+  IF jsonb_typeof(payload) IS DISTINCT FROM 'object'
+     OR jsonb_typeof(payload->'exp') IS DISTINCT FROM 'number' OR jsonb_typeof(payload->'iat') IS DISTINCT FROM 'number'
+     OR coalesce(payload->>'sub', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     OR coalesce(payload->>'sid', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     OR payload->>'aud' IS DISTINCT FROM 'authenticated' OR payload->>'role' IS DISTINCT FROM 'authenticated'
+     OR payload->>'iss' IS DISTINCT FROM k.issuer THEN
+    RAISE EXCEPTION 'basalt_auth: invalid data token claims' USING ERRCODE = '28000';
   END IF;
-  IF EXISTS (SELECT 1 FROM basalt_auth.revoked_sessions WHERE session_id = parts[5]::uuid) THEN
+  exp_s := (payload->'exp')::numeric;
+  iat_s := (payload->'iat')::numeric;
+  IF exp_s <> trunc(exp_s) OR iat_s <> trunc(iat_s) OR exp_s - iat_s > 3600 OR iat_s > now_s + 60 THEN
+    RAISE EXCEPTION 'basalt_auth: invalid data token claims' USING ERRCODE = '28000';
+  END IF;
+  IF exp_s <= now_s THEN
+    RAISE EXCEPTION 'basalt_auth: data token expired' USING ERRCODE = '28000';
+  END IF;
+  IF EXISTS (SELECT 1 FROM basalt_auth.revoked_sessions WHERE session_id = (payload->>'sid')::uuid) THEN
     RAISE EXCEPTION 'basalt_auth: session revoked' USING ERRCODE = '28000';
   END IF;
-  RETURN parts[4]::uuid;
+  RETURN (payload->>'sub')::uuid;
 END
 $fn$;
 
@@ -166,10 +214,12 @@ GRANT EXECUTE ON FUNCTION basalt_auth.uid(), basalt_auth.authenticate(text),
 COMMIT;
 `;
 
-export function renderDataProtectionSql(input: { projectId: string; version: number; kIpad: Buffer; kOpad: Buffer }) {
+export function renderDataProtectionSql(input: { projectId: string; version: number; kIpad: Buffer; kOpad: Buffer; issuer: string }) {
   if (!/^prj_[A-Za-z0-9]+$/.test(input.projectId) || !Number.isInteger(input.version)) throw new Error('bad input');
+  if (!/^https?:\/\/[A-Za-z0-9.:/_-]+$/.test(input.issuer)) throw new Error('bad issuer');
   return DATA_PROTECTION_SQL_TEMPLATE.replace('{{PROJECT_ID}}', input.projectId)
     .replace('{{VERSION}}', String(input.version))
     .replace('{{K_IPAD}}', input.kIpad.toString('hex'))
-    .replace('{{K_OPAD}}', input.kOpad.toString('hex'));
+    .replace('{{K_OPAD}}', input.kOpad.toString('hex'))
+    .replace('{{ISSUER}}', input.issuer);
 }

@@ -31,6 +31,22 @@ create table if not exists basalt.revocations (
 alter table basalt.revocations owner to :"owner_role";
 revoke all on basalt.revocations from public;
 
+-- Sessions ended early (sign out, password change, theft detection), synced from Basalt Auth's
+-- revocation feed. A token carrying one of these session ids stops working right away.
+create table if not exists basalt.revoked_sessions (
+  sid uuid primary key,
+  revoked_at timestamptz not null
+);
+alter table basalt.revoked_sessions owner to :"owner_role";
+revoke all on basalt.revoked_sessions from public;
+
+create table if not exists basalt.revocation_sync (
+  id int primary key default 1 check (id = 1),
+  synced_to timestamptz
+);
+alter table basalt.revocation_sync owner to :"owner_role";
+revoke all on basalt.revocation_sync from public;
+
 create or replace function basalt.b64url_decode(s text) returns bytea
 language sql immutable strict
 set search_path = pg_catalog, pg_temp
@@ -158,6 +174,17 @@ begin
     return null;
   end if;
 
+  -- Tokens from Basalt Auth name their session. A malformed one is refused; a revoked one too.
+  if payload ? 'sid' then
+    if jsonb_typeof(payload->'sid') is distinct from 'string'
+       or (payload->>'sid') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+      return null;
+    end if;
+    if exists (select 1 from basalt.revoked_sessions s where s.sid = (payload->>'sid')::uuid) then
+      return null;
+    end if;
+  end if;
+
   perform set_config(
     'basalt.verified',
     u::text || '|' || exp_s::bigint::text || '|' ||
@@ -222,6 +249,35 @@ $$;
 alter function basalt.revoke_user(uuid) owner to :"owner_role";
 revoke execute on function basalt.revoke_user(uuid) from public;
 
+-- For the platform (superuser): record sessions Basalt Auth revoked. Only ever adds
+-- revocations, and forgets them once no token from that session can still be valid.
+create or replace function basalt.record_revocations(sids uuid[], revoked_ats timestamptz[], synced_to timestamptz)
+returns void
+language plpgsql volatile security definer
+set search_path = pg_catalog, basalt, pg_temp
+as $$
+declare
+  keep interval;
+begin
+  insert into revoked_sessions (sid, revoked_at)
+  select * from unnest(sids, revoked_ats)
+  on conflict (sid) do nothing;
+  select make_interval(secs => max_token_seconds) + interval '10 minutes' into keep from settings where id = 1;
+  delete from revoked_sessions where revoked_at < clock_timestamp() - coalesce(keep, interval '2 hours');
+  insert into revocation_sync (id, synced_to) values (1, synced_to)
+  on conflict (id) do update set synced_to = greatest(revocation_sync.synced_to, excluded.synced_to);
+end
+$$;
+alter function basalt.record_revocations(uuid[], timestamptz[], timestamptz) owner to :"owner_role";
+revoke execute on function basalt.record_revocations(uuid[], timestamptz[], timestamptz) from public;
+
+create or replace function basalt.revocations_synced_to() returns timestamptz
+language sql stable security definer
+set search_path = pg_catalog, basalt, pg_temp
+as $$ select synced_to from revocation_sync where id = 1 $$;
+alter function basalt.revocations_synced_to() owner to :"owner_role";
+revoke execute on function basalt.revocations_synced_to() from public;
+
 -- Per user, per minute usage, shared by every Data service instance.
 -- Unlogged: it's a counter, so it skips the write ahead log and stays fast.
 create unlogged table if not exists basalt.usage (
@@ -250,5 +306,4 @@ alter function basalt.prune_usage() owner to :"owner_role";
 revoke execute on function basalt.prune_usage() from public;
 
 -- Removed in this version. Upgrades drop them so nothing old lingers.
-drop function if exists basalt.charge(text, int, int);
 drop function if exists basalt.login(text, int, int);

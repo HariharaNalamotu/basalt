@@ -8,6 +8,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { scanFolder } from './scan.ts';
 
 const BASALT_URL = (process.env.BASALT_URL ?? 'http://127.0.0.1:8790').replace(/\/+$/, '');
 const DIR = process.env.BASALT_PROJECT_DIR ?? process.cwd();
@@ -58,7 +59,7 @@ function need(): Saved {
 
 const CONTRACT_HELP = `The rules are a JSON object: { "tables": { "<table>": { "fields": { "<field>": { "type": ..., ... } }, "shareWith": "<field>"? } } }.
 Names: lowercase letters, numbers and underscores, starting with a letter (like "bookings", "starts_at").
-Field types: "text" (maxLength 1 to 10000, default 1000; optional "format": "email" | "phone" | "url" | "postal_code" | "slug"), "integer" and "number" (optional "min", "max"), "boolean", "timestamp" (ISO date and time) and "user" (another person's user id).
+Field types: "text" (maxLength 1 to 10000, default 1000; optional "format": "email" | "phone" | "url" | "postal_code" | "slug"), "integer" and "number" (optional "min", "max"), "boolean", "timestamp" (ISO date and time), "user" (another person's user id) and "file" (an uploaded photo or document).
 Add "required": true for fields that must always be filled in.
 Every row automatically gets id, owner_id (who added it), created_at and updated_at. Don't add those.
 Each person only ever sees and changes the rows they added. To let one other person read a row (like the staff member assigned to a booking), add a "user" field and set "shareWith" to its name. They can read it but never change it.
@@ -69,12 +70,19 @@ function clientCode(dataUrl: string): string {
   return `// basalt.js: the only way this app reads or saves data. Don't store app data anywhere else.
 const BASALT_URL = ${JSON.stringify(dataUrl)};
 
-// getToken returns the signed in person's login token.
+// Logins come from Basalt Auth.
+// - In the browser of an app hosted on Basalt: call basalt() with no arguments. The data API is
+//   on the app's own site (/_basalt/data) and the signed-in session cookie is sent automatically,
+//   so page code never holds a login token.
+// - On a server (your backend): basalt(() => auth.dataGrant(user)) with the signed-in user's token.
 export function basalt(getToken) {
+  const base = getToken ? BASALT_URL : '/_basalt/data';
   async function call(op, body) {
-    const res = await fetch(\`\${BASALT_URL}/v1/data/\${op}\`, {
+    const token = getToken ? await getToken() : null;
+    const res = await fetch(\`\${base}\${op.startsWith('/') ? op : '/v1/data/' + op}\`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: \`Bearer \${await getToken()}\` },
+      headers: { 'content-type': 'application/json', ...(token ? { authorization: \`Bearer \${token}\` } : {}) },
+      credentials: token ? 'omit' : 'same-origin',
       body: JSON.stringify(body),
     });
     const json = await res.json();
@@ -87,7 +95,9 @@ export function basalt(getToken) {
   }
   return {
     get: (table, id) => call('get', { table, id }),
-    // Newest first. Pass { after: page.next } to get the next page.
+    // Newest first. Options: { limit, after: page.next, archived: true,
+    //   where: { service: 'Color', starts_at: { gte: '2026-11-06T00:00:00Z', lt: '2026-11-07T00:00:00Z' } },
+    //   sort: { field: 'starts_at', direction: 'asc' } } (sort by any required field).
     list: (table, options = {}) => call('list', { table, ...options }),
     // Pass { key } (for example an order number) so a retry never saves twice.
     create: (table, input, options = {}) => call('create', { table, input, ...options }),
@@ -96,6 +106,25 @@ export function basalt(getToken) {
     // booking) and restore brings it back. list(table, { archived: true }) shows archived ones.
     archive: (table, id) => call('archive', { table, id }),
     restore: (table, id) => call('restore', { table, id }),
+    // Uploads a File from an <input type="file">. PNG, JPEG, GIF, WebP, PDF,
+    // plain text and CSV, up to 5 MB. Save the returned id in a "file" field.
+    async upload(file) {
+      const token = getToken ? await getToken() : null;
+      const res = await fetch(\`\${base}/v1/files\`, {
+        method: 'POST',
+        headers: { 'content-type': file.type, 'x-file-name': encodeURIComponent(file.name), ...(token ? { authorization: \`Bearer \${token}\` } : {}) },
+        credentials: token ? 'omit' : 'same-origin',
+        body: file,
+      });
+      const json = await res.json();
+      if (!json.ok) { const err = new Error(json.error.message); err.code = json.error.code; throw err; }
+      return json.data;
+    },
+    // A link to show or download a file (works in <img src>). Good for 5 minutes.
+    async fileUrl(id) {
+      const { path } = await call('/v1/files/link', { id });
+      return base + path;
+    },
   };
 }
 `;
@@ -125,7 +154,7 @@ const TOOLS = [
   {
     name: 'basalt_connect_app',
     description:
-      "Returns the code the app uses to read and save data (a small basalt.js file), plus how to use it. Use it for every read and save. Never store app data in localStorage, files, another database or anywhere else, and never write SQL. Every call needs the signed in person's login token. Until the app has real sign in, use basalt_test_login tokens to try it.",
+      "Returns the code the app uses to read and save data (a small basalt.js file), plus how to use it. Use it for every read and save. Never store app data in localStorage, files, another database or anywhere else, and never write SQL. Logins come from Basalt Auth: in a Basalt-hosted app the browser calls basalt() with no token (the session cookie is used, never a token in page code); a backend passes the signed-in user's data token. To try it before sign in exists, use basalt_test_login tokens from a script or backend.",
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -136,8 +165,14 @@ const TOOLS = [
   },
   {
     name: 'basalt_test_login',
-    description: 'Gives a login token for a pretend person, so you can try the app as them. Use two different names to check that one person can never see the other\'s data. Tokens last one hour.',
+    description: 'Signs in as a test person (a real Basalt Auth account made for this app, the same person every time for the same name) and returns their login token, so you can try the app as them. Use two different names to check that one person can never see the other\'s data. Tokens last about ten minutes; ask again for a fresh one.',
     inputSchema: { type: 'object', properties: { who: { type: 'string', description: 'A name for the pretend person, like "maria" or "customer two".' } }, required: ['who'] },
+  },
+  {
+    name: 'basalt_check',
+    description:
+      "Runs Basalt's safety check before the app goes live, and again after any change to how it saves data. It looks through this app's folder for data kept anywhere other than Basalt, then signs in to this app as two pretend people and a stranger and tries to reach data that isn't theirs. Fix anything it finds, run it again, and give the person the safety receipt link.",
+    inputSchema: { type: 'object', properties: {} },
   },
 ];
 
@@ -162,7 +197,7 @@ async function callTool(name: string, args: Record<string, any>): Promise<string
       const s = need();
       const out = await api('GET', '/api/projects/me', undefined, s.adminKey);
       const p = out.project;
-      if (p.status === 'live') return `Live. Rules in plain English:\n${p.rules}${p.waitingForOwner ? '\n\nA newer change is still waiting for the person to approve it.' : ''}`;
+      if (p.status === 'live') return `Live. Rules in plain English:\n${p.rules}${p.waitingForOwner ? '\n\nA newer change is still waiting for the person to approve it.' : ''}\n\nThe owner can see where everything lives and who can reach it on their data map (share this link only with them):\n${p.mapUrl}`;
       if (p.status === 'waiting_for_owner') return 'Waiting for the person to open the approval link and tap "Yes". If they lost it, call basalt_set_rules again for a fresh link.';
       return 'No rules yet. Ask the person the plain questions, then call basalt_set_rules.';
     }
@@ -170,7 +205,7 @@ async function callTool(name: string, args: Record<string, any>): Promise<string
       const s = need();
       const out = await api('GET', '/api/projects/me', undefined, s.adminKey);
       if (out.project.status !== 'live') return 'The rules aren\'t live yet. Finish basalt_set_rules (and the person\'s approval) first.';
-      return `Save this as basalt.js in the app and use it for all data:\n\n${clientCode(s.dataUrl)}\nUse it like:\n  import { basalt } from './basalt.js';\n  const db = basalt(() => currentUserToken);\n  const booking = await db.create('bookings', { service: 'Haircut', starts_at: '2026-10-25T15:00:00Z' });\n  const page = await db.list('bookings', { limit: 20 });\n  await db.archive('bookings', booking.id); // cancel, can be restored\n\nAdmins (see basalt_make_admin) get every row from list, not just their own.\n\nThe rules in plain English:\n${out.project.rules}\n\nIf a call fails, err.message says why in plain words and err.code says what kind of problem it is.`;
+      return `Save this as basalt.js in the app and use it for all data:\n\n${clientCode(s.dataUrl)}\nUse it like:\n  import { basalt } from './basalt.js';\n  const db = basalt();   // in the browser of a Basalt-hosted app; on a server: basalt(() => token)\n  const booking = await db.create('bookings', { service: 'Haircut', starts_at: '2026-10-25T15:00:00Z' });\n  const page = await db.list('bookings', { limit: 20 });\n  await db.archive('bookings', booking.id); // cancel, can be restored\n\nAdmins (see basalt_make_admin) get every row from list, not just their own.\n\nThe rules in plain English:\n${out.project.rules}\n\nIf a call fails, err.message says why in plain words and err.code says what kind of problem it is.\n\nWhen the app works, run basalt_check before it goes live.`;
     }
     case 'basalt_make_admin': {
       const s = need();
@@ -180,7 +215,23 @@ async function callTool(name: string, args: Record<string, any>): Promise<string
     case 'basalt_test_login': {
       const s = need();
       const out = await api('POST', '/api/projects/me/test-login', { who: String(args.who ?? 'test person') }, s.adminKey);
-      return `Test login for "${out.who}" (user id ${out.userId}), good for one hour:\n${out.token}`;
+      return `Test login for "${out.who}" (user id ${out.userId}), good for ${Math.round(out.expiresInSeconds / 60)} minutes:\n${out.token}`;
+    }
+    case 'basalt_check': {
+      const s = need();
+      const scan = scanFolder(DIR);
+      const out = await api('POST', '/api/projects/me/check', { scan }, s.adminKey);
+      const failed = out.results.filter((r: any) => !r.passed);
+      const lines = [`${out.passed} of ${out.results.length} checks passed.`];
+      for (const r of failed) lines.push(`PROBLEM, ${r.title}${r.table ? ` (${r.table})` : ''}: ${r.detail}`);
+      if (scan.length) {
+        lines.push('', 'Data kept outside Basalt (fix each one, then run basalt_check again):');
+        for (const f of scan) lines.push(`- ${f.file || 'App folder'}${f.line ? `, line ${f.line}` : ''}: ${f.problem} Fix: ${f.fix}`);
+      } else {
+        lines.push('No data is kept outside Basalt.');
+      }
+      lines.push('', `Safety receipt for the person (share it only with them):\n${out.receiptUrl}`);
+      return lines.join('\n');
     }
   }
   throw new Error(`Unknown tool ${name}.`);

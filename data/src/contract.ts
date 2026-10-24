@@ -5,7 +5,8 @@ import { BasaltError } from './errors.ts';
 // so it's treated as untrusted input and checked strictly here.
 
 // 'user' holds another user's id, for sharing a row with them (see shareWith).
-export type FieldType = 'text' | 'integer' | 'number' | 'boolean' | 'timestamp' | 'user';
+// 'file' holds the id of an uploaded file (see sql/05_files.sql).
+export type FieldType = 'text' | 'integer' | 'number' | 'boolean' | 'timestamp' | 'user' | 'file';
 
 // Free-form regexes from the contract could be crafted to hang the server, so
 // text fields pick from a fixed set of formats instead. Each pattern runs in
@@ -45,7 +46,7 @@ export const SYSTEM_COLUMNS = ['id', 'owner_id', 'created_at', 'updated_at', 'ar
 export const HIDDEN_COLUMNS = ['request_key'] as const;
 
 const NAME = /^[a-z][a-z0-9_]{0,40}$/;
-const TYPES: readonly FieldType[] = ['text', 'integer', 'number', 'boolean', 'timestamp', 'user'];
+const TYPES: readonly FieldType[] = ['text', 'integer', 'number', 'boolean', 'timestamp', 'user', 'file'];
 const MAX_TABLES = 50;
 const MAX_FIELDS = 60;
 const DEFAULT_MAX_LENGTH = 1000;

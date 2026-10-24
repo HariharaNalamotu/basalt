@@ -3,16 +3,20 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { pg } from '../../data/src/index.ts';
+import { AuthLink } from '../src/auth.ts';
 import { Projects } from '../src/projects.ts';
 import { createCloudServer } from '../src/server.ts';
+import { startAuth } from './auth-server.ts';
 
-const projects = new Projects({ adminUrl: process.env.CLOUD_ADMIN_URL!, dbHost: process.env.CLOUD_DB_HOST!, masterKey: process.env.CLOUD_MASTER_KEY! });
+let authServer: Awaited<ReturnType<typeof startAuth>>;
+let auth: AuthLink;
+let projects: Projects;
 let base: string;
 let cloud: ReturnType<typeof createCloudServer>;
 
@@ -75,13 +79,16 @@ async function data(dataUrl: string, token: string, op: string, body: unknown) {
 }
 
 before(async () => {
+  authServer = await startAuth(process.env.CLOUD_ADMIN_URL!);
+  auth = new AuthLink({ url: authServer.url, platformKey: authServer.platformKey, masterKey: process.env.CLOUD_MASTER_KEY! });
+  projects = new Projects({ adminUrl: process.env.CLOUD_ADMIN_URL!, dbHost: process.env.CLOUD_DB_HOST!, masterKey: process.env.CLOUD_MASTER_KEY! }, auth);
   await projects.init();
-  cloud = createCloudServer({ projects, publicUrl: 'http://placeholder', projectsPerIpPerHour: 1000 });
+  cloud = createCloudServer({ projects, auth, publicUrl: 'http://placeholder', projectsPerIpPerHour: 1000 });
   await new Promise<void>((r) => cloud.server.listen(0, '127.0.0.1', () => r()));
   base = `http://127.0.0.1:${(cloud.server.address() as AddressInfo).port}`;
   // Links in replies use the public URL; point it at the test server.
   cloud.server.close();
-  cloud = createCloudServer({ projects, publicUrl: base, projectsPerIpPerHour: 1000 });
+  cloud = createCloudServer({ projects, auth, publicUrl: base, projectsPerIpPerHour: 1000 });
   await new Promise<void>((r) => cloud.server.listen(Number(new URL(base).port), '127.0.0.1', () => r()));
 });
 
@@ -89,6 +96,58 @@ after(async () => {
   await cloud.close();
   await new Promise((r) => cloud.server.close(r));
   await projects.close();
+  await authServer.close();
+});
+
+describe('logins come from Basalt Auth', () => {
+  test('test logins are real Auth users and sessions, the same person every time', async () => {
+    const app = await liveApp();
+    const maria = await login(app.key, 'maria');
+    const again = await login(app.key, 'maria');
+    const sam = await login(app.key, 'sam');
+    assert.equal(maria.userId, again.userId);
+    assert.notEqual(maria.userId, sam.userId);
+    const p = (await projects.get(app.id))!;
+    const users = await (await fetch(`${authServer.url}/v1/platform/projects/${p.authProjectId}/users?email=maria@test.basalt.invalid`, {
+      headers: { authorization: `Bearer ${authServer.platformKey}`, 'x-basalt-owner': 'basalt-cloud' },
+    })).json();
+    assert.equal(users.users[0].id, maria.userId);
+    const made = await data(app.dataUrl, maria.token, 'create', { table: 'bookings', input: { service: 'Cut', starts_at: '2026-10-25T15:00:00Z' } });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    assert.equal(made.body.data.owner_id, maria.userId);
+    const theirs = await data(app.dataUrl, sam.token, 'get', { table: 'bookings', id: made.body.data.id });
+    assert.equal(theirs.status, 404);
+  });
+
+  test("the database checks Auth's issuer and signature: tokens from another app or self-made ones are refused", async () => {
+    const one = await liveApp();
+    const two = await liveApp();
+    const fromTwo = await login(two.key, 'maria');
+    assert.equal((await data(one.dataUrl, fromTwo.token, 'list', { table: 'bookings' })).status, 401);
+    const { createHmac } = await import('node:crypto');
+    const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const now = Math.floor(Date.now() / 1000);
+    const unsigned = `${enc({ alg: 'HS256', typ: 'JWT' })}.${enc({ sub: fromTwo.userId, aud: 'authenticated', role: 'authenticated', iat: now, exp: now + 600 })}`;
+    const selfMade = `${unsigned}.${createHmac('sha256', 'not-the-secret-not-the-secret-0123456789').update(unsigned).digest('base64url')}`;
+    assert.equal((await data(one.dataUrl, selfMade, 'list', { table: 'bookings' })).status, 401);
+  });
+
+  test('signing out everywhere in Auth stops the token in the database after a sync', async () => {
+    const app = await liveApp();
+    const maria = await login(app.key, 'maria-revoke');
+    assert.equal((await data(app.dataUrl, maria.token, 'list', { table: 'bookings' })).status, 200);
+    const p = (await projects.get(app.id))!;
+    const r = await fetch(`${authServer.url}/v1/platform/projects/${p.authProjectId}/users/${maria.userId}/revoke-sessions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${authServer.platformKey}`, 'x-basalt-owner': 'basalt-cloud', 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(r.status, 200);
+    assert.ok((await projects.syncRevocations(p)) >= 1);
+    assert.equal((await data(app.dataUrl, maria.token, 'list', { table: 'bookings' })).status, 401);
+    // Running the sync again is harmless.
+    await projects.syncRevocations(p);
+  });
 });
 
 describe('a new app', () => {
@@ -223,6 +282,40 @@ describe('the owner as admin', () => {
   });
 });
 
+describe("the owner's data map", () => {
+  test('shows where data lives, who can reach it and marks personal info, with live counts', async () => {
+    const app = await liveApp();
+    const maria = await login(app.key, 'maria');
+    await data(app.dataUrl, maria.token, 'create', { table: 'bookings', input: { service: 'Color', starts_at: '2026-10-25T15:00:00Z', phone: '+1 413 555 0100' } });
+    const status = (await call('GET', '/api/projects/me', undefined, app.key)).body.project;
+    const res = await fetch(status.mapUrl);
+    const html = await res.text();
+    assert.equal(res.status, 200);
+    assert.match(html, /Where Test salon/);
+    assert.match(html, /The AI that built it/);
+    assert.match(html, /no key/);
+    assert.match(html, /class="pii">phone/);
+    assert.match(html, /1 saved/);
+    assert.match(html, /a new booking was added/);
+    assert.ok(!html.includes('+1 413 555 0100'), 'the map must never show anyone\'s data');
+    // The same link keeps working.
+    assert.equal((await call('GET', '/api/projects/me', undefined, app.key)).body.project.mapUrl, status.mapUrl);
+  });
+
+  test('a wrong key shows nothing', async () => {
+    const app = await liveApp();
+    const res = await fetch(`${base}/owner/${app.id}?k=${'x'.repeat(43)}`);
+    assert.equal(res.status, 404);
+  });
+});
+
+describe('many people starting apps at once', () => {
+  test('apps made at the same moment all get set up', async () => {
+    const made = await Promise.all(Array.from({ length: 5 }, (_, i) => call('POST', '/api/projects', { name: `Rush ${i}` })));
+    assert.deepEqual(made.map((r) => r.status), [201, 201, 201, 201, 201], JSON.stringify(made.map((r) => r.body)));
+  });
+});
+
 describe('apps are walled off from each other', () => {
   test("one app's key can't manage another, and its database login can't open another's database", async () => {
     const a = await liveApp();
@@ -232,7 +325,9 @@ describe('apps are walled off from each other', () => {
     const crossUrl = projects.dataUrl(pa).replace(`/app_${a.id}`, `/app_${b.id}`);
     const c = new pg.Client({ connectionString: crossUrl });
     await assert.rejects(c.connect());
-    assert.notEqual(pa.jwtSecret, pb.jwtSecret);
+    // Each app has its own Auth project and therefore its own token signing secret.
+    assert.notEqual(pa.authProjectId, pb.authProjectId);
+    assert.notEqual((await auth.signing(pa.authProjectId!)).secret, (await auth.signing(pb.authProjectId!)).secret);
 
     // A token from app A means nothing in app B.
     const maria = await login(a.key, 'maria');
@@ -311,7 +406,7 @@ describe('the MCP server Claude Code uses', () => {
       assert.equal(init.result.serverInfo.name, 'basalt');
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
       const names = (await rpc('tools/list')).result.tools.map((t: any) => t.name);
-      assert.deepEqual(names, ['basalt_start', 'basalt_set_rules', 'basalt_status', 'basalt_connect_app', 'basalt_make_admin', 'basalt_test_login']);
+      assert.deepEqual(names, ['basalt_start', 'basalt_set_rules', 'basalt_status', 'basalt_connect_app', 'basalt_make_admin', 'basalt_test_login', 'basalt_check']);
 
       assert.match((await tool('basalt_status')).text, /call basalt_start first/i);
       assert.match((await tool('basalt_start', { app_name: "Maria's Salon" })).text, /locked down database/);
@@ -328,7 +423,15 @@ describe('the MCP server Claude Code uses', () => {
       const connect = await tool('basalt_connect_app');
       assert.match(connect.text, /export function basalt\(getToken\)/);
       const login1 = await tool('basalt_test_login', { who: 'maria' });
-      assert.match(login1.text, /good for one hour/);
+      assert.match(login1.text, /good for \d+ minutes/);
+
+      // The check scans this folder for data kept outside Basalt, then tests the live app.
+      writeFileSync(join(dir, 'app.js'), "localStorage.setItem('bookings', JSON.stringify(list));\n");
+      const check = await tool('basalt_check');
+      assert.equal(check.isError, false, check.text);
+      assert.match(check.text, /checks passed/);
+      assert.match(check.text, /app\.js, line 1/);
+      assert.match(check.text, /owner\/[a-z0-9]{10}\/check\?k=/);
 
       const bad = await tool('basalt_set_rules', { rules: { tables: {} } });
       assert.equal(bad.isError, true);
@@ -336,5 +439,128 @@ describe('the MCP server Claude Code uses', () => {
     } finally {
       child.kill();
     }
+  });
+});
+
+describe('the hosting platform API', () => {
+  test('makes a database bound to an existing Auth project, only for the platform key and never from the internet', async () => {
+    const platformKey = 'p'.repeat(64);
+    const host = createCloudServer({ projects, auth, platformKey, publicUrl: 'http://placeholder', trustProxy: true });
+    await new Promise<void>((r) => host.server.listen(0, '127.0.0.1', () => r()));
+    const url = `http://127.0.0.1:${(host.server.address() as AddressInfo).port}`;
+    try {
+      const { projectId } = await auth.createProject('Hosted env');
+      const make = (key: string, headers: Record<string, string> = {}) =>
+        fetch(`${url}/api/platform/projects`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${key}`, ...headers },
+          body: JSON.stringify({ name: 'Hosted env', authProjectId: projectId, authOwner: auth.defaultOwner }),
+        });
+      assert.equal((await make('wrong')).status, 401);
+      // Through the edge (which always sets X-Forwarded-For) the platform API doesn't exist.
+      assert.equal((await make(platformKey, { 'x-forwarded-for': '203.0.113.9' })).status, 404);
+      const ok = await make(platformKey);
+      assert.equal(ok.status, 201);
+      assert.match((await ok.json()).project.id, /^[a-z0-9]{10}$/);
+    } finally {
+      await host.close();
+      await new Promise((r) => host.server.close(r));
+    }
+  });
+});
+
+describe('hosted environments on the platform API', () => {
+  const platformKey = 'q'.repeat(64);
+  let host: ReturnType<typeof createCloudServer>;
+  let url: string;
+  before(async () => {
+    // Port picked first so Guard can be told to call the server directly (selfUrl).
+    const probe = createCloudServer({ projects, auth, publicUrl: 'http://x' });
+    await new Promise<void>((r) => probe.server.listen(0, '127.0.0.1', () => r()));
+    const port = (probe.server.address() as AddressInfo).port;
+    await new Promise((r) => probe.server.close(r));
+    url = `http://127.0.0.1:${port}`;
+    host = createCloudServer({ projects, auth, platformKey, publicUrl: 'https://cloud.example.com', selfUrl: url, trustProxy: true });
+    await new Promise<void>((r) => host.server.listen(port, '127.0.0.1', () => r()));
+  });
+  after(async () => {
+    await host.close();
+    await new Promise((r) => host.server.close(r));
+  });
+  const make = (authProjectId: string, externalId: string) =>
+    fetch(`${url}/api/platform/projects`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${platformKey}` },
+      body: JSON.stringify({ name: 'Env', authProjectId, authOwner: auth.defaultOwner, externalId }),
+    }).then(async (r) => ({ status: r.status, body: (await r.json()) as any }));
+
+  test('asking twice for the same environment returns the same database, with a fresh key', async () => {
+    const { projectId } = await auth.createProject('Env');
+    const a = await make(projectId, 'env_same1');
+    const b = await make(projectId, 'env_same1');
+    assert.equal(a.status, 201);
+    assert.equal(b.body.project.id, a.body.project.id);
+    assert.notEqual(b.body.adminKey, a.body.adminKey);
+    const me = (key: string) => fetch(`${url}/api/projects/me`, { headers: { authorization: `Bearer ${key}` } }).then((r) => r.status);
+    assert.equal(await me(b.body.adminKey), 200);
+    assert.equal(await me(a.body.adminKey), 401);
+  });
+
+  test('a burst of retries for one environment neither hangs nor makes a second database', async () => {
+    const { projectId } = await auth.createProject('Env');
+    const all = await Promise.all(Array.from({ length: 8 }, () => make(projectId, 'env_burst1')));
+    assert.deepEqual([...new Set(all.map((r) => r.status))], [201]);
+    assert.equal(new Set(all.map((r) => r.body.project.id)).size, 1);
+  });
+
+  test('a retry tied to a different Auth project is refused instead of reusing the old database', async () => {
+    const first = await auth.createProject('Env');
+    const second = await auth.createProject('Env again');
+    assert.equal((await make(first.projectId, 'env_rebind1')).status, 201);
+    const r = await make(second.projectId, 'env_rebind1');
+    assert.equal(r.status, 409);
+  });
+
+  test('an environment can be deleted by its id even if its project id was never recorded', async () => {
+    const { projectId } = await auth.createProject('Env');
+    const made = await make(projectId, 'env_lost1');
+    const del = () => fetch(`${url}/api/platform/environments/env_lost1`, { method: 'DELETE', headers: { authorization: `Bearer ${platformKey}` } }).then((r) => r.status);
+    assert.equal(await del(), 200);
+    assert.equal(await projects.get(made.body.project.id), null);
+    assert.equal(await del(), 404);
+  });
+
+  test("Guard checks a hosted environment's data directly, not through Cloud's public address", async () => {
+    const { projectId } = await auth.createProject('Env');
+    const made = await make(projectId, 'env_guard1');
+    await fetch(`${url}/api/platform/projects/${made.body.project.id}/rules`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${platformKey}` },
+      body: JSON.stringify({ contract: { tables: { notes: { fields: { text: { type: 'text' } } } } } }),
+    });
+    const r = await fetch(`${url}/api/projects/me/check`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${made.body.adminKey}` }, body: '{}' });
+    const body = (await r.json()) as any;
+    assert.equal(r.status, 200, JSON.stringify(body));
+    assert.equal(body.failed, 0, JSON.stringify(body.results));
+  });
+
+  test("a hosted environment's data is only served on the app's own site, not on Cloud's public address", async () => {
+    const { projectId } = await auth.createProject('Env');
+    const made = await make(projectId, 'env_public1');
+    const id = made.body.project.id;
+    await fetch(`${url}/api/platform/projects/${id}/rules`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${platformKey}` },
+      body: JSON.stringify({ contract: { tables: { notes: { fields: { text: { type: 'text' } } } } } }),
+    });
+    const list = (forwardedHost: string) =>
+      fetch(`${url}/p/${id}/v1/data/list`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer a.b.c', 'x-forwarded-for': '203.0.113.9', 'x-forwarded-host': forwardedHost },
+        body: '{"table":"notes"}',
+      }).then((r) => r.status);
+    assert.equal(await list('cloud.example.com'), 404);
+    // Through the app's own site the request reaches the Data service (and fails on the bad token there).
+    assert.equal(await list('todo.example.com'), 401);
   });
 });

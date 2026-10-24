@@ -1,0 +1,19 @@
+# Local testing without Cloudflare: publish the edge and control API on loopback only.
+services:
+  edge:
+    ports: ["127.0.0.1:8080:8080"]
+    environment:
+      TRUSTED_PROXIES: ""
+    networks:
+      outbound: {}
+  control:
+    ports: ["127.0.0.1:4000:4000"]
+    environment:
+      # This development VM has 4 GB; production machines use the defaults.
+      BUILD_MEMORY_MB: "1024"
+      TEST_MEMORY_MB: "1024"
+      MAX_CONCURRENT_BUILDS: "1"
+  cloud:
+    environment:
+      # Owner pages (approvals, data map, safety receipt) through the local edge.
+      PUBLIC_URL: http://cloud.${ROOT_DOMAIN}:8080

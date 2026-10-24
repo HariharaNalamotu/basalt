@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import pg from 'pg';
@@ -439,6 +440,72 @@ describe('sharing and paging together', () => {
   });
 });
 
+describe('filters and sorting', () => {
+  const day = (d: number, h: number) => `2026-11-${String(d).padStart(2, '0')}T${String(h).padStart(2, '0')}:00:00Z`;
+  let t: string;
+
+  before(async () => {
+    t = userToken(randomUUID());
+    await db.create(t, 'bookings', { service: 'Color', starts_at: day(6, 15), party_size: 2 });
+    await db.create(t, 'bookings', { service: 'Haircut', starts_at: day(6, 10), party_size: 1 });
+    await db.create(t, 'bookings', { service: 'Color', starts_at: day(7, 9), party_size: 3 });
+    await db.create(t, 'bookings', { service: 'Trim', starts_at: day(8, 12), party_size: 1 });
+  });
+
+  test('equal-to filter', async () => {
+    const { rows } = await db.list(t, 'bookings', { where: { service: 'Color' } });
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((r) => r.service === 'Color'));
+  });
+
+  test('range filter, like bookings on one day', async () => {
+    const { rows } = await db.list(t, 'bookings', { where: { starts_at: { gte: day(6, 0), lt: day(7, 0) } } });
+    assert.deepEqual(rows.map((r) => r.service).sort(), ['Color', 'Haircut']);
+  });
+
+  test('filters combine', async () => {
+    const { rows } = await db.list(t, 'bookings', { where: { service: 'Color', party_size: { gte: 3 } } });
+    assert.equal(rows.length, 1);
+  });
+
+  test('sort by a field, both directions, and page through without repeats', async () => {
+    const asc = await db.list(t, 'bookings', { sort: { field: 'starts_at', direction: 'asc' }, limit: 100 });
+    assert.deepEqual(asc.rows.map((r) => r.service), ['Haircut', 'Color', 'Color', 'Trim']);
+    const desc = await db.list(t, 'bookings', { sort: { field: 'starts_at', direction: 'desc' }, limit: 100 });
+    assert.deepEqual(desc.rows.map((r) => r.service), ['Trim', 'Color', 'Color', 'Haircut']);
+
+    const seen: string[] = [];
+    let next: string | null | undefined;
+    do {
+      const page = await db.list(t, 'bookings', { sort: { field: 'starts_at', direction: 'asc' }, limit: 1, after: next ?? undefined });
+      seen.push(...page.rows.map((r) => r.service as string));
+      next = page.next;
+    } while (next);
+    assert.deepEqual(seen, ['Haircut', 'Color', 'Color', 'Trim']);
+  });
+
+  test('filters never widen access', async () => {
+    const { rows } = await db.list(bobToken, 'bookings', { where: { service: 'Haircut' }, limit: 100 });
+    assert.ok(rows.every((r) => r.owner_id === bob));
+  });
+
+  test('bad filters and sorts are refused', async () => {
+    await rejects(db.list(t, 'bookings', { where: { nope: 1 } as any }), 'invalid_input');
+    await rejects(db.list(t, 'bookings', { where: { 'service" or 1=1 --': 'x' } as any }), 'invalid_input');
+    await rejects(db.list(t, 'bookings', { where: { party_size: 'three' } as any }), 'invalid_input');
+    await rejects(db.list(t, 'bookings', { where: { starts_at: { like: '%' } } as any }), 'invalid_input');
+    await rejects(db.list(t, 'bookings', { sort: { field: 'phone' } }), 'invalid_input');
+    await rejects(db.list(t, 'bookings', { sort: { field: 'starts_at', direction: 'sideways' as any } }), 'invalid_input');
+  });
+
+  test('the database refuses bad filters even if the code check is skipped', async () => {
+    await asRawDataLogin(async (c) => {
+      assert.equal((await rawApi(c, t, 'list', 'bookings', { where: { 'x; drop table app.bookings': 1 } })).code, 'invalid_input');
+      assert.equal((await rawApi(c, t, 'list', 'bookings', { sort: { field: 'note' } })).code, 'invalid_input');
+    });
+  });
+});
+
 describe('archive instead of delete', () => {
   test('archiving hides a row from lists, and restoring brings it back', async () => {
     const t = userToken(randomUUID());
@@ -772,5 +839,86 @@ describe('the HTTP service app code talks to', () => {
     } finally {
       await new Promise((r) => tiny.close(r));
     }
+  });
+});
+
+// ------------------------------------------------------------------ Basalt Auth integration
+
+describe('tokens from Basalt Auth carry a session id', () => {
+  test('a revoked session stops working at once; the same user\'s other sessions keep working', async () => {
+    const user = randomUUID();
+    const s1 = randomUUID();
+    const s2 = randomUUID();
+    const t1 = makeToken({ sub: user, extra: { sid: s1 } });
+    const t2 = makeToken({ sub: user, extra: { sid: s2 } });
+    await db.create(t1, 'bookings', { service: 'Cut', starts_at: START });
+    await admin((c) => c.query('select basalt.record_revocations($1::uuid[], $2::timestamptz[], now())', [[s1], [new Date().toISOString()]]));
+    await rejects(db.list(t1, 'bookings'), 'denied');
+    const mine = await db.list(t2, 'bookings');
+    assert.equal(mine.rows.length, 1);
+    assert.equal(await admin(async (c) => (await c.query('select basalt.revocations_synced_to() as t')).rows[0].t instanceof Date), true);
+  });
+
+  test('a malformed session id is refused', async () => {
+    for (const sid of ['not-a-uuid', 42, '', { x: 1 }]) {
+      await rejects(db.list(makeToken({ extra: { sid } }), 'bookings'), 'denied');
+    }
+  });
+
+  test('only the platform can record revocations, never the Data service login', async () => {
+    await refusedByDb((c) => c.query('select basalt.record_revocations($1::uuid[], $2::timestamptz[], now())', [[randomUUID()], [new Date().toISOString()]]));
+    await refusedByDb((c) => c.query('delete from basalt.revoked_sessions'));
+  });
+});
+
+describe('browser cookie logins on the app\'s own origin', () => {
+  let server: ReturnType<typeof createDataServer>;
+  let port: number;
+  before(async () => {
+    server = createDataServer({ data: db });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    port = (server.address() as AddressInfo).port;
+  });
+  after(() => server.close());
+
+  // An access cookie as Basalt Auth sets it: a JWT whose "bdg" claim is the data token.
+  const accessCookie = (dataToken: string) => {
+    const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    return `__Host-basalt_at=${enc({ alg: 'EdDSA', typ: 'at+jwt' })}.${enc({ sub: alice, bdg: dataToken })}.${'s'.repeat(86)}`;
+  };
+  const list = (headers: Record<string, string>) =>
+    new Promise<{ status: number; body: any }>((resolve, reject) => {
+      const body = JSON.stringify({ table: 'bookings' });
+      const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/data/list', headers: { 'content-type': 'application/json', 'content-length': String(body.length), host: 'app.test', ...headers } }, (res) => {
+        let text = '';
+        res.on('data', (d) => (text += d));
+        res.on('end', () => resolve({ status: res.statusCode!, body: JSON.parse(text) }));
+      });
+      req.on('error', reject);
+      req.end(body);
+    });
+
+  test('works for same-origin requests, so page scripts never hold a token', async () => {
+    const r = await list({ origin: 'https://app.test', cookie: `other=1; ${accessCookie(aliceToken)}` });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.ok(r.body.data.rows.some((row: { id: unknown }) => row.id === aliceBooking.id));
+  });
+
+  test('is refused from another site (CSRF) or without an Origin', async () => {
+    assert.equal((await list({ origin: 'https://evil.test', cookie: accessCookie(aliceToken) })).status, 401);
+    assert.equal((await list({ cookie: accessCookie(aliceToken) })).status, 401);
+    assert.equal((await list({ origin: 'https://app.test.evil.test', cookie: accessCookie(aliceToken) })).status, 401);
+  });
+
+  test('a forged token inside the cookie is still checked by the database', async () => {
+    const forged = makeToken({ sub: alice, secret: 'x'.repeat(40) });
+    assert.equal((await list({ origin: 'https://app.test', cookie: accessCookie(forged) })).status, 401);
+    assert.equal((await list({ origin: 'https://app.test', cookie: '__Host-basalt_at=garbage' })).status, 401);
+  });
+
+  test('an explicit Authorization header still takes precedence', async () => {
+    const r = await list({ authorization: `Bearer ${bobToken}`, origin: 'https://evil.test', cookie: accessCookie(aliceToken) });
+    assert.equal(r.status, 200);
+    assert.ok(!r.body.data.rows.some((row: { id: unknown }) => row.id === aliceBooking.id));
   });
 });

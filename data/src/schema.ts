@@ -43,6 +43,9 @@ export function columnSql(name: string, spec: FieldSpec): string {
       type = 'timestamptz';
       checks.push(`isfinite(${col})`);
       break;
+    case 'file':
+      type = 'uuid';
+      break;
     case 'user':
       type = 'uuid';
       checks.push(`${col} <> '00000000-0000-0000-0000-000000000000'::uuid`);
