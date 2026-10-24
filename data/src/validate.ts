@@ -55,6 +55,10 @@ function checkValue(table: string, name: string, spec: FieldSpec, value: unknown
       if (typeof value !== 'boolean') bad(`${where} must be true or false.`);
       return value;
     }
+    case 'user': {
+      if (typeof value !== 'string' || !UUID.test(value)) bad(`${where} must be a user id.`);
+      return value.toLowerCase();
+    }
     case 'timestamp': {
       if (typeof value !== 'string' || !ISO_TIMESTAMP.test(value) || Number.isNaN(Date.parse(value))) {
         bad(`${where} must be a date and time like 2026-10-24T15:00:00Z.`);

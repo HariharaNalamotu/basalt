@@ -1,11 +1,11 @@
--- Identity check inside the database.
+-- Identity check inside the database. Safe to run again on upgrade.
 --
 -- The Data service passes the user's login token through untouched. Postgres
 -- checks the signature itself, so a hacked Data service can't pretend to be
 -- someone else: it never sees the signing secret.
 \set ON_ERROR_STOP on
 
-create table basalt.settings (
+create table if not exists basalt.settings (
   id int primary key default 1 check (id = 1),
   jwt_secret text not null check (length(jwt_secret) >= 32),
   -- Checked when set. Supabase Auth uses "<site url>/auth/v1".
@@ -16,9 +16,22 @@ create table basalt.settings (
 );
 alter table basalt.settings owner to basalt_owner;
 revoke all on basalt.settings from public;
-insert into basalt.settings (jwt_secret, jwt_issuer) values (:'jwt_secret', nullif(:'jwt_issuer', ''));
+-- Set once on first boot. Upgrades never touch it, so a rotated secret or a
+-- tightened issuer can't be undone by an old environment. To rotate, run as admin:
+--   update basalt.settings set jwt_secret = '<new secret>';
+insert into basalt.settings (jwt_secret, jwt_issuer) values (:'jwt_secret', nullif(:'jwt_issuer', ''))
+on conflict (id) do nothing;
 
-create function basalt.b64url_decode(s text) returns bytea
+-- "Log out everywhere": every token for this user issued at or before this
+-- time stops working right away.
+create table if not exists basalt.revocations (
+  uid uuid primary key,
+  before timestamptz not null
+);
+alter table basalt.revocations owner to basalt_owner;
+revoke all on basalt.revocations from public;
+
+create or replace function basalt.b64url_decode(s text) returns bytea
 language sql immutable strict
 set search_path = pg_catalog, pg_temp
 as $$
@@ -29,7 +42,7 @@ revoke execute on function basalt.b64url_decode(text) from public;
 
 -- True only if s is the one exact base64url spelling of its bytes. Blocks
 -- tokens that differ in unused bits but decode to the same value.
-create function basalt.b64url_canonical(s text) returns boolean
+create or replace function basalt.b64url_canonical(s text) returns boolean
 language sql immutable strict
 set search_path = pg_catalog, pg_temp
 as $$
@@ -40,7 +53,7 @@ revoke execute on function basalt.b64url_canonical(text) from public;
 
 -- Returns the verified user id, or null. Null means every row rule says no.
 -- Bad input returns null. Anything unexpected raises an error. Neither grants access.
-create function basalt.uid() returns uuid
+create or replace function basalt.uid() returns uuid
 language plpgsql stable security definer
 set search_path = pg_catalog, basalt, pg_temp
 as $$
@@ -56,6 +69,7 @@ declare
   exp_s numeric;
   iat_s numeric;
   cached text[];
+  revoked_before timestamptz;
   u uuid;
 begin
   -- Exact base64url only: no padding, no whitespace, and a 32 byte signature.
@@ -73,10 +87,10 @@ begin
     raise exception 'basalt: signing secret is not configured';
   end if;
 
-  -- Fast path. A token already verified in this transaction leaves a note
+  -- Fast path inside one API call. A token already verified leaves a note
   -- sealed with the secret: user id, expiry and an HMAC over both plus the
   -- exact token. Nobody without the secret can forge one, and expiry is still
-  -- checked against this statement's time.
+  -- checked against this statement's time. basalt.api() clears it on entry.
   cached := string_to_array(current_setting('basalt.verified', true), '|');
   if array_length(cached, 1) = 3
      and cached[1] ~ '^[0-9a-f-]{36}$'
@@ -138,6 +152,12 @@ begin
   end if;
 
   u := (payload->>'sub')::uuid;
+
+  select r.before into revoked_before from basalt.revocations r where r.uid = u;
+  if revoked_before is not null and iat_s <= extract(epoch from revoked_before) then
+    return null;
+  end if;
+
   perform set_config(
     'basalt.verified',
     u::text || '|' || exp_s::bigint::text || '|' ||
@@ -151,79 +171,38 @@ end
 $$;
 alter function basalt.uid() owner to basalt_owner;
 revoke execute on function basalt.uid() from public;
-grant execute on function basalt.uid() to basalt_data;
-grant usage on schema basalt to basalt_data;
+grant execute on function basalt.uid() to basalt_exec;
+
+-- For the auth service or an admin: log a user out of every session.
+create or replace function basalt.revoke_user(target uuid) returns void
+language sql volatile security definer
+set search_path = pg_catalog, basalt, pg_temp
+as $$
+  -- The real clock, not the transaction's start, and the cutoff only moves forward.
+  insert into revocations as r (uid, before) values (target, clock_timestamp())
+  on conflict (uid) do update set before = greatest(r.before, excluded.before)
+$$;
+alter function basalt.revoke_user(uuid) owner to basalt_owner;
+revoke execute on function basalt.revoke_user(uuid) from public;
 
 -- Per user, per minute usage, shared by every Data service instance.
 -- Unlogged: it's a counter, so it skips the write ahead log and stays fast.
-create unlogged table basalt.usage (
+create unlogged table if not exists basalt.usage (
   uid uuid not null,
   minute timestamptz not null,
   reads int not null default 0,
   writes int not null default 0,
   primary key (uid, minute)
 );
-create index usage_minute on basalt.usage (minute);
+create index if not exists usage_minute on basalt.usage (minute);
 alter table basalt.usage owner to basalt_owner;
 revoke all on basalt.usage from public;
+grant select, insert, update, delete on basalt.usage to basalt_exec;
+grant select (id, reads_per_minute, writes_per_minute) on basalt.settings to basalt_exec;
 
--- Called once per request, in its own statement before the request's
--- transaction, so the charge sticks even if the request then fails, and the
--- counter row is unlocked right away. Returns the sealed verified-login note
--- (see uid()) for the request's transaction to reuse, 'over_limit', or null
--- for a bad login. The note only works together with the same token.
-create function basalt.charge(token text, read_cost int, write_cost int) returns text
-language plpgsql volatile security definer
-set search_path = pg_catalog, basalt, pg_temp
-as $$
-declare
-  u uuid;
-  note text;
-  cfg basalt.settings;
-  used_reads int;
-  used_writes int;
-begin
-  if read_cost < 0 or write_cost < 0 or read_cost > 1000 or write_cost > 1000 or read_cost + write_cost = 0 then
-    raise exception 'basalt: bad cost' using errcode = '22023';
-  end if;
-
-  perform set_config('basalt.jwt', coalesce(token, ''), true);
-  u := uid();
-  note := current_setting('basalt.verified', true);
-  perform set_config('basalt.jwt', '', true);
-  perform set_config('basalt.verified', '', true);
-  if u is null then
-    return null;
-  end if;
-
-  select * into cfg from settings where id = 1;
-  -- A lost counter after a crash is harmless, so don't wait on disk for it.
-  perform set_config('synchronous_commit', 'off', true);
-  insert into usage as x (uid, minute, reads, writes)
-  values (u, date_trunc('minute', statement_timestamp()), read_cost, write_cost)
-  on conflict (uid, minute) do update
-    set reads = x.reads + excluded.reads, writes = x.writes + excluded.writes
-  returning x.reads, x.writes into used_reads, used_writes;
-
-  -- Now and then, clear out old counters so the table stays small.
-  if random() < 0.001 then
-    delete from usage where minute < statement_timestamp() - interval '5 minutes';
-  end if;
-
-  -- Over the limit: report it, but keep the charge (this statement commits).
-  if used_reads > cfg.reads_per_minute or used_writes > cfg.writes_per_minute then
-    return 'over_limit';
-  end if;
-  return note;
-end
-$$;
-alter function basalt.charge(text, int, int) owner to basalt_owner;
-revoke execute on function basalt.charge(text, int, int) from public;
-grant execute on function basalt.charge(text, int, int) to basalt_data;
-
--- Old usage rows are only useful for a minute. charge() prunes now and then;
--- a scheduled job can also run this.
-create function basalt.prune_usage() returns bigint
+-- Old usage rows are only useful for a minute. basalt.api() prunes now and
+-- then and a scheduled job can also run this.
+create or replace function basalt.prune_usage() returns bigint
 language sql volatile security definer
 set search_path = pg_catalog, basalt, pg_temp
 as $$
@@ -232,3 +211,7 @@ as $$
 $$;
 alter function basalt.prune_usage() owner to basalt_owner;
 revoke execute on function basalt.prune_usage() from public;
+
+-- Removed in this version. Upgrades drop them so nothing old lingers.
+drop function if exists basalt.charge(text, int, int);
+drop function if exists basalt.login(text, int, int);

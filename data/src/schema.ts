@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { FORMATS, type Contract, type FieldSpec, type TableSpec } from './contract.ts';
+import { FORMATS, SYSTEM_COLUMNS, type Contract, type FieldSpec, type TableSpec } from './contract.ts';
 
 // Turns the contract into SQL with plain code. No AI is involved, so the same
 // contract always gives the same database. Names are already checked by
@@ -15,7 +14,11 @@ export function quoteLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function columnSql(name: string, spec: FieldSpec): string {
+function textArray(values: readonly string[]): string {
+  return `array[${values.map(quoteLiteral).join(', ')}]::text[]`;
+}
+
+export function columnSql(name: string, spec: FieldSpec): string {
   const col = quoteIdent(name);
   const checks: string[] = [];
   let type: string;
@@ -40,6 +43,10 @@ function columnSql(name: string, spec: FieldSpec): string {
       type = 'timestamptz';
       checks.push(`isfinite(${col})`);
       break;
+    case 'user':
+      type = 'uuid';
+      checks.push(`${col} <> '00000000-0000-0000-0000-000000000000'::uuid`);
+      break;
   }
 
   if (spec.min !== undefined) checks.push(`${col} >= ${Number(spec.min)}`);
@@ -51,37 +58,41 @@ function columnSql(name: string, spec: FieldSpec): string {
   return parts.join(' ');
 }
 
-function createTableSql(table: TableSpec): string {
-  return `create table if not exists app.${quoteIdent(table.name)} (
-  "id" uuid primary key default gen_random_uuid(),
-  "owner_id" uuid not null default basalt.uid(),
-  ${[...table.fields].map(([n, s]) => columnSql(n, s)).join(',\n  ')},
-  "created_at" timestamptz not null default now(),
-  "updated_at" timestamptz not null default now()
-)`;
+// The table's rules as stored in basalt.registry, so migrate can tell exactly
+// what a new contract would change.
+export function tableSpecJson(table: TableSpec): { fields: Record<string, unknown>; shareWith?: string } {
+  return {
+    fields: Object.fromEntries([...table.fields].map(([n, s]) => [n, { ...s }])),
+    ...(table.shareWith ? { shareWith: table.shareWith } : {}),
+  };
 }
 
-// A fingerprint of everything about a table's columns: names, types, required
-// flags, lengths, formats and bounds. Stored on the table so migrate can tell
-// when a contract would change a table that already exists.
-export function tableFingerprint(table: TableSpec): string {
-  return `basalt:${createHash('sha256').update(createTableSql(table)).digest('hex')}`;
+export function addColumnSql(table: TableSpec, name: string): string {
+  return `alter table app.${quoteIdent(table.name)} add column ${columnSql(name, table.fields.get(name)!)}`;
 }
 
 export function tableSql(table: TableSpec): string[] {
   const t = `app.${quoteIdent(table.name)}`;
-  const writable = [...table.fields.keys()].map(quoteIdent).join(', ');
-  const owner = '(select basalt.uid())';
+  const writable = [...table.fields.keys()];
+  const writableSql = writable.map(quoteIdent).join(', ');
+  const me = '(select basalt.uid())';
+  const share = table.shareWith ? quoteIdent(table.shareWith) : null;
 
   return [
-    createTableSql(table),
-    `comment on table ${t} is ${quoteLiteral(tableFingerprint(table))}`,
+    `create table if not exists ${t} (
+  "id" uuid primary key default gen_random_uuid(),
+  "owner_id" uuid not null default basalt.uid(),
+  ${[...table.fields].map(([n, s]) => columnSql(n, s)).join(',\n  ')},
+  "request_key" text check (char_length("request_key") <= 200),
+  "created_at" timestamptz not null default now(),
+  "updated_at" timestamptz not null default now()
+)`,
     `alter table ${t} owner to basalt_owner`,
     `alter table ${t} enable row level security`,
     `alter table ${t} force row level security`,
-    `revoke all on ${t} from public`,
+
     // Start from nothing on every run so a stale grant or policy can't survive.
-    `revoke all on ${t} from basalt_data`,
+    `revoke all on ${t} from public, basalt_data, basalt_exec`,
     `do $basalt$ declare p record; begin
   for p in select policyname from pg_policies where schemaname = 'app' and tablename = ${quoteLiteral(table.name)} loop
     execute format('drop policy %I on app.%I', p.policyname, ${quoteLiteral(table.name)});
@@ -90,26 +101,43 @@ end $basalt$`,
 
     // Keeps "my rows, newest first" fast at any table size.
     `create index if not exists ${quoteIdent(`${table.name}_owner_recent`)} on ${t} ("owner_id", "created_at" desc, "id" desc)`,
+    // One row per user per idempotency key.
+    `create unique index if not exists ${quoteIdent(`${table.name}_request_key`)} on ${t} ("owner_id", "request_key") where "request_key" is not null`,
+    ...(share
+      ? [`create index if not exists ${quoteIdent(`${table.name}_shared_recent`)} on ${t} (${share}, "created_at" desc, "id" desc)`]
+      : []),
 
-    // Each user only ever sees and changes their own rows.
-    `create policy basalt_select on ${t} for select to basalt_data using ("owner_id" = ${owner})`,
-    `create policy basalt_insert on ${t} for insert to basalt_data with check ("owner_id" = ${owner})`,
-    `create policy basalt_update on ${t} for update to basalt_data using ("owner_id" = ${owner}) with check ("owner_id" = ${owner})`,
+    // Each user sees their own rows, plus rows shared with them. Only the
+    // owner can change a row. Only basalt_exec (inside basalt.api) gets these.
+    share
+      ? `create policy basalt_select on ${t} for select to basalt_exec using ("owner_id" = ${me} or ${share} = ${me})`
+      : `create policy basalt_select on ${t} for select to basalt_exec using ("owner_id" = ${me})`,
+    `create policy basalt_insert on ${t} for insert to basalt_exec with check ("owner_id" = ${me})`,
+    `create policy basalt_update on ${t} for update to basalt_exec using ("owner_id" = ${me}) with check ("owner_id" = ${me})`,
 
-    // The Data block can read rows and write only the contract's fields.
-    // id, owner_id and the timestamps are set by the database. No delete at all.
-    `grant select on ${t} to basalt_data`,
-    `grant insert (${writable}) on ${t} to basalt_data`,
-    `grant update (${writable}) on ${t} to basalt_data`,
+    // Read rows, write only the contract's fields. id, owner_id and the
+    // timestamps are set by the database. No delete at all.
+    `grant select on ${t} to basalt_exec`,
+    `grant insert (${writableSql}, "request_key") on ${t} to basalt_exec`,
+    `grant update (${writableSql}) on ${t} to basalt_exec`,
 
     // Updates that change nothing don't bump updated_at or write to the audit log.
     `drop trigger if exists basalt_touch on ${t}`,
     `create trigger basalt_touch before update on ${t} for each row when (old.* is distinct from new.*) execute function basalt.touch_updated_at()`,
-    `drop trigger if exists basalt_audit on ${t}`,
     `drop trigger if exists basalt_audit_insert on ${t}`,
     `create trigger basalt_audit_insert after insert on ${t} for each row execute function basalt.audit_row()`,
     `drop trigger if exists basalt_audit_update on ${t}`,
     `create trigger basalt_audit_update after update on ${t} for each row when (old.* is distinct from new.*) execute function basalt.audit_row()`,
+
+    `insert into basalt.registry (table_name, columns, writable, share_field, spec) values (
+  ${quoteLiteral(table.name)},
+  ${textArray([...SYSTEM_COLUMNS, ...writable])},
+  ${textArray(writable)},
+  ${table.shareWith ? quoteLiteral(table.shareWith) : 'null'},
+  ${quoteLiteral(JSON.stringify(tableSpecJson(table)))}::jsonb
+) on conflict (table_name) do update set
+  columns = excluded.columns, writable = excluded.writable,
+  share_field = excluded.share_field, spec = excluded.spec`,
   ];
 }
 

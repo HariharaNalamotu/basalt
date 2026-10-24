@@ -3,7 +3,7 @@
 //
 //   POST /v1/data/get     { table, id }
 //   POST /v1/data/list    { table, limit?, after? }
-//   POST /v1/data/create  { table, input }
+//   POST /v1/data/create  { table, input, key? }
 //   POST /v1/data/update  { table, id, input }
 //   GET  /healthz         (never touches the database)
 //
@@ -144,7 +144,7 @@ export function createDataServer(options: DataServerOptions): Server {
           result = await data.list(token, table, { limit: body.limit as number | undefined, after: body.after as string | undefined });
           break;
         case 'create':
-          result = await data.create(token, table, body.input);
+          result = await data.create(token, table, body.input, body.key === undefined ? {} : { key: body.key as string });
           break;
         case 'update':
           result = await data.update(token, table, body.id as string, body.input);

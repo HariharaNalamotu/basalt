@@ -63,9 +63,17 @@ async function refusedByDb(fn: (c: pg.Client) => Promise<unknown>): Promise<void
   });
 }
 
-async function withToken(c: pg.Client, token: string): Promise<void> {
-  await c.query('begin');
-  await c.query(`select set_config('basalt.jwt', $1, true)`, [token]);
+// Damage limits count per clock minute. Don't start a limit test so close to
+// the next minute that the counter resets halfway through it.
+async function awayFromMinuteEdge(): Promise<void> {
+  const left = 60_000 - (Date.now() % 60_000);
+  if (left < 5000) await new Promise((r) => setTimeout(r, left + 250));
+}
+
+// Calls basalt.api() straight from the Data service's login, skipping every
+// check in the TypeScript code.
+async function rawApi(c: pg.Client, token: string, op: string, tbl: string, args: unknown): Promise<{ ok: boolean; code?: string; data?: any }> {
+  return (await c.query('select basalt.api($1, $2, $3, $4::jsonb) as r', [token, op, tbl, JSON.stringify(args)])).rows[0].r;
 }
 
 before(async () => {
@@ -182,11 +190,8 @@ describe('forged or broken logins', () => {
     const padded = `${aliceToken}=`;
     const spaced = aliceToken.replace('.', ' .');
     for (const t of [padded, spaced]) {
-      const res = await asRawDataLogin(async (c) => {
-        await withToken(c, t);
-        return c.query('select basalt.uid() as uid');
-      });
-      assert.equal(res.rows[0].uid, null);
+      const reply = await asRawDataLogin((c) => rawApi(c, t, 'list', 'bookings', {}));
+      assert.equal(reply.code, 'denied');
     }
   });
 
@@ -206,15 +211,14 @@ describe('forged or broken logins', () => {
 
   test('an old transaction cannot keep using a token after it expires', async () => {
     const shortLived = makeToken({ sub: alice, expiresIn: 1 });
-    const counts = await asRawDataLogin(async (c) => {
-      await withToken(c, shortLived);
-      const before = await c.query('select count(*)::int as n from app.bookings');
+    const codes = await asRawDataLogin(async (c) => {
+      await c.query('begin');
+      const first = await rawApi(c, shortLived, 'list', 'bookings', {});
       await new Promise((r) => setTimeout(r, 1600));
-      const afterExpiry = await c.query('select count(*)::int as n from app.bookings');
-      return [before.rows[0].n, afterExpiry.rows[0].n];
+      const second = await rawApi(c, shortLived, 'list', 'bookings', {});
+      return [first.ok, second.code];
     });
-    assert.ok(counts[0] > 0);
-    assert.equal(counts[1], 0);
+    assert.deepEqual(codes, [true, 'denied']);
   });
 });
 
@@ -256,20 +260,27 @@ describe('injection and bad input', () => {
   });
 
   test('the database enforces formats and limits even if the code check is skipped', async () => {
-    for (const sql of [
-      `insert into app.bookings (service, starts_at, phone) values ('x', now(), 'call me')`,
-      `insert into app.bookings (service, starts_at) values (repeat('x', 101), now())`,
-      `insert into app.bookings (service, starts_at) values ('x', 'infinity')`,
-      `insert into app.bookings (service, starts_at, party_size) values ('x', now(), 500)`,
+    for (const input of [
+      { service: 'x', starts_at: START, phone: 'call me' },
+      { service: 'x'.repeat(101), starts_at: START },
+      { service: 'x', starts_at: 'infinity' },
+      { service: 'x', starts_at: START, party_size: 500 },
+      { service: 'x', starts_at: START, owner_id: bob },
+      { service: 'x', starts_at: START, request_key: 'sneaky' },
+      { service: 'x', starts_at: START, staff_id: 'not-a-user' },
     ]) {
-      await assert.rejects(
-        asRawDataLogin(async (c) => {
-          await withToken(c, aliceToken);
-          await c.query(sql);
-        }),
-        (err: { code?: string }) => err.code === '23514',
-      );
+      const reply = await asRawDataLogin((c) => rawApi(c, aliceToken, 'create', 'bookings', { input }));
+      assert.equal(reply.code, 'invalid_input', JSON.stringify(input));
     }
+  });
+
+  test('the database refuses unknown operations and table names', async () => {
+    await asRawDataLogin(async (c) => {
+      assert.equal((await rawApi(c, aliceToken, 'delete', 'bookings', {})).code, 'invalid_input');
+      assert.equal((await rawApi(c, aliceToken, 'list', 'bookings; drop table app.bookings', {})).code, 'invalid_input');
+      assert.equal((await rawApi(c, aliceToken, 'list', 'registry', {})).code, 'invalid_input');
+      assert.equal((await rawApi(c, aliceToken, 'list', 'bookings', { limit: 100000 })).code, 'invalid_input');
+    });
   });
 
   test('every text format compiles and behaves the same in Postgres', async () => {
@@ -312,6 +323,7 @@ describe('damage limits', () => {
     const user = userToken(randomUUID());
     const second = new BasaltData({ connectionString: DATA_URL, contract });
     await admin((c) => c.query('update basalt.settings set reads_per_minute = 30'));
+    await awayFromMinuteEdge();
     try {
       await db.list(user, 'bookings', { limit: 20 });
       // A different instance shares the same counter.
@@ -327,6 +339,7 @@ describe('damage limits stick', () => {
   test('requests that fail still count against the limit', async () => {
     const user = userToken(randomUUID());
     await admin((c) => c.query('update basalt.settings set reads_per_minute = 3'));
+    await awayFromMinuteEdge();
     try {
       for (let i = 0; i < 3; i++) await rejects(db.get(user, 'bookings', randomUUID()), 'not_found');
       await rejects(db.get(user, 'bookings', randomUUID()), 'rate_limited');
@@ -336,7 +349,111 @@ describe('damage limits stick', () => {
   });
 });
 
+describe('log out everywhere', () => {
+  test('revoking a user kills every token they already have, and new logins still work', async () => {
+    const user = randomUUID();
+    const oldToken = userToken(user);
+    await db.create(oldToken, 'bookings', { service: 'X', starts_at: START });
+    await admin((c) => c.query('select basalt.revoke_user($1)', [user]));
+    await rejects(db.list(oldToken, 'bookings'), 'denied');
+    await new Promise((r) => setTimeout(r, 1100));
+    const fresh = userToken(user);
+    assert.equal((await db.list(fresh, 'bookings')).rows.length, 1);
+  });
+});
+
+describe('revocation edge cases', () => {
+  test('an old snapshot cannot be used to dodge a revocation', async () => {
+    const user = randomUUID();
+    const t = userToken(user);
+    const reply = await asRawDataLogin(async (c) => {
+      await c.query('begin isolation level repeatable read');
+      return rawApi(c, t, 'list', 'bookings', {});
+    });
+    assert.equal(reply.code, 'denied');
+  });
+
+  test('a revocation cutoff never moves backward', async () => {
+    const user = randomUUID();
+    await admin((c) => c.query(`insert into basalt.revocations (uid, before) values ($1, now() + interval '1 hour')`, [user]));
+    await admin((c) => c.query('select basalt.revoke_user($1)', [user]));
+    const res = await admin((c) => c.query(`select before > now() + interval '50 minutes' as still_future from basalt.revocations where uid = $1`, [user]));
+    assert.equal(res.rows[0].still_future, true);
+  });
+});
+
+describe('idempotent creates', () => {
+  test('the same key twice gives back the same row, not a duplicate', async () => {
+    const user = randomUUID();
+    const t = userToken(user);
+    const first = await db.create(t, 'bookings', { service: 'Retry', starts_at: START }, { key: 'order-123' });
+    const again = await db.create(t, 'bookings', { service: 'Retry', starts_at: START }, { key: 'order-123' });
+    assert.equal(again.id, first.id);
+    assert.equal((await db.list(t, 'bookings')).rows.length, 1);
+    assert.ok(!('request_key' in first));
+  });
+
+  test("another user's key doesn't collide or leak", async () => {
+    const a = userToken(randomUUID());
+    const b = userToken(randomUUID());
+    const rowA = await db.create(a, 'bookings', { service: 'A', starts_at: START }, { key: 'same-key' });
+    const rowB = await db.create(b, 'bookings', { service: 'B', starts_at: START }, { key: 'same-key' });
+    assert.notEqual(rowA.id, rowB.id);
+    assert.equal(rowB.service, 'B');
+  });
+
+  test('bad keys are refused', async () => {
+    await rejects(db.create(aliceToken, 'bookings', { service: 'X', starts_at: START }, { key: "x'; drop" }), 'invalid_input');
+  });
+});
+
+describe('sharing a row', () => {
+  test('the assigned staff member can read the booking but not change it, and nobody else can see it', async () => {
+    const staff = randomUUID();
+    const staffToken = userToken(staff);
+    const row = await db.create(aliceToken, 'bookings', { service: 'Color', starts_at: START, staff_id: staff });
+    assert.equal((await db.get(staffToken, 'bookings', row.id as string)).service, 'Color');
+    assert.ok((await db.list(staffToken, 'bookings')).rows.some((r) => r.id === row.id));
+    await rejects(db.update(staffToken, 'bookings', row.id as string, { note: 'changed by staff' }), 'not_found');
+    await rejects(db.get(bobToken, 'bookings', row.id as string), 'not_found');
+  });
+});
+
+describe('sharing and paging together', () => {
+  test('paging through own and shared rows sees each row once, newest first', async () => {
+    const me = randomUUID();
+    const other = userToken(randomUUID());
+    const mine = userToken(me);
+    for (let i = 0; i < 3; i++) await db.create(mine, 'bookings', { service: `Own ${i}`, starts_at: START });
+    for (let i = 0; i < 3; i++) await db.create(other, 'bookings', { service: `Shared ${i}`, starts_at: START, staff_id: me });
+    await db.create(mine, 'bookings', { service: 'Own and assigned to me', starts_at: START, staff_id: me });
+    const seen: string[] = [];
+    let next: string | null | undefined;
+    do {
+      const page = await db.list(mine, 'bookings', { limit: 2, after: next ?? undefined });
+      seen.push(...page.rows.map((r) => r.id as string));
+      next = page.next;
+    } while (next);
+    assert.equal(seen.length, 7);
+    assert.equal(new Set(seen).size, 7);
+  });
+});
+
 describe('audit log', () => {
+  test('a month that was missed gets its own partition, and its rows move out of the default one', async () => {
+    const res = await admin(async (c) => {
+      const next = (await c.query(`select to_char(date_trunc('month', now()) + interval '1 month', 'YYYY_MM') as m, date_trunc('month', now()) + interval '1 month' + interval '3 days' as at`)).rows[0];
+      await c.query(`drop table basalt.audit_${next.m}`);
+      await c.query(`insert into basalt.audit (at, table_name, op) values ($1, 'bookings', 'INSERT')`, [next.at]);
+      const before = (await c.query(`select count(*)::int as n from basalt.audit_default where at = $1`, [next.at])).rows[0].n;
+      await c.query('select basalt.ensure_audit_partitions()');
+      const moved = (await c.query(`select count(*)::int as n from basalt.audit_${next.m} where at = $1`, [next.at])).rows[0].n;
+      const left = (await c.query(`select count(*)::int as n from basalt.audit_default where at = $1`, [next.at])).rows[0].n;
+      return [before, moved, left];
+    });
+    assert.deepEqual(res, [1, 1, 0]);
+  });
+
   test('records changes but skips updates that change nothing', async () => {
     const row = await db.create(aliceToken, 'bookings', { service: 'Trim', starts_at: START });
     const count = () =>
@@ -353,102 +470,119 @@ describe('audit log', () => {
 
 describe('migrations', () => {
   test('a stale permissive policy is removed when the contract is applied again', async () => {
-    await admin((c) => c.query(`create policy sneaky on app.bookings for select to basalt_data using (true)`));
+    await admin((c) => c.query(`create policy sneaky on app.bookings for select to basalt_exec using (true)`));
     await migrate(ADMIN_URL, contractJson);
     await rejects(db.get(bobToken, 'bookings', aliceBooking.id as string), 'not_found');
   });
 
-  test('changing an existing table is refused, not silently half applied', async () => {
-    const changed = structuredClone(contractJson);
-    changed.tables.bookings.fields.vip = { type: 'boolean' };
-    await assert.rejects(migrate(ADMIN_URL, changed), /needs a reviewed migration/);
+  test('adding a required field or removing one is refused, not silently half applied', async () => {
+    const required = structuredClone(contractJson);
+    required.tables.bookings.fields.vip = { type: 'boolean' };
+    required.tables.bookings.fields.tier = { type: 'text', required: true };
+    await assert.rejects(migrate(ADMIN_URL, required), /new field tier is required/);
+    const removed = structuredClone(contractJson);
+    delete removed.tables.bookings.fields.note;
+    await assert.rejects(migrate(ADMIN_URL, removed), /field note was removed/);
   });
 
   test('loosening a rule on an existing field is refused too', async () => {
     const changed = structuredClone(contractJson);
     changed.tables.bookings.fields.service.maxLength = 5000;
-    await assert.rejects(migrate(ADMIN_URL, changed), /needs a reviewed migration/);
+    await assert.rejects(migrate(ADMIN_URL, changed), /rules for field service changed/);
     const fmt = structuredClone(contractJson);
     delete fmt.tables.bookings.fields.phone.format;
-    await assert.rejects(migrate(ADMIN_URL, fmt), /needs a reviewed migration/);
+    await assert.rejects(migrate(ADMIN_URL, fmt), /rules for field phone changed/);
+    const unshared = structuredClone(contractJson);
+    delete unshared.tables.bookings.shareWith;
+    await assert.rejects(migrate(ADMIN_URL, unshared), /who it is shared with changed/);
+  });
+
+  test('a table that Basalt did not make is never taken over', async () => {
+    await admin((c) => c.query('create table if not exists app.legacy (id uuid primary key)'));
+    try {
+      await assert.rejects(migrate(ADMIN_URL, { tables: { legacy: { fields: { a: { type: 'text' } } } } }), /wasn't made by Basalt/);
+    } finally {
+      await admin((c) => c.query('drop table app.legacy'));
+    }
+  });
+
+  test('adding a new optional field to an existing table works and keeps the data', async () => {
+    const changed = structuredClone(contractJson);
+    changed.tables.bookings.fields.vip = { type: 'boolean' };
+    const result = await migrate(ADMIN_URL, changed);
+    assert.deepEqual(result.added, ['bookings.vip']);
+    const second = new BasaltData({ connectionString: DATA_URL, contract: parseContract(changed) });
+    try {
+      assert.equal((await second.get(aliceToken, 'bookings', aliceBooking.id as string)).service, 'Haircut');
+      const row = await second.create(aliceToken, 'bookings', { service: 'VIP', starts_at: START, vip: true });
+      assert.equal(row.vip, true);
+    } finally {
+      await second.close();
+    }
+  });
+
+
+  test('a field named like a built in object property is added for real', async () => {
+    // Builds on the contract from the test above, which added vip.
+    const changed = structuredClone(contractJson);
+    changed.tables.bookings.fields.vip = { type: 'boolean' };
+    changed.tables.bookings.fields.constructor = { type: 'text' };
+    const result = await migrate(ADMIN_URL, changed);
+    assert.ok(result.added.includes('bookings.constructor'));
+    const cols = await admin((c) => c.query(`select 1 from information_schema.columns where table_schema = 'app' and table_name = 'bookings' and column_name = 'constructor'`));
+    assert.equal(cols.rowCount, 1);
   });
 });
 
 describe('even with the Data service fully taken over', () => {
-  test('raw SQL with no token sees zero rows', async () => {
-    const res = await asRawDataLogin((c) => c.query('select count(*)::int as n from app.bookings'));
-    assert.equal(res.rows[0].n, 0);
-  });
-
-  test('cannot read the settings, usage counters or audit log', async () => {
-    await refusedByDb((c) => c.query('select * from basalt.settings'));
-    await refusedByDb((c) => c.query('select * from basalt.usage'));
-    await refusedByDb((c) => c.query('select * from basalt.audit'));
-    await refusedByDb((c) => c.query('delete from basalt.audit'));
-    await refusedByDb((c) => c.query('select basalt.prune_usage()'));
-  });
-
-  test('cannot delete rows', async () => {
+  test('its login cannot touch any table directly, even with a valid token', async () => {
+    await refusedByDb((c) => c.query('select count(*) from app.bookings'));
     await refusedByDb(async (c) => {
-      await withToken(c, aliceToken);
-      await c.query('delete from app.bookings');
+      await c.query('begin');
+      await c.query(`select set_config('basalt.jwt', $1, true)`, [aliceToken]);
+      await c.query('select * from app.bookings');
     });
+    await refusedByDb((c) => c.query(`insert into app.bookings (service, starts_at) values ('x', now())`));
+    await refusedByDb((c) => c.query('delete from app.bookings'));
+    await refusedByDb((c) => c.query('copy app.bookings to stdout'));
+  });
+
+  test('cannot read the settings, usage counters, audit log, revocations or registry', async () => {
+    for (const t of ['settings', 'usage', 'audit', 'revocations', 'registry']) {
+      await refusedByDb((c) => c.query(`select * from basalt.${t}`));
+    }
+    await refusedByDb((c) => c.query('delete from basalt.audit'));
+  });
+
+  test('cannot call anything but basalt.api', async () => {
+    await refusedByDb((c) => c.query('select basalt.uid()'));
+    await refusedByDb((c) => c.query('select basalt.prune_usage()'));
+    await refusedByDb((c) => c.query(`select basalt.revoke_user(gen_random_uuid())`));
+    await refusedByDb((c) => c.query('select basalt.ensure_audit_partitions()'));
   });
 
   test('cannot drop, change or create tables', async () => {
     await refusedByDb((c) => c.query('drop table app.bookings'));
     await refusedByDb((c) => c.query('alter table app.bookings disable row level security'));
     await refusedByDb((c) => c.query('create table app.stash (x text)'));
+    await refusedByDb((c) => c.query('create table basalt.stash (x text)'));
     await refusedByDb((c) => c.query('create temp table stash (x text)'));
   });
 
-  test('cannot turn off row rules for itself', async () => {
-    await refusedByDb((c) => c.query('set row_security = off; select * from app.bookings'));
-  });
-
-  test('cannot write owner_id directly even with raw SQL', async () => {
-    await refusedByDb(async (c) => {
-      await withToken(c, aliceToken);
-      await c.query(`insert into app.bookings (service, starts_at, owner_id) values ('x', now(), $1)`, [bob]);
-    });
-  });
-
-  test('setting a fake user id variable does nothing', async () => {
-    const res = await asRawDataLogin(async (c) => {
-      await c.query(`select set_config('basalt.uid', $1, false)`, [alice]);
-      await c.query(`select set_config('request.jwt.claim.sub', $1, false)`, [alice]);
-      return c.query('select count(*)::int as n from app.bookings');
-    });
-    assert.equal(res.rows[0].n, 0);
-  });
-
-  test("cannot forge or reuse the verified-login note", async () => {
-    // Grab a real note from alice's own transaction.
-    const note = await asRawDataLogin(async (c) => {
-      await withToken(c, aliceToken);
-      await c.query('select basalt.uid()');
-      return (await c.query(`select current_setting('basalt.verified') as v`)).rows[0].v as string;
-    });
-    assert.match(note, /^[0-9a-f-]{36}\|\d+\|[0-9a-f]{64}$/);
-    const [, exp, tag] = note.split('|');
-    const garbageToken = `${'a'.repeat(20)}.${'b'.repeat(20)}.${'c'.repeat(43)}`;
-
-    const results = await asRawDataLogin(async (c) => {
-      const out: (string | null)[] = [];
-      for (const [tok, fake] of [
-        [garbageToken, `${alice}|${exp}|${tag}`], // alice's real note with a different token
-        [garbageToken, `${alice}|${exp}|${'0'.repeat(64)}`], // made up seal
-        [bobToken, `${alice}|${exp}|${tag}`], // bob's real token, alice's note
-        [aliceToken, `${bob}|${exp}|${tag}`], // alice's token, note edited to bob
-      ]) {
-        await c.query('begin');
-        await c.query(`select set_config('basalt.jwt', $1, true), set_config('basalt.verified', $2, true)`, [tok, fake]);
-        out.push((await c.query('select basalt.uid() as u')).rows[0].u);
-        await c.query('rollback');
-      }
-      return out;
-    });
-    assert.deepEqual(results, [null, null, bob, alice]);
+  test('cannot skip the damage limits by calling the database directly', async () => {
+    const user = userToken(randomUUID());
+    await admin((c) => c.query('update basalt.settings set reads_per_minute = 3'));
+    await awayFromMinuteEdge();
+    try {
+      const codes = await asRawDataLogin(async (c) => {
+        const out: (string | undefined)[] = [];
+        for (let i = 0; i < 4; i++) out.push((await rawApi(c, user, 'get', 'bookings', { id: randomUUID() })).code);
+        return out;
+      });
+      assert.deepEqual(codes, ['not_found', 'not_found', 'not_found', 'rate_limited']);
+    } finally {
+      await admin((c) => c.query('update basalt.settings set reads_per_minute = 1000000'));
+    }
   });
 
   test('cannot stash data in large objects, hold advisory locks, sleep or kill sessions', async () => {

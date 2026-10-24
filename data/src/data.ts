@@ -1,16 +1,16 @@
 import pg from 'pg';
-import { getTable, SYSTEM_COLUMNS, type Contract, type TableSpec } from './contract.ts';
-import { BasaltError } from './errors.ts';
-import { quoteIdent } from './schema.ts';
+import { getTable, type Contract } from './contract.ts';
+import { BasaltError, type BasaltErrorCode } from './errors.ts';
 import { checkId, checkWrite } from './validate.ts';
 
 // The Data block core. This is the only way to touch an app's database:
 // get, list, create and update. There is no raw SQL method and no delete.
 //
 // It runs inside the Data service (server.ts), never inside app code, so the
-// app never holds a database login. Every call runs as the login token's user.
-// Postgres checks the token signature itself (basalt.uid()), so this code never
-// needs the signing secret and can't pretend to be anyone.
+// app never holds a database login. Each call is one round trip to
+// basalt.api() in Postgres, which verifies the login token, charges the user's
+// damage limits and runs the operation as that user. This code never has the
+// signing secret and its database login can't touch a table directly.
 
 export interface BasaltDataOptions {
   connectionString: string;
@@ -23,26 +23,22 @@ export interface ListOptions {
   after?: string;
 }
 
+export interface CreateOptions {
+  // Send the same key again (for example on a retry) and you get the row
+  // created the first time instead of a duplicate.
+  key?: string;
+}
+
 export type Row = Record<string, unknown>;
 
 const MAX_PAGE = 100;
 const DEFAULT_PAGE = 20;
 // Exact base64url JWT shape. The database checks it again.
 const TOKEN = /^[A-Za-z0-9_-]{2,1024}\.[A-Za-z0-9_-]{2,3000}\.[A-Za-z0-9_-]{43}$/;
-const TIMESTAMPTZ_OID = 1184;
-// basalt.charge() returns a sealed note like <uid>|<exp>|<hmac>, or this.
-const OVER_LIMIT = 'over_limit';
-const NOTE = /^[0-9a-f-]{36}\|[0-9]{1,12}\|[0-9a-f]{64}$/;
-// Timestamps as Postgres prints them, like 2026-10-24 08:55:20.123456+00.
+const KEY = /^[A-Za-z0-9_-]{1,200}$/;
+// Timestamps as Postgres writes them in JSON, like 2026-10-24T08:55:20.123456+00:00.
 const CURSOR_TIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:?\d{2})?)$/;
-
-// Keep full microsecond timestamps as text so list cursors stay exact.
-const types = {
-  getTypeParser(oid: number, format?: 'text' | 'binary') {
-    if (oid === TIMESTAMPTZ_OID) return (v: string) => v;
-    return pg.types.getTypeParser(oid, format);
-  },
-};
+const CODES = new Set<BasaltErrorCode>(['invalid_input', 'not_found', 'denied', 'rate_limited', 'unavailable']);
 
 export function encodeCursor(row: Row): string {
   return Buffer.from(JSON.stringify([row.created_at, row.id])).toString('base64url');
@@ -60,23 +56,6 @@ function decodeCursor(cursor: unknown): [string, string] {
   }
 }
 
-// Map database errors to plain messages without leaking anything from them.
-function translate(err: unknown): BasaltError {
-  if (err instanceof BasaltError) return err;
-  const code = (err as { code?: string })?.code ?? '';
-  if (code === '42501') return new BasaltError('denied', "You don't have access to do that.");
-  if (code === '23502' && (err as { column?: string }).column === 'owner_id') {
-    return new BasaltError('denied', 'You need to be logged in to do that.');
-  }
-  if (code === '23514' || code === '23502' || code.startsWith('22')) {
-    return new BasaltError('invalid_input', "That value isn't allowed.");
-  }
-  if (code === '57014' || code === '25P04' || code === '55P03') {
-    return new BasaltError('unavailable', 'That took too long and was stopped. Try again.');
-  }
-  return new BasaltError('unavailable', 'The database is unavailable right now. Try again.');
-}
-
 export class BasaltData {
   #pool: pg.Pool;
   #contract: Contract;
@@ -90,7 +69,6 @@ export class BasaltData {
       connectionTimeoutMillis: 2000,
       idleTimeoutMillis: 30_000,
       query_timeout: 4000,
-      types,
       application_name: 'basalt-data',
     });
     // A dropped idle connection shouldn't crash the service.
@@ -103,13 +81,7 @@ export class BasaltData {
 
   async get(token: string, table: string, id: string): Promise<Row> {
     const spec = getTable(this.#contract, table);
-    const rowId = checkId(id);
-    return this.#asUser(token, 1, 0, async (client) => {
-      const res = await client.query(`select ${this.#columns(spec)} from app.${quoteIdent(spec.name)} where "id" = $1`, [rowId]);
-      // Someone else's row and a missing row look exactly the same.
-      if (res.rowCount === 0) throw new BasaltError('not_found', `No ${spec.name} with that id.`);
-      return res.rows[0];
-    });
+    return (await this.#call(token, 'get', spec.name, { id: checkId(id) })) as Row;
   }
 
   async list(token: string, table: string, options: ListOptions = {}): Promise<{ rows: Row[]; next: string | null }> {
@@ -118,109 +90,61 @@ export class BasaltData {
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE) {
       throw new BasaltError('invalid_input', `limit must be a whole number from 1 to ${MAX_PAGE}.`);
     }
-    const after = options.after === undefined || options.after === null ? null : decodeCursor(options.after);
-
-    return this.#asUser(token, limit, 0, async (client) => {
-      const params: unknown[] = [limit + 1];
-      let where = '';
-      if (after) {
-        params.push(after[0], after[1]);
-        where = `where ("created_at", "id") < ($2::timestamptz, $3::uuid)`;
-      }
-      const res = await client.query(
-        `select ${this.#columns(spec)} from app.${quoteIdent(spec.name)} ${where} order by "created_at" desc, "id" desc limit $1`,
-        params,
-      );
-      const rows = res.rows.slice(0, limit);
-      return { rows, next: res.rows.length > limit ? encodeCursor(rows[rows.length - 1]) : null };
-    });
+    const args: Record<string, unknown> = { limit };
+    if (options.after !== undefined && options.after !== null) {
+      const [at, id] = decodeCursor(options.after);
+      args.after_ts = at;
+      args.after_id = id;
+    }
+    // The database returns one extra row so we know whether there's a next page.
+    const rows = (await this.#call(token, 'list', spec.name, args)) as Row[];
+    const page = rows.slice(0, limit);
+    return { rows: page, next: rows.length > limit ? encodeCursor(page[page.length - 1]) : null };
   }
 
-  async create(token: string, table: string, input: unknown): Promise<Row> {
+  async create(token: string, table: string, input: unknown, options: CreateOptions = {}): Promise<Row> {
     const spec = getTable(this.#contract, table);
     const { columns, values } = checkWrite(spec, input, 'create');
-    return this.#asUser(token, 0, 1, async (client) => {
-      const cols = columns.map(quoteIdent).join(', ');
-      const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
-      const sql = columns.length
-        ? `insert into app.${quoteIdent(spec.name)} (${cols}) values (${placeholders}) returning ${this.#columns(spec)}`
-        : `insert into app.${quoteIdent(spec.name)} default values returning ${this.#columns(spec)}`;
-      const res = await client.query(sql, values);
-      return res.rows[0];
-    });
+    const args: Record<string, unknown> = { input: Object.fromEntries(columns.map((c, i) => [c, values[i]])) };
+    if (options.key !== undefined) {
+      if (typeof options.key !== 'string' || !KEY.test(options.key)) {
+        throw new BasaltError('invalid_input', 'key must be 1 to 200 letters, numbers, dashes or underscores.');
+      }
+      args.key = options.key;
+    }
+    return (await this.#call(token, 'create', spec.name, args)) as Row;
   }
 
   async update(token: string, table: string, id: string, input: unknown): Promise<Row> {
     const spec = getTable(this.#contract, table);
     const rowId = checkId(id);
     const { columns, values } = checkWrite(spec, input, 'update');
-    return this.#asUser(token, 0, 1, async (client) => {
-      const sets = columns.map((c, i) => `${quoteIdent(c)} = $${i + 2}`).join(', ');
-      const res = await client.query(
-        `update app.${quoteIdent(spec.name)} set ${sets} where "id" = $1 returning ${this.#columns(spec)}`,
-        [rowId, ...values],
-      );
-      if (res.rowCount === 0) throw new BasaltError('not_found', `No ${spec.name} with that id.`);
-      return res.rows[0];
-    });
+    return (await this.#call(token, 'update', spec.name, { id: rowId, input: Object.fromEntries(columns.map((c, i) => [c, values[i]])) })) as Row;
   }
 
   async close(): Promise<void> {
     await this.#pool.end();
   }
 
-  #columns(spec: TableSpec): string {
-    return [...SYSTEM_COLUMNS, ...spec.fields.keys()].map(quoteIdent).join(', ');
-  }
-
-  // Charges the user's damage limits, then runs fn inside one transaction as
-  // the token's user.
-  async #asUser<T>(token: string, readCost: number, writeCost: number, fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  async #call(token: string, op: string, table: string, args: Record<string, unknown>): Promise<unknown> {
     if (typeof token !== 'string' || !TOKEN.test(token)) {
       throw new BasaltError('denied', 'Your login is missing, expired or not valid. Log in again.');
     }
-
-    // Step 1, its own statement: verify the login and charge the limits. It
-    // commits on its own, so a request that later fails still pays, and the
-    // counter row isn't locked while the request runs.
-    let note: string | null | undefined;
+    let reply: { ok: boolean; data?: unknown; code?: string; message?: string } | undefined;
     try {
-      const charged = await this.#pool.query<{ note: string | null }>('select basalt.charge($1, $2, $3) as note', [token, readCost, writeCost]);
-      note = charged.rows[0]?.note;
+      const res = await this.#pool.query('select basalt.api($1, $2, $3, $4::jsonb) as r', [token, op, table, JSON.stringify(args)]);
+      reply = res.rows[0]?.r;
     } catch (err) {
-      throw translate(err);
-    }
-    if (note === OVER_LIMIT) throw new BasaltError('rate_limited', 'Too much activity in the last minute. Slow down.');
-    if (!note || !NOTE.test(note)) throw new BasaltError('denied', 'Your login is missing, expired or not valid. Log in again.');
-
-    let client: pg.PoolClient;
-    try {
-      client = await this.#pool.connect();
-    } catch (err) {
-      throw translate(err);
-    }
-
-    let broken: Error | undefined;
-    try {
-      // Step 2: start the transaction and set the token plus the sealed note in
-      // one round trip, so the database doesn't redo the full check. Inlining is
-      // safe only because TOKEN and NOTE above allow no quotes or backslashes.
-      // Both settings are local to this transaction, so they can't leak into the
-      // next request on this connection (also safe with PgBouncer transaction pooling).
-      await client.query(`begin; select set_config('basalt.jwt', '${token}', true), set_config('basalt.verified', '${note}', true)`);
-      const result = await fn(client);
-      await client.query('commit');
-      return result;
-    } catch (err) {
-      try {
-        await client.query('rollback');
-      } catch (rollbackErr) {
-        // Don't hand a connection in an unknown state to the next request.
-        broken = rollbackErr as Error;
+      // Raw database errors never leave this function.
+      const code = (err as { code?: string })?.code ?? '';
+      if (code === '57014' || code === '25P04' || code === '55P03') {
+        throw new BasaltError('unavailable', 'That took too long and was stopped. Try again.');
       }
-      throw translate(err);
-    } finally {
-      client.release(broken);
+      throw new BasaltError('unavailable', 'The database is unavailable right now. Try again.');
     }
+    if (!reply) throw new BasaltError('unavailable', 'The database sent back something unexpected.');
+    if (reply.ok) return reply.data;
+    const code = CODES.has(reply.code as BasaltErrorCode) ? (reply.code as BasaltErrorCode) : 'unavailable';
+    throw new BasaltError(code, typeof reply.message === 'string' ? reply.message : 'Something went wrong.');
   }
 }

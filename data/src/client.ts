@@ -5,7 +5,7 @@
 //   const booking = await basalt.data.get('bookings', id);
 
 import { BasaltError, type BasaltErrorCode } from './errors.ts';
-import type { ListOptions, Row } from './data.ts';
+import type { CreateOptions, ListOptions, Row } from './data.ts';
 
 export interface BasaltClientOptions {
   url: string;
@@ -43,7 +43,7 @@ export function createBasalt(options: BasaltClientOptions) {
     data: {
       get: (table: string, id: string) => call<Row>('get', { table, id }),
       list: (table: string, opts: ListOptions = {}) => call<{ rows: Row[]; next: string | null }>('list', { table, ...opts }),
-      create: (table: string, input: Record<string, unknown>) => call<Row>('create', { table, input }),
+      create: (table: string, input: Record<string, unknown>, opts: CreateOptions = {}) => call<Row>('create', { table, input, ...opts }),
       update: (table: string, id: string, input: Record<string, unknown>) => call<Row>('update', { table, id, input }),
     },
   };

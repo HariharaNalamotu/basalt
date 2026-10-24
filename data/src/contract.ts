@@ -4,7 +4,8 @@ import { BasaltError } from './errors.ts';
 // each field. The AI writes it. Everything else is generated from it by plain code,
 // so it's treated as untrusted input and checked strictly here.
 
-export type FieldType = 'text' | 'integer' | 'number' | 'boolean' | 'timestamp';
+// 'user' holds another user's id, for sharing a row with them (see shareWith).
+export type FieldType = 'text' | 'integer' | 'number' | 'boolean' | 'timestamp' | 'user';
 
 // Free-form regexes from the contract could be crafted to hang the server, so
 // text fields pick from a fixed set of formats instead. Each pattern runs in
@@ -31,6 +32,8 @@ export interface FieldSpec {
 export interface TableSpec {
   name: string;
   fields: Map<string, FieldSpec>;
+  // A 'user' field. The user named there can read the row but not change it.
+  shareWith?: string;
 }
 
 export interface Contract {
@@ -38,16 +41,18 @@ export interface Contract {
 }
 
 export const SYSTEM_COLUMNS = ['id', 'owner_id', 'created_at', 'updated_at'] as const;
+// Set by the API for idempotent creates. Never returned or writable.
+export const HIDDEN_COLUMNS = ['request_key'] as const;
 
 const NAME = /^[a-z][a-z0-9_]{0,40}$/;
-const TYPES: readonly FieldType[] = ['text', 'integer', 'number', 'boolean', 'timestamp'];
+const TYPES: readonly FieldType[] = ['text', 'integer', 'number', 'boolean', 'timestamp', 'user'];
 const MAX_TABLES = 50;
 const MAX_FIELDS = 60;
 const DEFAULT_MAX_LENGTH = 1000;
 const MAX_TEXT_LENGTH = 10000;
 const INT_MIN = -2147483648;
 const INT_MAX = 2147483647;
-const RESERVED = new Set<string>([...SYSTEM_COLUMNS, 'select', 'from', 'where', 'table', 'user', 'order', 'group']);
+const RESERVED = new Set<string>([...SYSTEM_COLUMNS, ...HIDDEN_COLUMNS, 'select', 'from', 'where', 'table', 'user', 'order', 'group']);
 
 function fail(message: string): never {
   throw new BasaltError('contract', message);
@@ -126,6 +131,9 @@ export function parseContract(raw: unknown): Contract {
   for (const [tableName, tableRaw] of tableEntries) {
     checkName('Table', tableName);
     if (!isPlainObject(tableRaw) || !isPlainObject(tableRaw.fields)) fail(`Table ${tableName} needs a "fields" object.`);
+    for (const key of Object.keys(tableRaw)) {
+      if (key !== 'fields' && key !== 'shareWith') fail(`Table ${tableName} has an unknown setting "${key}".`);
+    }
 
     const fieldEntries = Object.entries(tableRaw.fields);
     if (fieldEntries.length === 0) fail(`Table ${tableName} has no fields.`);
@@ -135,7 +143,15 @@ export function parseContract(raw: unknown): Contract {
     for (const [fieldName, fieldRaw] of fieldEntries) {
       fields.set(fieldName, parseField(tableName, fieldName, fieldRaw));
     }
-    tables.set(tableName, { name: tableName, fields });
+    const table: TableSpec = { name: tableName, fields };
+    if (tableRaw.shareWith !== undefined) {
+      const share = tableRaw.shareWith;
+      if (typeof share !== 'string' || fields.get(share)?.type !== 'user') {
+        fail(`Table ${tableName}: shareWith must name one of its fields with type "user".`);
+      }
+      table.shareWith = share;
+    }
+    tables.set(tableName, table);
   }
 
   return { tables };

@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: basalt-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      BASALT_DATA_PASSWORD: ${BASALT_DATA_PASSWORD:?set BASALT_DATA_PASSWORD in .env}
+      BASALT_JWT_SECRET: ${BASALT_JWT_SECRET:?set BASALT_JWT_SECRET in .env}
+      BASALT_JWT_ISSUER: ${BASALT_JWT_ISSUER:-}
+    # Only reachable from this machine.
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+      - ./sql:/basalt/sql:ro
+      - basalt_pg:/var/lib/postgresql/data
+    healthcheck:
+      # TCP only opens after the init scripts finish, unlike the local socket.
+      test: ["CMD-SHELL", "psql -U postgres -h 127.0.0.1 -c 'select 1' >/dev/null"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+
+volumes:
+  basalt_pg:

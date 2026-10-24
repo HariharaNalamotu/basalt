@@ -29,8 +29,12 @@
           "type": "text",
           "maxLength": 320,
           "format": "email"
+        },
+        "staff_id": {
+          "type": "user"
         }
-      }
+      },
+      "shareWith": "staff_id"
     }
   }
 }
