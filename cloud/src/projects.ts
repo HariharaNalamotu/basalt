@@ -105,6 +105,8 @@ export class Projects {
           created_at timestamptz not null default now()
         );
         create index if not exists checks_project_recent on cloud.checks (project_id, created_at desc);
+        alter table cloud.checks alter column findings drop not null;
+        alter table cloud.checks add column if not exists contract_hash text;
         commit;`);
     } catch (err) {
       await c.query('rollback').catch(() => {});
@@ -301,12 +303,14 @@ export class Projects {
   }
 
   // Guard results, shown on the owner's safety receipt.
-  async saveCheck(projectId: string, results: unknown, findings: unknown): Promise<void> {
-    await this.#pool.query('insert into cloud.checks (project_id, results, findings) values ($1, $2, $3)', [projectId, JSON.stringify(results), JSON.stringify(findings)]);
+  // findings is null when no code scan was sent. Only the last 20 checks are kept.
+  async saveCheck(projectId: string, contractHash: string, results: unknown, findings: unknown[] | null): Promise<void> {
+    await this.#pool.query('insert into cloud.checks (project_id, contract_hash, results, findings) values ($1, $2, $3, $4)', [projectId, contractHash, JSON.stringify(results), findings === null ? null : JSON.stringify(findings)]);
+    await this.#pool.query('delete from cloud.checks where project_id = $1 and id not in (select id from cloud.checks where project_id = $1 order by id desc limit 20)', [projectId]);
   }
 
-  async latestCheck(projectId: string): Promise<{ results: any[]; findings: any[]; at: string } | null> {
-    const r = (await this.#pool.query('select results, findings, created_at from cloud.checks where project_id = $1 order by created_at desc, id desc limit 1', [projectId])).rows[0];
-    return r ? { results: r.results, findings: r.findings, at: r.created_at.toISOString() } : null;
+  async latestCheck(projectId: string): Promise<{ results: any[]; findings: any[] | null; at: string; contractHash: string | null } | null> {
+    const r = (await this.#pool.query('select results, findings, created_at, contract_hash from cloud.checks where project_id = $1 order by id desc limit 1', [projectId])).rows[0];
+    return r ? { results: r.results, findings: r.findings, at: r.created_at.toISOString(), contractHash: r.contract_hash } : null;
   }
 }

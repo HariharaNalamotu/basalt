@@ -214,7 +214,7 @@ async function callTool(name: string, args: Record<string, any>): Promise<string
       const out = await api('POST', '/api/projects/me/check', { scan }, s.adminKey);
       const failed = out.results.filter((r: any) => !r.passed);
       const lines = [`${out.passed} of ${out.results.length} checks passed.`];
-      for (const r of failed) lines.push(`PROBLEM, ${r.title}: ${r.detail}`);
+      for (const r of failed) lines.push(`PROBLEM, ${r.title}${r.table ? ` (${r.table})` : ''}: ${r.detail}`);
       if (scan.length) {
         lines.push('', 'Data kept outside Basalt (fix each one, then run basalt_check again):');
         for (const f of scan) lines.push(`- ${f.file || 'App folder'}${f.line ? `, line ${f.line}` : ''}: ${f.problem} Fix: ${f.fix}`);

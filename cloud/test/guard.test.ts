@@ -28,6 +28,7 @@ const RULES = {
       shareWith: 'staff_id',
     },
     photos: { fields: { picture: { type: 'file', required: true }, caption: { type: 'text', format: 'slug' } } },
+    visits: { fields: { count: { type: 'integer', min: 1, max: 5, required: true } } },
   },
 };
 
@@ -81,6 +82,9 @@ describe('Guard on a Basalt app', () => {
     for (const id of ['no_login', 'bad_token', 'forged_token', 'expired_token', 'other_person_get', 'other_person_list', 'other_person_update', 'other_person_archive', 'fake_owner', 'unknown_table', 'filter_injection', 'other_person_file']) {
       assert.ok(ids.has(id), `missing check ${id}`);
     }
+    // Every table is checked, not just the first.
+    const tables = new Set(r.body.results.map((c: { table?: string }) => c.table).filter(Boolean));
+    assert.deepEqual([...tables].sort(), ['bookings', 'photos', 'visits']);
     assert.equal(r.body.failed, 0);
     assert.equal(r.body.passed, r.body.results.length);
     assert.equal(r.body.codeFindings, 1);
@@ -100,6 +104,7 @@ describe('Guard on a Basalt app', () => {
     const stats = await projects.stats(p);
     assert.equal(stats.tables.bookings.active, 0);
     assert.equal(stats.tables.photos.active, 0);
+    assert.equal(stats.tables.visits.active, 0);
   });
 
   test('needs live rules and the app key, and the receipt needs the owner link', async () => {
@@ -121,6 +126,32 @@ describe('Guard on a Basalt app', () => {
     assert.equal(r.body.codeFindings, 100);
     const html = await (await fetch(r.body.receiptUrl)).text();
     assert.doesNotMatch(html, /<script>alert/);
+  });
+});
+
+describe('Guard keeps its receipt honest', () => {
+  test('a check sent without a code scan says the code was not checked', async () => {
+    const app = await liveApp();
+    const r = await call('POST', '/api/projects/me/check', {}, app.key);
+    assert.equal(r.body.codeFindings, null);
+    const html = await (await fetch(r.body.receiptUrl)).text();
+    assert.match(html, /wasn't checked this time/);
+    assert.doesNotMatch(html, /All of the app/);
+  });
+
+  test('changing the rules marks the receipt as out of date', async () => {
+    const app = await liveApp();
+    const r = await call('POST', '/api/projects/me/check', { scan: [] }, app.key);
+    const more = structuredClone(RULES) as any;
+    more.tables.visits.fields.note = { type: 'text' };
+    assert.equal((await call('PUT', '/api/projects/me/rules', { contract: more }, app.key)).body.status, 'live');
+    assert.match(await (await fetch(r.body.receiptUrl)).text(), /rules changed after this check/);
+  });
+
+  test('one check at a time per app', async () => {
+    const app = await liveApp();
+    const [a, b] = await Promise.all([call('POST', '/api/projects/me/check', {}, app.key), call('POST', '/api/projects/me/check', {}, app.key)]);
+    assert.deepEqual([a.status, b.status].sort(), [200, 429]);
   });
 });
 
@@ -149,14 +180,50 @@ describe('Guard on an app that leaks', () => {
     await new Promise<void>((r) => leaky.listen(0, '127.0.0.1', () => r()));
     try {
       const url = `http://127.0.0.1:${(leaky.address() as AddressInfo).port}`;
-      const contract = parseContract({ tables: { bookings: RULES.tables.bookings } });
+      const contract = parseContract({ tables: { bookings: RULES.tables.bookings, visits: RULES.tables.visits } });
       const results = await runChecks(contract, { url, tokenA: 'a.a.a', tokenB: 'b.b.b', userA: randomUUID(), forged: 'f.f.f', expired: 'e.e.e' });
       const failed = new Set(results.filter((c) => !c.passed).map((c) => c.id));
       for (const id of ['no_login', 'bad_token', 'forged_token', 'expired_token', 'other_person_get', 'other_person_list', 'other_person_update', 'other_person_archive', 'fake_owner']) {
         assert.ok(failed.has(id), `${id} should fail on a leaky app`);
       }
+      // The second table is checked too.
+      assert.ok(results.some((c) => c.table === 'visits' && c.id === 'other_person_list' && !c.passed));
     } finally {
       leaky.close();
+    }
+  });
+});
+
+describe('Guard on an app that is down', () => {
+  // Errors aren't proof of safety. An app that saves and shows the owner's own
+  // entry but answers everything else with 503 must not get a clean receipt.
+  test('errors count as "couldn\'t tell", never as passed', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const flaky = createServer(async (req, res) => {
+      let raw = '';
+      for await (const c of req) raw += c;
+      const body = raw ? JSON.parse(raw) : {};
+      const op = req.url!.split('/').pop();
+      const asA = req.headers.authorization === 'Bearer a.a.a';
+      const send = (data: unknown) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true, data }));
+      if (asA && op === 'create') {
+        const row = { id: randomUUID(), ...body.input };
+        rows.set(row.id, row);
+        return send(row);
+      }
+      if (asA && (op === 'get' || op === 'update' || op === 'archive')) return send(rows.get(body.id) ?? null);
+      res.writeHead(503, { 'content-type': 'application/json' }).end('{"ok":false,"error":{"code":"unavailable","message":"busy"}}');
+    });
+    await new Promise<void>((r) => flaky.listen(0, '127.0.0.1', () => r()));
+    try {
+      const url = `http://127.0.0.1:${(flaky.address() as AddressInfo).port}`;
+      const contract = parseContract({ tables: { bookings: RULES.tables.bookings } });
+      const results = await runChecks(contract, { url, tokenA: 'a.a.a', tokenB: 'b.b.b', userA: randomUUID(), forged: 'f.f.f', expired: 'e.e.e' });
+      const passed = results.filter((c) => c.passed).map((c) => c.id);
+      assert.deepEqual(passed, []);
+      assert.ok(results.some((c) => /couldn't tell/i.test(c.detail)));
+    } finally {
+      flaky.close();
     }
   });
 });

@@ -20,7 +20,7 @@ import { Projects, type Project } from './projects.ts';
 import { runChecks } from './guard.ts';
 import { renderReceipt } from './receipt.ts';
 import type { ScanFinding } from './scan.ts';
-import { randomSecret, signToken, testUserId } from './secrets.ts';
+import { randomSecret, sha256, signToken, testUserId } from './secrets.ts';
 import { esc, page } from './html.ts';
 import { renderMap } from './map.ts';
 import { loosens, summarize } from './summary.ts';
@@ -88,8 +88,8 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 
 // Code scan findings come from the person's own machine, so they're cut down
 // to known fields and sizes before being stored or shown.
-function cleanFindings(raw: unknown): ScanFinding[] {
-  if (!Array.isArray(raw)) return [];
+function cleanFindings(raw: unknown): ScanFinding[] | null {
+  if (!Array.isArray(raw)) return null;
   const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : '');
   return raw.slice(0, 100).map((f) => ({
     rule: str(f?.rule, 40),
@@ -117,6 +117,9 @@ export function createCloudServer(options: CloudServerOptions) {
   const created = new Map<string, number[]>();
   let projectCount = 0;
   const handlers = new Map<string, { handler: DataHandler; data: BasaltData }>();
+  // Guard runs one check per app at a time, and a few across all apps.
+  const checking = new Set<string>();
+  const maxChecks = 4;
 
   function ip(req: IncomingMessage): string {
     const fwd = options.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() : '';
@@ -244,27 +247,34 @@ export function createCloudServer(options: CloudServerOptions) {
       const p = await adminProject(req);
       if (!p.approvedContract) throw new HttpError(409, "Set the app's rules first (and get them approved), then run the check.");
       const findings = cleanFindings((await readJson(req)).scan);
-      const userA = testUserId(p.jwtSecret, 'basalt check a');
-      const userB = testUserId(p.jwtSecret, 'basalt check b');
-      const now = Math.floor(Date.now() / 1000);
-      const results = await runChecks(parseContract(p.approvedContract), {
-        url: `${base}/p/${p.id}`,
-        tokenA: signToken(p.jwtSecret, userA, 600),
-        tokenB: signToken(p.jwtSecret, userB, 600),
-        userA,
-        forged: signToken(randomSecret(48), userA, 600),
-        expired: signToken(p.jwtSecret, userA, 600, now - 3600),
-      });
-      await projects.saveCheck(p.id, results, findings);
-      const passed = results.filter((r) => r.passed).length;
-      return sendJson(res, 200, {
-        ok: true,
-        passed,
-        failed: results.length - passed,
-        results,
-        codeFindings: findings.length,
-        receiptUrl: `${base}/owner/${p.id}/check?k=${await projects.ownerViewKey(p)}`,
-      });
+      if (checking.has(p.id)) throw new HttpError(429, 'A check for this app is already running. Wait for it to finish.');
+      if (checking.size >= maxChecks) throw new HttpError(503, 'Basalt is running a lot of checks right now. Try again in a minute.');
+      checking.add(p.id);
+      try {
+        const userA = testUserId(p.jwtSecret, 'basalt check a');
+        const userB = testUserId(p.jwtSecret, 'basalt check b');
+        const now = Math.floor(Date.now() / 1000);
+        const results = await runChecks(parseContract(p.approvedContract), {
+          url: `${base}/p/${p.id}`,
+          tokenA: signToken(p.jwtSecret, userA, 600),
+          tokenB: signToken(p.jwtSecret, userB, 600),
+          userA,
+          forged: signToken(randomSecret(48), userA, 600),
+          expired: signToken(p.jwtSecret, userA, 600, now - 3600),
+        });
+        await projects.saveCheck(p.id, sha256(JSON.stringify(p.approvedContract)), results, findings);
+        const passed = results.filter((r) => r.passed).length;
+        return sendJson(res, 200, {
+          ok: true,
+          passed,
+          failed: results.length - passed,
+          results,
+          codeFindings: findings === null ? null : findings.length,
+          receiptUrl: `${base}/owner/${p.id}/check?k=${await projects.ownerViewKey(p)}`,
+        });
+      } finally {
+        checking.delete(p.id);
+      }
     }
 
     throw new HttpError(404, 'Unknown route.');
@@ -370,7 +380,7 @@ ${summaryHtml(contract)}
         if (!p) return sendHtml(res, 404, page('Link not found', "<h1>This link doesn't work</h1><p>Ask Claude for your safety receipt link again.</p>"));
         const check = await projects.latestCheck(p.id);
         if (!check) return sendHtml(res, 200, page(p.name, `<h1>${esc(p.name)} hasn't been checked yet</h1><p>Ask Claude to run the safety check.</p>`));
-        return sendHtml(res, 200, renderReceipt(p.name, check));
+        return sendHtml(res, 200, renderReceipt(p.name, check, check.contractHash !== sha256(JSON.stringify(p.approvedContract))));
       }
 
       const approveMatch = /^\/approve\/([a-z0-9]{16})$/.exec(path);

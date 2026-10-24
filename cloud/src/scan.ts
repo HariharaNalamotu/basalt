@@ -86,15 +86,26 @@ export function scanFolder(root: string): ScanFinding[] {
         });
         continue;
       }
-      if (!CODE.test(entry.name) || /\.min\.js$/.test(entry.name) || statSync(full).size > MAX_BYTES) continue;
+      if (!CODE.test(entry.name) || /\.min\.js$/.test(entry.name)) continue;
+      if (statSync(full).size > MAX_BYTES) {
+        findings.push({
+          rule: 'scan_incomplete',
+          file,
+          line: 0,
+          problem: `This file is over ${MAX_BYTES / 1024} KB, so it wasn't checked.`,
+          fix: "If it's built output, keep it in a dist or build folder. Otherwise split it into smaller files.",
+        });
+        continue;
+      }
       readFileSync(full, 'utf8')
         .split('\n')
         .forEach((text, i) => {
           for (const rule of RULES) {
-            const m = rule.pattern.exec(text);
-            if (!m) continue;
-            if (rule.id === 'browser_storage' && SETTING_KEY.test(text.slice(m.index + m[0].length))) continue;
-            findings.push({ rule: rule.id, file, line: i + 1, problem: rule.problem, fix: rule.fix });
+            // Every match counts, so a harmless setting can't hide a real save on the same line.
+            const hit = [...text.matchAll(new RegExp(rule.pattern.source, 'g'))].some(
+              (m) => !(rule.id === 'browser_storage' && SETTING_KEY.test(text.slice(m.index + m[0].length))),
+            );
+            if (hit) findings.push({ rule: rule.id, file, line: i + 1, problem: rule.problem, fix: rule.fix });
           }
         });
     }

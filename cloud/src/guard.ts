@@ -5,12 +5,16 @@ import type { Contract, FieldSpec, TableSpec } from '../../data/src/index.ts';
 // nobody can reach anyone else's data. Runs only against the app it was
 // started for, with that app's test logins. Each check says in plain words
 // what it tried.
+//
+// A check only passes on a clear refusal (a 4xx answer that says no). Errors,
+// timeouts and odd answers are "couldn't tell", never safe.
 
 export interface CheckResult {
   id: string;
   title: string;
   passed: boolean;
   detail: string;
+  table?: string;
 }
 
 export interface GuardTarget {
@@ -25,47 +29,50 @@ export interface GuardTarget {
 interface Reply {
   status: number;
   ok: boolean;
+  answered: boolean; // a JSON reply in Basalt's shape came back
   data: any;
 }
 
-async function post(url: string, path: string, body: unknown, token?: string): Promise<Reply> {
+const MAX_TABLES = 20;
+
+async function send(url: string, path: string, init: RequestInit): Promise<Reply> {
   try {
-    const res = await fetch(`${url}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(token === undefined ? {} : { authorization: `Bearer ${token}` }) },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10_000),
-    });
+    const res = await fetch(`${url}${path}`, { ...init, method: 'POST', signal: AbortSignal.timeout(10_000) });
     const json: any = await res.json().catch(() => null);
-    return { status: res.status, ok: res.ok && json?.ok === true, data: json?.data };
+    const answered = typeof json?.ok === 'boolean';
+    return { status: res.status, ok: res.ok && json?.ok === true, answered, data: json?.data };
   } catch {
-    return { status: 0, ok: false, data: null };
+    return { status: 0, ok: false, answered: false, data: null };
   }
+}
+
+function post(url: string, path: string, body: unknown, token?: string): Promise<Reply> {
+  return send(url, path, {
+    headers: { 'content-type': 'application/json', ...(token === undefined ? {} : { authorization: `Bearer ${token}` }) },
+    body: JSON.stringify(body),
+  });
 }
 
 const op = (name: string) => `/v1/data/${name}`;
 
-async function upload(url: string, token: string): Promise<string | null> {
-  try {
-    const res = await fetch(`${url}/v1/files`, {
-      method: 'POST',
-      headers: { 'content-type': 'text/plain', 'x-file-name': 'basalt-check.txt', authorization: `Bearer ${token}` },
-      body: 'Basalt safety check',
-      signal: AbortSignal.timeout(10_000),
-    });
-    const json: any = await res.json().catch(() => null);
-    return json?.ok ? (json.data?.id ?? null) : null;
-  } catch {
-    return null;
-  }
+// A clear "no": the app understood the request and refused it.
+function refused(r: Reply): boolean {
+  return r.answered && !r.ok && r.status >= 400 && r.status < 500 && r.status !== 429;
 }
+
+function unsure(r: Reply): string {
+  if (r.status === 0) return "Couldn't tell: the app didn't answer.";
+  if (r.status === 429) return "Couldn't tell: the app said it was too busy.";
+  return `Couldn't tell: the app answered with an error (${r.status}).`;
+}
+
+const SAMPLE_TEXT = { email: 'a@b.co', phone: '5550100', url: 'http://a.co', postal_code: '94103', slug: 'a' };
+const OTHER_TEXT = { email: 'b@b.co', phone: '5550199', url: 'http://b.co', postal_code: '10001', slug: 'b' };
 
 function sample(spec: FieldSpec, userA: string, fileId: string | null): unknown {
   switch (spec.type) {
-    case 'text': {
-      const byFormat = { email: 'check@example.com', phone: '+1 555 0100', url: 'https://example.com', postal_code: '94103', slug: 'basalt-check' };
-      return spec.format ? byFormat[spec.format] : 'Basalt check'.slice(0, spec.maxLength);
-    }
+    case 'text':
+      return spec.format ? SAMPLE_TEXT[spec.format] : 'Basalt check'.slice(0, spec.maxLength);
     case 'integer':
     case 'number':
       return Math.min(Math.max(1, spec.min ?? 1), spec.max ?? Number.MAX_SAFE_INTEGER);
@@ -83,76 +90,138 @@ function sample(spec: FieldSpec, userA: string, fileId: string | null): unknown 
 function sampleInput(table: TableSpec, userA: string, fileId: string | null): Record<string, unknown> {
   const input: Record<string, unknown> = {};
   for (const [name, spec] of table.fields) {
-    // Leave sharing fields empty so the test row is A's alone.
-    if (spec.type === 'user' && name === table.shareWith) continue;
-    if (spec.required || spec.type !== 'user') input[name] = sample(spec, userA, fileId);
+    // Optional people and files stay empty, so the test row is A's alone.
+    if ((spec.type === 'user' || spec.type === 'file') && !spec.required) continue;
+    input[name] = sample(spec, userA, fileId);
   }
   return input;
 }
 
-function hasRow(list: Reply, id: string): boolean {
-  return Array.isArray(list.data?.rows) && list.data.rows.some((r: any) => r?.id === id);
+// A different valid value for one field, for the "change someone else's entry" check.
+function change(table: TableSpec): { field: string; value: unknown } | null {
+  for (const [field, spec] of table.fields) {
+    const was = sample(spec, '', null);
+    switch (spec.type) {
+      case 'text':
+        return { field, value: spec.format ? OTHER_TEXT[spec.format] : 'Changed'.slice(0, spec.maxLength) };
+      case 'boolean':
+        return { field, value: false };
+      case 'timestamp':
+        return { field, value: '2001-01-01T00:00:00.000Z' };
+      case 'integer':
+      case 'number': {
+        const n = was as number;
+        if (spec.max === undefined || n + 1 <= spec.max) return { field, value: n + 1 };
+        if (spec.min === undefined || n - 1 >= spec.min) return { field, value: n - 1 };
+      }
+    }
+  }
+  return null;
+}
+
+function same(a: unknown, b: unknown): boolean {
+  if (typeof b === 'string' && /^\d{4}-\d\d-\d\dT/.test(b) && typeof a === 'string') return Date.parse(a) === Date.parse(b);
+  return a === b;
+}
+
+function rowsOf(r: Reply): any[] | null {
+  return r.ok && Array.isArray(r.data?.rows) ? r.data.rows : null;
 }
 
 export async function runChecks(contract: Contract, t: GuardTarget): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
-  const check = (id: string, title: string, passed: boolean, detail: string) => results.push({ id, title, passed, detail });
-  const tables = [...contract.tables.values()];
-  // Prefer a table that needs no upload, so most apps never store a check file.
-  const table = tables.find((x) => ![...x.fields.values()].some((f) => f.type === 'file' && f.required)) ?? tables[0];
-  const needsFile = tables.some((x) => [...x.fields.values()].some((f) => f.type === 'file'));
+  const add = (id: string, title: string, passed: boolean, detail: string, table?: string) => results.push({ id, title, passed, detail, ...(table ? { table } : {}) });
+  const tables = [...contract.tables.values()].slice(0, MAX_TABLES);
+  const first = tables[0].name;
 
-  const anon = await post(t.url, op('list'), { table: table.name });
-  check('no_login', 'Someone with no login', !anon.ok, anon.ok ? 'Got data back without signing in.' : 'Was turned away.');
-  const junk = await post(t.url, op('list'), { table: table.name }, 'not-a-real-token');
-  check('bad_token', 'A made up login', !junk.ok, junk.ok ? 'A made up login was accepted.' : 'Was turned away.');
-  const forged = await post(t.url, op('list'), { table: table.name }, t.forged);
-  check('forged_token', 'A forged login for a real person', !forged.ok, forged.ok ? 'A login signed with the wrong key was accepted.' : 'Was turned away.');
-  const expired = await post(t.url, op('list'), { table: table.name }, t.expired);
-  check('expired_token', 'An expired login', !expired.ok, expired.ok ? 'An expired login still worked.' : 'Was turned away.');
-
-  const fileId = needsFile ? await upload(t.url, t.tokenA) : null;
-  const made = await post(t.url, op('create'), { table: table.name, input: sampleInput(table, t.userA, fileId) }, t.tokenA);
-  const id: string | undefined = made.ok ? made.data?.id : undefined;
-  if (!id) {
-    check('setup', 'Saving a test entry', false, "Couldn't save a test entry as a test person, so the checks below couldn't run.");
-    return results;
+  // Logins that should never work.
+  const stranger: [string, string, string | undefined][] = [
+    ['no_login', 'Someone with no login', undefined],
+    ['bad_token', 'A made up login', 'not-a-real-token'],
+    ['forged_token', 'A forged login for a real person', t.forged],
+    ['expired_token', 'An expired login', t.expired],
+  ];
+  for (const [id, title, token] of stranger) {
+    const r = await post(t.url, op('list'), { table: first }, token);
+    add(id, title, refused(r), r.ok ? 'Got data back without a valid login.' : refused(r) ? 'Was turned away.' : unsure(r));
   }
-
-  const get = await post(t.url, op('get'), { table: table.name, id }, t.tokenB);
-  check('other_person_get', "Opening someone else's entry", !get.ok || get.data?.id !== id, get.ok && get.data?.id === id ? "Person B opened person A's entry." : 'Person B got "not found".');
-
-  const list = await post(t.url, op('list'), { table: table.name }, t.tokenB);
-  check('other_person_list', "Listing everyone's entries", !hasRow(list, id), hasRow(list, id) ? "Person A's entry showed up in person B's list." : "Person B's list only had their own entries.");
-
-  const field = [...table.fields].find(([n, s]) => s.type === 'text' && !s.format && n !== table.shareWith)?.[0];
-  const change = field ? { [field]: 'changed by someone else' } : {};
-  const upd = await post(t.url, op('update'), { table: table.name, id, input: change }, t.tokenB);
-  const after = await post(t.url, op('get'), { table: table.name, id }, t.tokenA);
-  const changed = upd.ok || (field !== undefined && after.data?.[field] === 'changed by someone else');
-  check('other_person_update', "Changing someone else's entry", !changed, changed ? "Person B changed person A's entry." : 'Refused, and the entry was untouched.');
-
-  const arc = await post(t.url, op('archive'), { table: table.name, id }, t.tokenB);
-  check('other_person_archive', "Removing someone else's entry", !arc.ok, arc.ok ? "Person B removed person A's entry." : 'Refused.');
-
-  const fake = await post(t.url, op('create'), { table: table.name, input: { ...sampleInput(table, t.userA, fileId), owner_id: t.userA } }, t.tokenB);
-  const faked = fake.ok && fake.data?.owner_id === t.userA;
-  check('fake_owner', 'Saving an entry in someone else\'s name', !faked, faked ? 'Person B saved an entry that says person A made it.' : 'Refused.');
-  if (fake.ok && fake.data?.id) await post(t.url, op('archive'), { table: table.name, id: fake.data.id }, t.tokenB);
 
   const sys = await post(t.url, op('list'), { table: 'pg_authid' }, t.tokenB);
-  check('unknown_table', "Reading the database's own tables", !sys.ok, sys.ok ? 'The database\'s internal tables answered.' : 'Refused.');
+  add('unknown_table', "Reading the database's own tables", refused(sys), sys.ok ? "The database's internal tables answered." : refused(sys) ? 'Refused.' : unsure(sys));
 
-  const textField = [...table.fields].find(([, s]) => s.type === 'text')?.[0];
-  const inj = textField ? await post(t.url, op('list'), { table: table.name, where: { [textField]: "x' or '1'='1" } }, t.tokenB) : { ok: false, status: 0, data: null };
-  check('filter_injection', 'A search that tries to sneak in database code', !hasRow(inj, id), hasRow(inj, id) ? "The search returned person A's entry." : 'Treated as plain text, nothing leaked.');
-
-  if (needsFile && fileId) {
-    const link = await post(t.url, '/v1/files/link', { id: fileId }, t.tokenB);
-    check('other_person_file', "Downloading someone else's file", !link.ok, link.ok ? "Person B got a download link for person A's file." : 'Refused.');
+  // A test file, only when the app takes uploads.
+  const usesFiles = tables.some((x) => [...x.fields.values()].some((f) => f.type === 'file'));
+  let fileId: string | null = null;
+  if (usesFiles) {
+    const up = await send(t.url, '/v1/files', {
+      headers: { 'content-type': 'text/plain', 'x-file-name': 'basalt-check.txt', authorization: `Bearer ${t.tokenA}` },
+      body: 'Basalt safety check',
+    });
+    fileId = up.ok && typeof up.data?.id === 'string' ? up.data.id : null;
+    if (!fileId) {
+      add('other_person_file', "Downloading someone else's file", false, "Couldn't upload a test file, so this wasn't checked.");
+    } else {
+      const link = await post(t.url, '/v1/files/link', { id: fileId }, t.tokenB);
+      add('other_person_file', "Downloading someone else's file", refused(link), link.ok ? "Person B got a download link for person A's file." : refused(link) ? 'Refused.' : unsure(link));
+    }
   }
 
-  // Clean up: the test entry is archived, so the owner's counts don't change.
-  await post(t.url, op('archive'), { table: table.name, id }, t.tokenA);
+  for (const table of tables) {
+    const name = table.name;
+    const made = await post(t.url, op('create'), { table: name, input: sampleInput(table, t.userA, fileId) }, t.tokenA);
+    const id: string | undefined = made.ok && typeof made.data?.id === 'string' ? made.data.id : undefined;
+    // Positive control: the owner can read their own entry, so a refusal below means something.
+    const mine = id ? await post(t.url, op('get'), { table: name, id }, t.tokenA) : null;
+    if (!id || !mine?.ok || mine.data?.id !== id) {
+      add('setup', 'Saving a test entry', false, "Couldn't save and read back a test entry as its owner, so this part wasn't checked.", name);
+      continue;
+    }
+
+    const get = await post(t.url, op('get'), { table: name, id }, t.tokenB);
+    const gotIt = get.ok && get.data?.id === id;
+    add('other_person_get', "Opening someone else's entry", !gotIt && (refused(get) || get.ok), gotIt ? "Person B opened person A's entry." : refused(get) || get.ok ? 'Person B got "not found".' : unsure(get), name);
+
+    const list = await post(t.url, op('list'), { table: name }, t.tokenB);
+    const rows = rowsOf(list);
+    const listed = rows?.some((r) => r?.id === id) ?? false;
+    add('other_person_list', "Listing everyone's entries", rows !== null && !listed, listed ? "Person A's entry showed up in person B's list." : rows ? "Person B's list only had their own entries." : unsure(list), name);
+
+    const c = change(table);
+    if (!c) {
+      add('other_person_update', "Changing someone else's entry", false, "Couldn't tell: this kind of entry has no field the check knows how to change.", name);
+    } else {
+      const upd = await post(t.url, op('update'), { table: name, id, input: { [c.field]: c.value } }, t.tokenB);
+      const after = await post(t.url, op('get'), { table: name, id }, t.tokenA);
+      const changed = upd.ok || (after.ok && same(after.data?.[c.field], c.value));
+      if (changed) add('other_person_update', "Changing someone else's entry", false, "Person B changed person A's entry.", name);
+      else if (!refused(upd)) add('other_person_update', "Changing someone else's entry", false, unsure(upd), name);
+      else {
+        // The same change must work for the owner, or the refusal proves nothing.
+        const own = await post(t.url, op('update'), { table: name, id, input: { [c.field]: c.value } }, t.tokenA);
+        add('other_person_update', "Changing someone else's entry", own.ok, own.ok ? 'Refused, and the entry was untouched.' : "Couldn't tell: the owner couldn't make the same change either.", name);
+      }
+    }
+
+    const arc = await post(t.url, op('archive'), { table: name, id }, t.tokenB);
+    add('other_person_archive', "Removing someone else's entry", refused(arc), arc.ok ? "Person B removed person A's entry." : refused(arc) ? 'Refused.' : unsure(arc), name);
+
+    const fake = await post(t.url, op('create'), { table: name, input: { ...sampleInput(table, t.userA, fileId), owner_id: t.userA } }, t.tokenB);
+    const faked = fake.ok && fake.data?.owner_id === t.userA;
+    add('fake_owner', "Saving an entry in someone else's name", !faked && (refused(fake) || fake.ok), faked ? 'Person B saved an entry that says person A made it.' : refused(fake) || fake.ok ? 'Refused.' : unsure(fake), name);
+    if (fake.ok && typeof fake.data?.id === 'string') await post(t.url, op('archive'), { table: name, id: fake.data.id }, t.tokenB);
+
+    const textField = [...table.fields].find(([, s]) => s.type === 'text')?.[0];
+    if (textField) {
+      const inj = await post(t.url, op('list'), { table: name, where: { [textField]: "x' or '1'='1" } }, t.tokenB);
+      const injRows = rowsOf(inj);
+      const leaked = injRows?.some((r) => r?.id === id) ?? false;
+      const ok = !leaked && (injRows !== null || refused(inj));
+      add('filter_injection', 'A search that tries to sneak in database code', ok, leaked ? "The search returned person A's entry." : ok ? 'Treated as plain text, nothing leaked.' : unsure(inj), name);
+    }
+
+    // Clean up, so the owner's counts don't change.
+    const done = await post(t.url, op('archive'), { table: name, id }, t.tokenA);
+    if (!done.ok) add('cleanup', 'Tidying up the test entry', false, "The test entry couldn't be archived. It's marked Basalt check.", name);
+  }
   return results;
 }

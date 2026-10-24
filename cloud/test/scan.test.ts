@@ -87,6 +87,17 @@ describe('the code scan', () => {
     assert.deepEqual(scanFolder(dir), []);
   });
 
+  test('a harmless setting on a line never hides a real save on the same line', () => {
+    const dir = folder({ 'app.js': "localStorage.setItem('theme', 'dark'); localStorage.setItem('customers', JSON.stringify(all));" });
+    assert.deepEqual(rules(dir), ['browser_storage']);
+  });
+
+  test('a code file too big to read is reported, not treated as clean', () => {
+    const dir = folder({ 'bundle.js': `${'// filler\n'.repeat(60000)}localStorage.setItem('orders', x);` });
+    assert.deepEqual(rules(dir), ['scan_incomplete']);
+    assert.equal(scanFolder(dir)[0].file, 'bundle.js');
+  });
+
   test('a folder with too many files is cut off instead of hanging', () => {
     const files: Record<string, string> = {};
     for (let i = 0; i < 2100; i++) files[`f${i}.js`] = i === 2099 ? "localStorage.setItem('orders', x);" : '';
