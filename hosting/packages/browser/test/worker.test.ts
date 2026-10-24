@@ -73,8 +73,10 @@ describe('browser worker', () => {
 
   it('opens at phone size and in dark mode when asked, so agents can check the layout people actually see', async () => {
     const s = await worker.open({ host: 'todo--staging.apps.test', owner: 'ws_view', viewport: 'phone', colorScheme: 'dark' });
-    const size = await worker.act(s.sessionId, 'ws_view', { type: 'evaluate', expression: 'innerWidth + "x" + innerHeight' });
-    expect(size.value).toBe('390x844');
+    // The emulated screen is a phone. (The page's layout width is 980 unless it has a mobile
+    // viewport meta tag, exactly like a real phone, which is the point of checking.)
+    const size = await worker.act(s.sessionId, 'ws_view', { type: 'evaluate', expression: 'screen.width + "x" + screen.height' });
+    expect(size.value).toBe('"390x844"');
     const dark = await worker.act(s.sessionId, 'ws_view', { type: 'evaluate', expression: 'matchMedia("(prefers-color-scheme: dark)").matches' });
     expect(dark.value).toBe('true');
     const d = await worker.open({ host: 'todo--staging.apps.test', owner: 'ws_view' });
