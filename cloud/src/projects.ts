@@ -64,7 +64,10 @@ export class Projects {
   async init(): Promise<void> {
     const c = await this.#pool.connect();
     try {
+      // Two servers starting at once would race to create the same objects.
       await c.query(`
+        begin;
+        select pg_advisory_xact_lock(hashtext('basalt cloud init'));
         create schema if not exists cloud;
         revoke all on schema cloud from public;
         create table if not exists cloud.projects (
@@ -93,7 +96,19 @@ export class Projects {
         alter table cloud.approvals add column if not exists kind text not null default 'rules' check (kind in ('rules', 'admin'));
         alter table cloud.approvals add column if not exists admin_uid uuid;
         alter table cloud.approvals add column if not exists admin_label text;
-        alter table cloud.approvals alter column contract drop not null;`);
+        alter table cloud.approvals alter column contract drop not null;
+        create table if not exists cloud.checks (
+          id bigint generated always as identity primary key,
+          project_id text not null references cloud.projects (id),
+          results jsonb not null,
+          findings jsonb not null,
+          created_at timestamptz not null default now()
+        );
+        create index if not exists checks_project_recent on cloud.checks (project_id, created_at desc);
+        commit;`);
+    } catch (err) {
+      await c.query('rollback').catch(() => {});
+      throw err;
     } finally {
       c.release();
     }
@@ -283,5 +298,15 @@ export class Projects {
 
   async decide(approval: Approval, status: 'approved' | 'rejected'): Promise<void> {
     await this.#pool.query(`update cloud.approvals set status = $2, decided_at = now() where id = $1 and status = 'pending'`, [approval.id, status]);
+  }
+
+  // Guard results, shown on the owner's safety receipt.
+  async saveCheck(projectId: string, results: unknown, findings: unknown): Promise<void> {
+    await this.#pool.query('insert into cloud.checks (project_id, results, findings) values ($1, $2, $3)', [projectId, JSON.stringify(results), JSON.stringify(findings)]);
+  }
+
+  async latestCheck(projectId: string): Promise<{ results: any[]; findings: any[]; at: string } | null> {
+    const r = (await this.#pool.query('select results, findings, created_at from cloud.checks where project_id = $1 order by created_at desc, id desc limit 1', [projectId])).rows[0];
+    return r ? { results: r.results, findings: r.findings, at: r.created_at.toISOString() } : null;
   }
 }

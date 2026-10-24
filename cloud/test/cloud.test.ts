@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -338,7 +338,7 @@ describe('the MCP server Claude Code uses', () => {
       assert.equal(init.result.serverInfo.name, 'basalt');
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
       const names = (await rpc('tools/list')).result.tools.map((t: any) => t.name);
-      assert.deepEqual(names, ['basalt_start', 'basalt_set_rules', 'basalt_status', 'basalt_connect_app', 'basalt_make_admin', 'basalt_test_login']);
+      assert.deepEqual(names, ['basalt_start', 'basalt_set_rules', 'basalt_status', 'basalt_connect_app', 'basalt_make_admin', 'basalt_test_login', 'basalt_check']);
 
       assert.match((await tool('basalt_status')).text, /call basalt_start first/i);
       assert.match((await tool('basalt_start', { app_name: "Maria's Salon" })).text, /locked down database/);
@@ -356,6 +356,14 @@ describe('the MCP server Claude Code uses', () => {
       assert.match(connect.text, /export function basalt\(getToken\)/);
       const login1 = await tool('basalt_test_login', { who: 'maria' });
       assert.match(login1.text, /good for one hour/);
+
+      // The check scans this folder for data kept outside Basalt, then tests the live app.
+      writeFileSync(join(dir, 'app.js'), "localStorage.setItem('bookings', JSON.stringify(list));\n");
+      const check = await tool('basalt_check');
+      assert.equal(check.isError, false, check.text);
+      assert.match(check.text, /checks passed/);
+      assert.match(check.text, /app\.js, line 1/);
+      assert.match(check.text, /owner\/[a-z0-9]{10}\/check\?k=/);
 
       const bad = await tool('basalt_set_rules', { rules: { tables: {} } });
       assert.equal(bad.isError, true);

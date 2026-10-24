@@ -8,6 +8,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { scanFolder } from './scan.ts';
 
 const BASALT_URL = (process.env.BASALT_URL ?? 'http://127.0.0.1:8790').replace(/\/+$/, '');
 const DIR = process.env.BASALT_PROJECT_DIR ?? process.cwd();
@@ -158,6 +159,12 @@ const TOOLS = [
     description: 'Gives a login token for a pretend person, so you can try the app as them. Use two different names to check that one person can never see the other\'s data. Tokens last one hour.',
     inputSchema: { type: 'object', properties: { who: { type: 'string', description: 'A name for the pretend person, like "maria" or "customer two".' } }, required: ['who'] },
   },
+  {
+    name: 'basalt_check',
+    description:
+      "Runs Basalt's safety check before the app goes live, and again after any change to how it saves data. It looks through this app's folder for data kept anywhere other than Basalt, then signs in to this app as two pretend people and a stranger and tries to reach data that isn't theirs. Fix anything it finds, run it again, and give the person the safety receipt link.",
+    inputSchema: { type: 'object', properties: {} },
+  },
 ];
 
 async function callTool(name: string, args: Record<string, any>): Promise<string> {
@@ -189,7 +196,7 @@ async function callTool(name: string, args: Record<string, any>): Promise<string
       const s = need();
       const out = await api('GET', '/api/projects/me', undefined, s.adminKey);
       if (out.project.status !== 'live') return 'The rules aren\'t live yet. Finish basalt_set_rules (and the person\'s approval) first.';
-      return `Save this as basalt.js in the app and use it for all data:\n\n${clientCode(s.dataUrl)}\nUse it like:\n  import { basalt } from './basalt.js';\n  const db = basalt(() => currentUserToken);\n  const booking = await db.create('bookings', { service: 'Haircut', starts_at: '2026-10-25T15:00:00Z' });\n  const page = await db.list('bookings', { limit: 20 });\n  await db.archive('bookings', booking.id); // cancel, can be restored\n\nAdmins (see basalt_make_admin) get every row from list, not just their own.\n\nThe rules in plain English:\n${out.project.rules}\n\nIf a call fails, err.message says why in plain words and err.code says what kind of problem it is.`;
+      return `Save this as basalt.js in the app and use it for all data:\n\n${clientCode(s.dataUrl)}\nUse it like:\n  import { basalt } from './basalt.js';\n  const db = basalt(() => currentUserToken);\n  const booking = await db.create('bookings', { service: 'Haircut', starts_at: '2026-10-25T15:00:00Z' });\n  const page = await db.list('bookings', { limit: 20 });\n  await db.archive('bookings', booking.id); // cancel, can be restored\n\nAdmins (see basalt_make_admin) get every row from list, not just their own.\n\nThe rules in plain English:\n${out.project.rules}\n\nIf a call fails, err.message says why in plain words and err.code says what kind of problem it is.\n\nWhen the app works, run basalt_check before it goes live.`;
     }
     case 'basalt_make_admin': {
       const s = need();
@@ -200,6 +207,22 @@ async function callTool(name: string, args: Record<string, any>): Promise<string
       const s = need();
       const out = await api('POST', '/api/projects/me/test-login', { who: String(args.who ?? 'test person') }, s.adminKey);
       return `Test login for "${out.who}" (user id ${out.userId}), good for one hour:\n${out.token}`;
+    }
+    case 'basalt_check': {
+      const s = need();
+      const scan = scanFolder(DIR);
+      const out = await api('POST', '/api/projects/me/check', { scan }, s.adminKey);
+      const failed = out.results.filter((r: any) => !r.passed);
+      const lines = [`${out.passed} of ${out.results.length} checks passed.`];
+      for (const r of failed) lines.push(`PROBLEM, ${r.title}: ${r.detail}`);
+      if (scan.length) {
+        lines.push('', 'Data kept outside Basalt (fix each one, then run basalt_check again):');
+        for (const f of scan) lines.push(`- ${f.file || 'App folder'}${f.line ? `, line ${f.line}` : ''}: ${f.problem} Fix: ${f.fix}`);
+      } else {
+        lines.push('No data is kept outside Basalt.');
+      }
+      lines.push('', `Safety receipt for the person (share it only with them):\n${out.receiptUrl}`);
+      return lines.join('\n');
     }
   }
   throw new Error(`Unknown tool ${name}.`);

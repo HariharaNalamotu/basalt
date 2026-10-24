@@ -6,8 +6,10 @@
 //   PUT  /api/projects/me/rules        { contract }  -> live now, or waiting for the owner's yes
 //   POST /api/projects/me/test-login   { who }       -> a login token for a test person
 //   POST /api/projects/me/admins       { who | userId } -> asks the owner to make someone an admin
+//   POST /api/projects/me/check        { scan? }     -> Guard's safety check, with a receipt link
 //   GET  /approve/<id>?t=<token>                     -> the owner's approval page
 //   GET  /owner/<project id>?k=<key>                  -> the owner's data map
+//   GET  /owner/<project id>/check?k=<key>            -> the owner's safety receipt
 //   POST /p/<project id>/v1/data/<op>                -> that app's data API
 //
 //   node --env-file=.env src/server.ts
@@ -15,7 +17,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { BasaltData, BasaltError, createDataHandler, parseContract, setServerLimits, type Contract, type DataHandler } from '../../data/src/index.ts';
 import { Projects, type Project } from './projects.ts';
-import { signToken, testUserId } from './secrets.ts';
+import { runChecks } from './guard.ts';
+import { renderReceipt } from './receipt.ts';
+import type { ScanFinding } from './scan.ts';
+import { randomSecret, signToken, testUserId } from './secrets.ts';
 import { esc, page } from './html.ts';
 import { renderMap } from './map.ts';
 import { loosens, summarize } from './summary.ts';
@@ -79,6 +84,20 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   }
   if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new HttpError(400, 'Send a JSON object.');
   return body as Record<string, unknown>;
+}
+
+// Code scan findings come from the person's own machine, so they're cut down
+// to known fields and sizes before being stored or shown.
+function cleanFindings(raw: unknown): ScanFinding[] {
+  if (!Array.isArray(raw)) return [];
+  const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : '');
+  return raw.slice(0, 100).map((f) => ({
+    rule: str(f?.rule, 40),
+    file: str(f?.file, 300),
+    line: Number.isSafeInteger(f?.line) && f.line > 0 ? f.line : 0,
+    problem: str(f?.problem, 300),
+    fix: str(f?.fix, 300),
+  }));
 }
 
 function summaryHtml(contract: Contract): string {
@@ -221,6 +240,33 @@ export function createCloudServer(options: CloudServerOptions) {
       return sendJson(res, 202, { ok: true, status: 'waiting_for_owner', approveUrl: `${base}/approve/${id}?t=${token}`, userId: uid });
     }
 
+    if (req.method === 'POST' && path === '/api/projects/me/check') {
+      const p = await adminProject(req);
+      if (!p.approvedContract) throw new HttpError(409, "Set the app's rules first (and get them approved), then run the check.");
+      const findings = cleanFindings((await readJson(req)).scan);
+      const userA = testUserId(p.jwtSecret, 'basalt check a');
+      const userB = testUserId(p.jwtSecret, 'basalt check b');
+      const now = Math.floor(Date.now() / 1000);
+      const results = await runChecks(parseContract(p.approvedContract), {
+        url: `${base}/p/${p.id}`,
+        tokenA: signToken(p.jwtSecret, userA, 600),
+        tokenB: signToken(p.jwtSecret, userB, 600),
+        userA,
+        forged: signToken(randomSecret(48), userA, 600),
+        expired: signToken(p.jwtSecret, userA, 600, now - 3600),
+      });
+      await projects.saveCheck(p.id, results, findings);
+      const passed = results.filter((r) => r.passed).length;
+      return sendJson(res, 200, {
+        ok: true,
+        passed,
+        failed: results.length - passed,
+        results,
+        codeFindings: findings.length,
+        receiptUrl: `${base}/owner/${p.id}/check?k=${await projects.ownerViewKey(p)}`,
+      });
+    }
+
     throw new HttpError(404, 'Unknown route.');
   }
 
@@ -316,6 +362,15 @@ ${summaryHtml(contract)}
         if (!p) return sendHtml(res, 404, page('Link not found', "<h1>This link doesn't work</h1><p>Ask Claude for your data map link again.</p>"));
         if (!p.approvedContract) return sendHtml(res, 200, page(p.name, `<h1>${esc(p.name)} has no rules yet</h1><p>Once you approve them, this page shows where everything lives.</p>`));
         return sendHtml(res, 200, renderMap(p.name, parseContract(p.approvedContract), await projects.stats(p)));
+      }
+
+      const receiptMatch = /^\/owner\/([a-z0-9]{10})\/check$/.exec(path);
+      if (receiptMatch && req.method === 'GET') {
+        const p = await projects.checkOwnerViewKey(receiptMatch[1], url.searchParams.get('k'));
+        if (!p) return sendHtml(res, 404, page('Link not found', "<h1>This link doesn't work</h1><p>Ask Claude for your safety receipt link again.</p>"));
+        const check = await projects.latestCheck(p.id);
+        if (!check) return sendHtml(res, 200, page(p.name, `<h1>${esc(p.name)} hasn't been checked yet</h1><p>Ask Claude to run the safety check.</p>`));
+        return sendHtml(res, 200, renderReceipt(p.name, check));
       }
 
       const approveMatch = /^\/approve\/([a-z0-9]{16})$/.exec(path);

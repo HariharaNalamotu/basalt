@@ -55,8 +55,7 @@ export function testUserId(projectSecret: string, label: string): string {
 }
 
 // Signs a login token in the shape basalt.uid() checks.
-export function signToken(projectSecret: string, sub: string, seconds = 3600): string {
-  const now = Math.floor(Date.now() / 1000);
+export function signToken(projectSecret: string, sub: string, seconds = 3600, now = Math.floor(Date.now() / 1000)): string {
   const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
   const unsigned = `${enc({ alg: 'HS256', typ: 'JWT' })}.${enc({ sub, aud: 'authenticated', role: 'authenticated', iat: now, exp: now + seconds })}`;
   return `${unsigned}.${createHmac('sha256', projectSecret).update(unsigned).digest('base64url')}`;
