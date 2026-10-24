@@ -34,6 +34,9 @@ jobs:
         working-directory: api
       - run: npm ci && npm audit --omit=dev --audit-level=high
         working-directory: hosting
+      # The browser worker's tests drive a real Chromium (same Playwright version as the platform).
+      - run: npx playwright install --with-deps chromium
+        working-directory: hosting/packages/browser
       - run: npm run build && npm run typecheck && npm test
         working-directory: hosting
       - name: The connector's local scan matches Basalt Cloud's
