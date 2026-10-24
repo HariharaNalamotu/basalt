@@ -66,12 +66,34 @@ services:
       MAIL_WEBHOOK_SECRET: ${MAIL_WEBHOOK_SECRET}
     networks: [core]
 
+  # Basalt Cloud: the Data block. One locked down database per environment, served to apps
+  # at /_basalt/data on their own site and to owners and Claude at cloud.<root domain>.
+  cloud:
+    <<: *hardening
+    build: { context: ../.., dockerfile: cloud/Dockerfile }
+    image: basalt/cloud:local
+    container_name: basalt-cloud
+    depends_on: { postgres: { condition: service_healthy }, auth: { condition: service_started } }
+    environment:
+      CLOUD_ADMIN_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      CLOUD_DB_HOST: postgres:5432
+      CLOUD_MASTER_KEY: ${CLOUD_MASTER_KEY}
+      CLOUD_PLATFORM_KEY: ${CLOUD_PLATFORM_KEY}
+      AUTH_URL: http://auth:8787
+      AUTH_PLATFORM_KEY: ${AUTH_PLATFORM_KEY}
+      PUBLIC_URL: https://cloud.${ROOT_DOMAIN}
+      TRUST_PROXY: "1"
+    read_only: true
+    cap_drop: [ALL]
+    networks:
+      core: { aliases: [cloud] }
+
   control:
     <<: *hardening
     build: { context: ../.., dockerfile: hosting/Dockerfile, target: control }
     image: basalt/control:local
     container_name: basalt-control
-    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy }, auth: { condition: service_started } }
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy }, auth: { condition: service_started }, cloud: { condition: service_started } }
     environment:
       ROOT_DOMAIN: ${ROOT_DOMAIN}
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/basalt_host
@@ -87,6 +109,9 @@ services:
       MAIL_FROM: ${MAIL_FROM:-no-reply@${ROOT_DOMAIN}}
       DATA_VOLUME: basalt-data
       BUILD_NETWORK: basalt_build
+      CLOUD_INTERNAL_URL: http://cloud:8790
+      CLOUD_PLATFORM_KEY: ${CLOUD_PLATFORM_KEY}
+      INFRA_CONTAINERS: basalt-postgres,basalt-redis,basalt-auth,basalt-edge,basalt-egress,basalt-cloud
     volumes:
       - basalt-data:/data
       - /var/run/docker.sock:/var/run/docker.sock

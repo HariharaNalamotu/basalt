@@ -51,6 +51,10 @@ const Env = z.object({
   BUILD_MEMORY_MB: z.coerce.number().int().default(1536),
   TEST_MEMORY_MB: z.coerce.number().int().default(1536),
   BUILD_TIMEOUT_MINUTES: z.coerce.number().int().default(15),
+  /** Basalt Cloud (the Data block) on the platform network, like http://cloud:8790. Unset: no data projects. */
+  CLOUD_INTERNAL_URL: z.string().url().optional(),
+  /** Cloud's CLOUD_PLATFORM_KEY. */
+  CLOUD_PLATFORM_KEY: z.string().min(32).optional(),
 });
 
 export type Config = ReturnType<typeof loadConfig>;
@@ -61,5 +65,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const c = r.data;
   const masterKey = Buffer.from(c.MASTER_KEY, 'base64');
   if (masterKey.length !== 32) throw new Error('MASTER_KEY must be 32 bytes, base64');
-  return { ...c, masterKey, infraContainers: c.INFRA_CONTAINERS.split(',').map((s) => s.trim()).filter(Boolean) };
+  if (Boolean(c.CLOUD_INTERNAL_URL) !== Boolean(c.CLOUD_PLATFORM_KEY)) throw new Error('Set both CLOUD_INTERNAL_URL and CLOUD_PLATFORM_KEY, or neither.');
+  const dataLink = c.CLOUD_INTERNAL_URL && c.CLOUD_PLATFORM_KEY ? { url: c.CLOUD_INTERNAL_URL, platformKey: c.CLOUD_PLATFORM_KEY } : null;
+  return { ...c, masterKey, dataLink, infraContainers: c.INFRA_CONTAINERS.split(',').map((s) => s.trim()).filter(Boolean) };
 }

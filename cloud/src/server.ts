@@ -173,6 +173,9 @@ export function createCloudServer(options: CloudServerOptions) {
   }
 
   function requirePlatform(req: IncomingMessage): void {
+    // Only Basalt Host's control plane calls this, directly over the platform network. Anything
+    // that came through the edge carries X-Forwarded-For, so the platform API isn't there for it.
+    if (options.trustProxy && req.headers['x-forwarded-for'] !== undefined) throw new HttpError(404, 'Unknown route.');
     const presented = /^Bearer (\S+)$/.exec(req.headers.authorization ?? '')?.[1] ?? '';
     const ok =
       Boolean(options.platformKey) &&

@@ -441,3 +441,30 @@ describe('the MCP server Claude Code uses', () => {
     }
   });
 });
+
+describe('the hosting platform API', () => {
+  test('makes a database bound to an existing Auth project, only for the platform key and never from the internet', async () => {
+    const platformKey = 'p'.repeat(64);
+    const host = createCloudServer({ projects, auth, platformKey, publicUrl: 'http://placeholder', trustProxy: true });
+    await new Promise<void>((r) => host.server.listen(0, '127.0.0.1', () => r()));
+    const url = `http://127.0.0.1:${(host.server.address() as AddressInfo).port}`;
+    try {
+      const { projectId } = await auth.createProject('Hosted env');
+      const make = (key: string, headers: Record<string, string> = {}) =>
+        fetch(`${url}/api/platform/projects`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${key}`, ...headers },
+          body: JSON.stringify({ name: 'Hosted env', authProjectId: projectId, authOwner: auth.defaultOwner }),
+        });
+      assert.equal((await make('wrong')).status, 401);
+      // Through the edge (which always sets X-Forwarded-For) the platform API doesn't exist.
+      assert.equal((await make(platformKey, { 'x-forwarded-for': '203.0.113.9' })).status, 404);
+      const ok = await make(platformKey);
+      assert.equal(ok.status, 201);
+      assert.match((await ok.json()).project.id, /^[a-z0-9]{10}$/);
+    } finally {
+      await host.close();
+      await new Promise((r) => host.server.close(r));
+    }
+  });
+});

@@ -1,4 +1,5 @@
 import { rm } from 'node:fs/promises';
+import { createDataProject, dataUrlFor, deleteDataProject } from './data-link.js';
 import path from 'node:path';
 import pg from 'pg';
 import { setupApp } from '@basalt/api-mcp';
@@ -23,6 +24,9 @@ export interface EnvRow {
   status: string;
   subnet_index: number;
   auth_project_id: string | null;
+  /** Basalt Cloud data project served at /_basalt/data, and its admin key (sealed). */
+  data_project_id: string | null;
+  data_admin_key_enc: Buffer | null;
   current_release_id: string | null;
   sleeping: boolean;
   protection: Record<string, unknown>;
@@ -39,6 +43,7 @@ const INFRA_ALIASES: Record<string, string> = {
   'basalt-auth': 'auth',
   'basalt-edge': 'edge',
   'basalt-egress': 'egress',
+  'basalt-cloud': 'cloud',
 };
 
 export class CapacityError extends Error {}
@@ -116,7 +121,7 @@ export class Environments {
         // The only route to the internet is the egress proxy (private networks are blocked there).
         HTTPS_PROXY: { value: this.ctx.cfg.EGRESS_PROXY, secret: false },
         HTTP_PROXY: { value: this.ctx.cfg.EGRESS_PROXY, secret: false },
-        NO_PROXY: { value: 'auth,postgres,redis,localhost,127.0.0.1', secret: false },
+        NO_PROXY: { value: 'auth,cloud,postgres,redis,localhost,127.0.0.1', secret: false },
         NODE_USE_ENV_PROXY: { value: '1', secret: false },
         NODE_ENV: { value: 'production', secret: false },
         PORT: { value: '3000', secret: false },
@@ -125,7 +130,21 @@ export class Environments {
         BASALT_ENVIRONMENT: { value: kind, secret: false },
         BASALT_APP_HOST: { value: env.host, secret: false },
       });
-      env = (await this.ctx.db.query<EnvRow>(`UPDATE environments SET status = 'ready', auth_project_id = $2, error = NULL WHERE id = $1 RETURNING *`, [env.id, r.projectId])).rows[0]!;
+      // The Data block: a Cloud data project that accepts this environment's Auth tokens.
+      let data: { projectId: string; adminKey: string } | null = null;
+      if (this.ctx.cfg.dataLink) {
+        data = env.data_project_id ? null : await createDataProject(this.ctx.cfg.dataLink, { name: `${app.name} (${slug})`, authProjectId: r.projectId, authOwner: app.workspace_id });
+        const projectId = data?.projectId ?? env.data_project_id;
+        await platform.writeEnv(envKey(app.name, slug), { BASALT_DATA_URL: { value: dataUrlFor(this.ctx.cfg.dataLink, projectId)!, secret: false } });
+      }
+      env = (
+        await this.ctx.db.query<EnvRow>(
+          `UPDATE environments SET status = 'ready', auth_project_id = $2, error = NULL,
+             data_project_id = COALESCE($3, data_project_id), data_admin_key_enc = COALESCE($4, data_admin_key_enc)
+           WHERE id = $1 RETURNING *`,
+          [env.id, r.projectId, data?.projectId ?? null, data ? this.ctx.box.seal(data.adminKey, `data:${env.id}`) : null],
+        )
+      ).rows[0]!;
       this.ctx.routes.bump();
       return env;
     } catch (err) {
@@ -179,6 +198,8 @@ export class Environments {
       }).catch(() => {});
     }
     step('auth');
+    if (env.data_project_id && this.ctx.cfg.dataLink) await deleteDataProject(this.ctx.cfg.dataLink, env.data_project_id).catch(() => {});
+    step('data');
     await this.ctx.redis.call('ACL', 'DELUSER', `u_${env.id}`).catch(() => {});
     await this.ctx.redis.call('ACL', 'SAVE').catch(() => {});
     step('redis');

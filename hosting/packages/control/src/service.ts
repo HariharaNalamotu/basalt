@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { dataUrlFor } from './data-link.js';
 import { z } from 'zod';
 import { mergeConfig, readConfig, setRoutePolicy, writeConfig } from '@basalt/api-mcp';
 import { DEFAULT_PROTECTION, EMPTY_CSP, type AppRoute, type CspSettings, type ProtectionSettings, type Route, type RouteTable } from '@basalt/host-shared';
@@ -450,11 +451,14 @@ export class Host {
         accessKey: this.envs.accessKey(e),
         protection: { ...DEFAULT_PROTECTION, ...(e.protection as Partial<ProtectionSettings>) },
         csp: { ...EMPTY_CSP, ...(e.csp as Partial<CspSettings>) },
+        dataUrl: dataUrlFor(this.ctx.cfg.dataLink, e.data_project_id),
       };
       routes.push(route);
     }
     const root = this.ctx.cfg.ROOT_DOMAIN;
     routes.push({ kind: 'service', host: `registry.${root}`, upstream: this.ctx.cfg.REGISTRY_URL, methods: ['GET', 'HEAD'], perIpPerMinute: 1200 });
+    // Basalt Cloud's owner pages (approvals, data map, safety receipt) and its API for Claude.
+    if (this.ctx.cfg.dataLink) routes.push({ kind: 'service', host: `cloud.${root}`, upstream: this.ctx.cfg.dataLink.url, methods: ['GET', 'POST', 'PUT', 'OPTIONS'], perIpPerMinute: 600 });
     routes.push({ kind: 'service', host: `host.${root}`, upstream: `http://control:${this.ctx.cfg.PORT}`, methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], perIpPerMinute: 600 });
     const attack = (await this.ctx.db.query<{ value: boolean }>(`SELECT value FROM platform_settings WHERE key = 'under_attack'`)).rows[0]?.value === true;
     return { version: this.ctx.routes.version, generatedAt: new Date().toISOString(), underAttack: attack, routes };

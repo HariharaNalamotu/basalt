@@ -19,6 +19,11 @@ const STRIP_REQUEST = [
   'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'host',
 ];
 const STRIP_RESPONSE = ['connection', 'keep-alive', 'transfer-encoding', 'server', 'x-powered-by'];
+// The only Data block routes a browser may reach through /_basalt/data.
+const DATA_POST = /^\/v1\/(data\/(get|list|create|update|archive|restore)|files|files\/link)$/;
+const DATA_GET = /^\/v1\/files\/download\/[0-9a-f]{64}$/;
+const DATA_MAX_BODY = 256 * 1024;
+const DATA_MAX_UPLOAD = 6 * 1024 * 1024; // the Data block takes files up to 5 MB
 
 export interface EdgeOptions {
   table: RouteTableClient;
@@ -137,9 +142,14 @@ export function createEdgeHandler(o: EdgeOptions) {
     headers: Record<string, string>,
     maxBody: number,
     extraResponseHeaders: Record<string, string>,
+    dropResponseHeaders: string[] = [],
   ): Promise<number> {
     const declared = Number(req.headers['content-length'] ?? 0);
-    if (declared > maxBody) return -413;
+    // The unread body would otherwise stall the next request on this connection.
+    if (declared > maxBody) {
+      res.setHeader('connection', 'close');
+      return -413;
+    }
     const hasBody = !['GET', 'HEAD'].includes(req.method ?? 'GET') && (declared > 0 || req.headers['transfer-encoding'] !== undefined);
     let seen = 0;
     let tooLarge = false;
@@ -169,11 +179,14 @@ export function createEdgeHandler(o: EdgeOptions) {
       });
     } catch (err) {
       // Chunked bodies have no declared length; the stream counter is what enforces the limit.
-      if (tooLarge) return -413;
+      if (tooLarge) {
+        res.setHeader('connection', 'close');
+        return -413;
+      }
       throw err;
     }
     const out: Record<string, string | string[]> = {};
-    for (const [k, v] of Object.entries(up.headers)) if (v !== undefined && !STRIP_RESPONSE.includes(k)) out[k] = v;
+    for (const [k, v] of Object.entries(up.headers)) if (v !== undefined && !STRIP_RESPONSE.includes(k) && !dropResponseHeaders.includes(k)) out[k] = v;
     res.writeHead(up.statusCode, { ...out, ...extraResponseHeaders });
     for await (const chunk of up.body) if (!res.write(chunk)) await new Promise((r) => res.once('drain', r));
     res.end();
@@ -287,6 +300,25 @@ export function createEdgeHandler(o: EdgeOptions) {
       const headers = upstreamHeaders(req, ip, requestId, route.host);
       headers['x-forwarded-prefix'] = '/_basalt/auth';
       const r = await proxy(req, res, target, headers, 64 * 1024, securityHeaders(route, false));
+      if (r === -413) {
+        send(res, 413, errorJson('payload_too_large', 'Request body too large.', requestId));
+        return 413;
+      }
+      return r;
+    }
+
+    // The Data block, on the app's own site so the session cookie reaches it. Only its data and
+    // file routes pass; the Data service checks the cookie, its origin and every row itself.
+    if (path === '/_basalt/data' || path.startsWith('/_basalt/data/')) {
+      const rest = path.slice('/_basalt/data'.length);
+      const allowed = route.dataUrl !== null && ((method === 'POST' && DATA_POST.test(rest)) || (method === 'GET' && DATA_GET.test(rest)));
+      if (!allowed) {
+        send(res, 404, errorJson('not_found', 'Not found.', requestId));
+        return 404;
+      }
+      const headers = upstreamHeaders(req, ip, requestId, route.host);
+      const limit = rest === '/v1/files' ? DATA_MAX_UPLOAD : DATA_MAX_BODY;
+      const r = await proxy(req, res, `${route.dataUrl!.replace(/\/+$/, '')}${rest}`, headers, limit, securityHeaders(route, false), ['set-cookie']);
       if (r === -413) {
         send(res, 413, errorJson('payload_too_large', 'Request body too large.', requestId));
         return 413;

@@ -25,6 +25,11 @@ export interface AppRoute {
   protection: ProtectionSettings;
   /** Extra CSP sources the app needs (e.g. connect-src https://api.stripe.com). Validated by the control plane. */
   csp: CspSettings;
+  /**
+   * This environment's Data project on Basalt Cloud (like http://cloud:8790/p/<id>), served on
+   * the app's own site at /_basalt/data so the signed-in session cookie reaches it. Null: none.
+   */
+  dataUrl: string | null;
 }
 
 export interface ProtectionSettings {

@@ -22,6 +22,9 @@ let lastBackend: { headers: http.IncomingHttpHeaders; url: string; method: strin
 let auth: http.Server;
 let authUrl: string;
 let lastAuth: { url: string; headers: http.IncomingHttpHeaders } | undefined;
+let data: http.Server;
+let dataUrl: string;
+let lastData: { url: string; method: string; headers: http.IncomingHttpHeaders; bytes: number } | undefined;
 let edgeServer: http.Server;
 let edgeUrl: string;
 let table: RouteTableClient;
@@ -42,6 +45,7 @@ const route = (over: Partial<AppRoute> = {}): AppRoute => ({
   accessKey: null,
   protection: { ...DEFAULT_PROTECTION },
   csp: { ...EMPTY_CSP, connectSrc: ['https://api.stripe.com'] },
+  dataUrl: `${dataUrl}/p/abcde12345`,
   ...over,
 });
 
@@ -109,6 +113,18 @@ beforeAll(async () => {
   await new Promise<void>((r) => auth.listen(0, '127.0.0.1', r));
   authUrl = `http://127.0.0.1:${(auth.address() as AddressInfo).port}`;
 
+  data = http.createServer((req, res) => {
+    let bytes = 0;
+    req.on('data', (d) => (bytes += d.length));
+    req.on('end', () => {
+      lastData = { url: req.url ?? '', method: req.method ?? '', headers: req.headers, bytes };
+      res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'sneaky=1; Path=/', 'content-security-policy': "default-src 'none'; sandbox" });
+      res.end('{"ok":true,"data":{"rows":[]}}');
+    });
+  });
+  await new Promise<void>((r) => data.listen(0, '127.0.0.1', r));
+  dataUrl = `http://127.0.0.1:${(data.address() as AddressInfo).port}`;
+
   table = new RouteTableClient('http://unused.invalid', 'x', silentLog);
   edge = createEdgeHandler({
     table,
@@ -129,6 +145,7 @@ beforeAll(async () => {
 afterAll(() => {
   backend.close();
   auth.close();
+  data.close();
   edgeServer.close();
 });
 
@@ -326,5 +343,59 @@ describe('metrics', () => {
     const snap = edge.metrics.snapshot() as any;
     expect(snap.hosts['todo.example.com'].requests).toBeGreaterThan(0);
     expect(snap.hosts['todo.example.com'].blocked).toBeTruthy();
+  });
+});
+
+describe('/_basalt/data: the Data block on the app\'s own site', () => {
+  const post = (p: string, body = '{}', headers: Record<string, string> = {}) =>
+    call(p, { method: 'POST', ip: freshIp(), body, headers: { 'content-type': 'application/json', ...headers } });
+
+  it("forwards data calls to the environment's Data project with the session cookie, never the edge's own cookies", async () => {
+    lastData = undefined;
+    const r = await post('/_basalt/data/v1/data/list', '{"table":"bookings"}', { cookie: '__Host-basalt_at=tok; basalt_access=edge-only', origin: 'https://todo.example.com' });
+    expect(r.status).toBe(200);
+    expect(lastData!.url).toBe('/p/abcde12345/v1/data/list');
+    expect(lastData!.headers.cookie).toBe('__Host-basalt_at=tok');
+    expect(lastData!.headers['x-forwarded-host']).toBe('todo.example.com');
+    expect(lastData!.headers.origin).toBe('https://todo.example.com');
+  });
+
+  it('passes uploads, file links and downloads, and keeps the download safety headers', async () => {
+    expect((await post('/_basalt/data/v1/files', 'x'.repeat(1000), { 'content-type': 'text/plain', 'x-file-name': 'a.txt' })).status).toBe(200);
+    expect(lastData!.url).toBe('/p/abcde12345/v1/files');
+    expect((await post('/_basalt/data/v1/files/link', '{"id":"x"}')).status).toBe(200);
+    const dl = await call(`/_basalt/data/v1/files/download/${'a'.repeat(64)}`, { ip: freshIp() });
+    expect(dl.status).toBe(200);
+    expect(lastData!.method).toBe('GET');
+    expect(dl.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
+    expect(dl.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('only lets the Data API through, nothing else on the Data service', async () => {
+    lastData = undefined;
+    for (const [method, p] of [
+      ['GET', '/_basalt/data/v1/data/list'],
+      ['POST', '/_basalt/data/v1/data/drop'],
+      ['POST', '/_basalt/data/healthz'],
+      ['GET', '/_basalt/data/v1/files/download/../../api/projects/me'],
+      ['POST', '/_basalt/data/v1/data/list/../../../api/projects'],
+      ['GET', '/_basalt/data/v1/files/download/short'],
+      ['POST', '/_basalt/data'],
+    ] as const) {
+      const r = await call(p, { method, ip: freshIp(), body: method === 'POST' ? '{}' : undefined, headers: { 'content-type': 'application/json' } });
+      expect([400, 404], `${method} ${p}`).toContain(r.status);
+    }
+    expect(lastData).toBeUndefined();
+  });
+
+  it('caps data calls at 256 KB and uploads at 6 MB', async () => {
+    expect((await post('/_basalt/data/v1/data/create', 'x'.repeat(300 * 1024))).status).toBe(413);
+    expect((await post('/_basalt/data/v1/files', 'x'.repeat(5 * 1024 * 1024), { 'content-type': 'text/plain' })).status).toBe(200);
+    expect((await post('/_basalt/data/v1/files', 'x'.repeat(7 * 1024 * 1024), { 'content-type': 'text/plain' })).status).toBe(413);
+  });
+
+  it('is not found for environments without a Data project', async () => {
+    setRoutes([route({ dataUrl: null })]);
+    expect((await post('/_basalt/data/v1/data/list')).status).toBe(404);
   });
 });
