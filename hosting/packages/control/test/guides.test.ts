@@ -17,6 +17,8 @@ describe('the agent guide', () => {
     expect(data).toMatch(/owner.{0,80}(all|every)/i);
     expect(data).toMatch(/host_data_admin[^.]*email/);
     expect(data).toMatch(/sign up/i);
+    // A real agent read the first wording and offered the page as an extra instead of building it.
+    expect(data).toMatch(/first version/i);
   });
 
   it('sends the agent to the data topic from the workflow', () => {
