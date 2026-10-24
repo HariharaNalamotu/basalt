@@ -73,7 +73,7 @@ services:
     build: { context: ../.., dockerfile: cloud/Dockerfile }
     image: basalt/cloud:local
     container_name: basalt-cloud
-    depends_on: { postgres: { condition: service_healthy }, auth: { condition: service_started } }
+    depends_on: { postgres: { condition: service_healthy }, auth: { condition: service_healthy } }
     environment:
       CLOUD_ADMIN_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
       CLOUD_DB_HOST: postgres:5432
@@ -85,6 +85,7 @@ services:
       TRUST_PROXY: "1"
     read_only: true
     cap_drop: [ALL]
+    healthcheck: { test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8790/healthz"], interval: 10s, timeout: 3s, retries: 6 }
     networks:
       core: { aliases: [cloud] }
 
@@ -93,7 +94,8 @@ services:
     build: { context: ../.., dockerfile: hosting/Dockerfile, target: control }
     image: basalt/control:local
     container_name: basalt-control
-    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy }, auth: { condition: service_started }, cloud: { condition: service_started } }
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy }, auth: { condition: service_healthy }, cloud: { condition: service_healthy } }
+    healthcheck: { test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/v1/health"], interval: 10s, timeout: 3s, retries: 6, start_period: 30s }
     environment:
       ROOT_DOMAIN: ${ROOT_DOMAIN}
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/basalt_host
@@ -124,7 +126,9 @@ services:
     build: { context: ../.., dockerfile: hosting/Dockerfile, target: edge }
     image: basalt/edge:local
     container_name: basalt-edge
-    depends_on: [control]
+    depends_on: { control: { condition: service_healthy } }
+    # Any HTTP answer (even 404 for an unknown host) means the public listener is up.
+    healthcheck: { test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/').then(() => process.exit(0), () => process.exit(1))"], interval: 10s, timeout: 3s, retries: 6 }
     environment:
       CONTROL_URL: http://control:4001
       INTERNAL_TOKEN: ${INTERNAL_TOKEN}

@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { pg } from '../../data/src/index.ts';
+import { parseContract, pg } from '../../data/src/index.ts';
 import { AuthLink } from '../src/auth.ts';
 import { Projects } from '../src/projects.ts';
 import { createCloudServer } from '../src/server.ts';
@@ -562,5 +562,35 @@ describe('hosted environments on the platform API', () => {
     assert.equal(await list('cloud.example.com'), 404);
     // Through the app's own site the request reaches the Data service (and fails on the bad token there).
     assert.equal(await list('todo.example.com'), 401);
+  });
+});
+
+describe('deleting an app while something is using its database', () => {
+  test("a revocation sync caught mid-way fails on its own and doesn't take Cloud down", async () => {
+    const app = await liveApp();
+    const p = (await projects.get(app.id))!;
+    // A sync connected to the app's database, waiting on Basalt Auth when the app is deleted.
+    let release!: () => void;
+    const waiting = new Promise<void>((r) => (release = r));
+    const slowAuth = { revocations: async () => (await waiting, { revocations: [], hasMore: false, nextCursor: null }) } as unknown as AuthLink;
+    const slow = new Projects({ adminUrl: process.env.CLOUD_ADMIN_URL!, dbHost: process.env.CLOUD_DB_HOST!, masterKey: process.env.CLOUD_MASTER_KEY! }, slowAuth);
+    const sync = slow.syncRevocations(p);
+    await new Promise((r) => setTimeout(r, 300));
+    await projects.delete(p); // DROP DATABASE ... WITH (FORCE) ends the sync's session
+    await new Promise((r) => setTimeout(r, 300));
+    release();
+    await sync.catch(() => {}); // either way, only this sync is affected
+    await slow.close();
+    // Still serving.
+    assert.equal((await fetch(`${base}/healthz`)).status, 200);
+  });
+});
+
+describe('plain-English rules', () => {
+  test('every field type reads as words, including file fields', async () => {
+    const { summarize } = await import('../src/summary.ts');
+    const { text } = summarize(parseContract({ tables: { bookings: { fields: { photo: { type: 'file' }, when: { type: 'timestamp', required: true } } } } }));
+    assert.match(text, /photo: an uploaded photo or document/);
+    assert.doesNotMatch(text, /undefined/);
   });
 });

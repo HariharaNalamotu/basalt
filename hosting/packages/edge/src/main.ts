@@ -24,6 +24,7 @@ const edge = createEdgeHandler({
   edgeKey: need('EDGE_KEY'),
   authUrl: need('AUTH_INTERNAL_URL').replace(/\/+$/, ''),
   trustedProxies: new Set((process.env.TRUSTED_PROXIES ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
+  publicOrigin: { scheme: process.env.PUBLIC_SCHEME === 'http' ? 'http' : 'https', port: Number(process.env.PUBLIC_PORT) || undefined },
   log,
   wake: async (envId) => {
     await fetch(`${controlUrl}/internal/wake`, {

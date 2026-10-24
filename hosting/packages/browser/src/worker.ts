@@ -86,8 +86,12 @@ export class BrowserWorker {
           args: [
             `--host-resolver-rules=MAP *.${this.o.rootDomain} ${this.o.edgeHost}, MAP ${this.o.rootDomain} ${this.o.edgeHost}`,
             '--disable-dev-shm-usage',
+            // Everything but platform hosts goes through the egress proxy (which blocks private
+            // addresses), loopback included. Chromium checks later bypass rules first, so
+            // "<-loopback>" leads: platform hosts under .localhost (the demo) still go direct.
+            // (Playwright's proxy option appends "<-loopback>" last, which proxies them.)
+            ...(this.o.egressProxy ? [`--proxy-server=${this.o.egressProxy}`, `--proxy-bypass-list=<-loopback>;*.${this.o.rootDomain};${this.o.rootDomain}`] : []),
           ],
-          proxy: this.o.egressProxy ? { server: this.o.egressProxy, bypass: `*.${this.o.rootDomain},${this.o.rootDomain}` } : undefined,
         });
     this.browser.on('disconnected', () => {
       this.browser = undefined;

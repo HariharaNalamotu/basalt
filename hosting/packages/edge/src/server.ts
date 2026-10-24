@@ -37,6 +37,12 @@ export interface EdgeOptions {
   trustedProxies: Set<string>;
   log: Log;
   limits?: { globalInflight?: number; perIpInflight?: number; perIpPerMinute?: number };
+  /**
+   * How browsers reach the plain (non-TLS) listener. Behind Cloudflare that's https on the default
+   * port (the default). The one-laptop demo serves http on :8080, so the origin backends compare
+   * against (x-forwarded-proto/host) must say so. The internal TLS listener is always https.
+   */
+  publicOrigin?: { scheme: 'http' | 'https'; port?: number };
 }
 
 /** One canonical form for forwarding AND signing, identical to what the backend reconstructs. */
@@ -202,8 +208,10 @@ export function createEdgeHandler(o: EdgeOptions) {
     const c = cookiesForUpstream(req);
     if (c) h.cookie = c;
     h['x-forwarded-for'] = ip;
-    h['x-forwarded-host'] = host;
-    h['x-forwarded-proto'] = 'https';
+    const tls = Boolean((req.socket as { encrypted?: boolean }).encrypted);
+    const port = tls ? undefined : o.publicOrigin?.port;
+    h['x-forwarded-host'] = port ? `${host}:${port}` : host;
+    h['x-forwarded-proto'] = tls ? 'https' : (o.publicOrigin?.scheme ?? 'https');
     h['x-request-id'] = requestId;
     return h;
   }
@@ -214,7 +222,11 @@ export function createEdgeHandler(o: EdgeOptions) {
       return 405;
     }
     const target = `${route.upstream.replace(/\/+$/, '')}${encodeURI(path)}${query ? `?${query}` : ''}`;
-    const r = await proxy(req, res, target, upstreamHeaders(req, ip, requestId, route.host), 50 * 1024 * 1024, { 'strict-transport-security': 'max-age=63072000' });
+    const headers = upstreamHeaders(req, ip, requestId, route.host);
+    // Platform services build absolute URLs from Host (the registry's tarball links, for one), so
+    // they see the public name people used, never their internal one.
+    headers.host = headers['x-forwarded-host']!;
+    const r = await proxy(req, res, target, headers, 50 * 1024 * 1024, { 'strict-transport-security': 'max-age=63072000' });
     if (r === -413) send(res, 413, errorJson('payload_too_large', 'Request body too large.', requestId));
     return r === -413 ? 413 : r;
   }

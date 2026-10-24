@@ -34,9 +34,9 @@ const Env = z.object({
   BROWSER_URL: z.string().url().default('http://browser:7070'),
   EDGE_ADMIN_URL: z.string().url().default('http://edge:9090'),
   /** Infra containers that join every environment network. */
-  INFRA_CONTAINERS: z.string().default('basalt-postgres,basalt-redis,basalt-auth,basalt-edge,basalt-egress'),
+  INFRA_CONTAINERS: z.string().default('basalt-postgres,basalt-redis,basalt-auth,basalt-edge,basalt-egress,basalt-cloud'),
   EDGE_CONTAINER: z.string().default('basalt-edge'),
-  BUILD_NETWORK: z.string().default('basalt-build'),
+  BUILD_NETWORK: z.string().default('basalt_build'),
   RUNTIME_IMAGE: z.string().default('basalt/runtime:1'),
   BUILD_IMAGE: z.string().default('node:24-alpine'),
   TEST_IMAGE: z.string().default('mcr.microsoft.com/playwright:v1.64.1-noble'),
@@ -55,6 +55,13 @@ const Env = z.object({
   CLOUD_INTERNAL_URL: z.string().url().optional(),
   /** Cloud's CLOUD_PLATFORM_KEY. */
   CLOUD_PLATFORM_KEY: z.string().min(32).optional(),
+  /** How browsers reach apps: https behind Cloudflare; the one-laptop demo uses http and port 8080. */
+  PUBLIC_SCHEME: z.enum(['https', 'http']).default('https'),
+  PUBLIC_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  /** Where coding agents reach the control API. Default https://host.<ROOT_DOMAIN>. */
+  HOST_PUBLIC_URL: z.string().url().optional(),
+  /** Where developers' npm reaches the @basalt registry. Default https://registry.<ROOT_DOMAIN>/. */
+  REGISTRY_PUBLIC_URL: z.string().url().optional(),
 });
 
 export type Config = ReturnType<typeof loadConfig>;
@@ -67,5 +74,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   if (masterKey.length !== 32) throw new Error('MASTER_KEY must be 32 bytes, base64');
   if (Boolean(c.CLOUD_INTERNAL_URL) !== Boolean(c.CLOUD_PLATFORM_KEY)) throw new Error('Set both CLOUD_INTERNAL_URL and CLOUD_PLATFORM_KEY, or neither.');
   const dataLink = c.CLOUD_INTERNAL_URL && c.CLOUD_PLATFORM_KEY ? { url: c.CLOUD_INTERNAL_URL, platformKey: c.CLOUD_PLATFORM_KEY } : null;
-  return { ...c, masterKey, dataLink, infraContainers: c.INFRA_CONTAINERS.split(',').map((s) => s.trim()).filter(Boolean) };
+  const hostPublicUrl = (c.HOST_PUBLIC_URL ?? `https://host.${c.ROOT_DOMAIN}`).replace(/\/+$/, '');
+  const registryPublicUrl = (c.REGISTRY_PUBLIC_URL ?? `https://registry.${c.ROOT_DOMAIN}/`).replace(/\/*$/, '/');
+  /** The URL people and their browsers use for an app host (what links and allowed origins say). */
+  const appUrl = (host: string) => `${c.PUBLIC_SCHEME}://${host}${c.PUBLIC_PORT ? `:${c.PUBLIC_PORT}` : ''}`;
+  return { ...c, masterKey, dataLink, hostPublicUrl, registryPublicUrl, appUrl, infraContainers: c.INFRA_CONTAINERS.split(',').map((s) => s.trim()).filter(Boolean) };
 }

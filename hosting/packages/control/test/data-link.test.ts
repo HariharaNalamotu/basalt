@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDataProject, dataUrlFor, deleteDataProject, setDataRules } from '../src/data-link.js';
+import { createDataProject, dataStatus, dataUrlFor, deleteDataProject, requestDataAdmin, runDataCheck, setDataRules } from '../src/data-link.js';
 
 const cfg = { url: 'http://cloud:8790/', platformKey: 'k'.repeat(40) };
 
@@ -68,5 +68,27 @@ describe('Basalt Cloud data projects for environments', () => {
     expect(dataUrlFor(cfg, 'abcde12345')).toBe('http://cloud:8790/p/abcde12345');
     expect(dataUrlFor(null, 'abcde12345')).toBeNull();
     expect(dataUrlFor(cfg, null)).toBeNull();
+  });
+
+  it('reads status, requests admins and runs Guard with the environment\'s own admin key, never the platform key', async () => {
+    const key = 'bsk_abcde12345_secret';
+    const st = stub({ status: 200, body: { ok: true, project: { status: 'live', rules: 'Bookings: each person sees their own.', waitingForOwner: false, mapUrl: 'https://cloud.x/owner/abcde12345?k=v' } } });
+    expect(await dataStatus(cfg, key, st.f)).toEqual({ status: 'live', rules: 'Bookings: each person sees their own.', waitingForOwner: false, mapUrl: 'https://cloud.x/owner/abcde12345?k=v' });
+    expect(st.calls[0]!.url).toBe('http://cloud:8790/api/projects/me');
+    expect((st.calls[0]!.init.headers as Record<string, string>).authorization).toBe(`Bearer ${key}`);
+    expect((await dataStatus(cfg, key, stub({ status: 200, body: { ok: true, project: { status: 'weird' } } }).f)).status).toBe('no_rules');
+
+    const ad = stub({ status: 202, body: { ok: true, status: 'waiting_for_owner', approveUrl: 'https://cloud.x/approve/1?t=2', userId: 'u1' } });
+    expect(await requestDataAdmin(cfg, key, { who: 'maria' }, ad.f)).toEqual({ approveUrl: 'https://cloud.x/approve/1?t=2', userId: 'u1' });
+    expect(JSON.parse(String(ad.calls[0]!.init.body))).toEqual({ who: 'maria' });
+
+    const ck = stub({ status: 200, body: { ok: true, passed: 11, failed: 1, results: [{ id: 'x', title: 'X', passed: false, detail: 'd' }], receiptUrl: 'https://cloud.x/owner/a/check?k=v' } });
+    const scan = [{ rule: 'browser_storage', file: 'src/a.js', line: 2, problem: 'p', fix: 'f' }];
+    expect((await runDataCheck(cfg, key, scan, ck.f)).failed).toBe(1);
+    expect(JSON.parse(String(ck.calls[0]!.init.body))).toEqual({ scan });
+    const noScan = stub({ status: 200, body: { ok: true, passed: 12, failed: 0, results: [], receiptUrl: 'r' } });
+    await runDataCheck(cfg, key, null, noScan.f);
+    expect(JSON.parse(String(noScan.calls[0]!.init.body))).toEqual({});
+    await expect(runDataCheck(cfg, key, null, stub({ status: 409, body: { ok: false, error: { message: "Set the app's rules first" } } }).f)).rejects.toThrow(/rules first/);
   });
 });

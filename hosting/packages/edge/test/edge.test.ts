@@ -399,3 +399,34 @@ describe('/_basalt/data: the Data block on the app\'s own site', () => {
     expect((await post('/_basalt/data/v1/data/list')).status).toBe(404);
   });
 });
+
+describe('the public origin backends and services see', () => {
+  it('platform services get the public host as Host (registry tarball links), and the local demo origin', async () => {
+    const t = new RouteTableClient('http://unused.invalid', 'x', silentLog);
+    const local = createEdgeHandler({ table: t, edgeKey: EDGE_KEY, authUrl, trustedProxies: new Set(), log: silentLog, wake: async () => {}, publicOrigin: { scheme: 'http', port: 8080 } });
+    const server = http.createServer((q, s) => void local.handle(q, s));
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const routes = [{ kind: 'service', host: 'registry.example.com', upstream: dataUrl, methods: ['GET'], perIpPerMinute: 100 }, route()];
+      t.set({ version: 1, generatedAt: new Date().toISOString(), underAttack: false, routes } as unknown as RouteTable);
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      lastData = undefined;
+      expect((await call('/ignore', { host: 'registry.example.com:8080' }, base)).status).toBe(200);
+      expect(lastData!.headers.host).toBe('registry.example.com:8080');
+      expect(lastData!.headers['x-forwarded-proto']).toBe('http');
+      // The Data service compares the browser's Origin (http://todo.example.com:8080) with this.
+      await call('/_basalt/data/v1/data/list', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } }, base);
+      expect(lastData!.headers['x-forwarded-host']).toBe('todo.example.com:8080');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('behind Cloudflare (the default) it is https on the default port', async () => {
+    setRoutes([{ kind: 'service', host: 'registry.example.com', upstream: dataUrl, methods: ['GET'], perIpPerMinute: 100 } as unknown as AppRoute]);
+    lastData = undefined;
+    await call('/ignore', { host: 'registry.example.com' });
+    expect(lastData!.headers.host).toBe('registry.example.com');
+    expect(lastData!.headers['x-forwarded-proto']).toBe('https');
+  });
+});

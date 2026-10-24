@@ -1,0 +1,56 @@
+name: data-cloud
+
+on:
+  push:
+    paths: ['data/**', 'cloud/**', 'auth/packages/server/**', '.github/workflows/data-cloud.yml']
+  pull_request:
+    paths: ['data/**', 'cloud/**', 'auth/packages/server/**', '.github/workflows/data-cloud.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-cloud-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            auth/package-lock.json
+            data/package-lock.json
+      # Throwaway secrets for the test database only.
+      - name: Test configuration
+        run: |
+          pw=$(openssl rand -hex 32); dpw=$(openssl rand -hex 32)
+          cat > data/.env <<ENV
+          POSTGRES_PASSWORD=$pw
+          BASALT_DATA_PASSWORD=$dpw
+          BASALT_JWT_SECRET=$(openssl rand -hex 32)
+          BASALT_ADMIN_URL=postgres://postgres:$pw@127.0.0.1:54329/postgres
+          BASALT_DATA_URL=postgres://basalt_data:$dpw@127.0.0.1:54329/postgres
+          ENV
+          cat > cloud/.env <<ENV
+          CLOUD_ADMIN_URL=postgres://postgres:$pw@127.0.0.1:54329/postgres
+          CLOUD_DB_HOST=127.0.0.1:54329
+          CLOUD_MASTER_KEY=$(openssl rand -hex 32)
+          PUBLIC_URL=http://127.0.0.1:8790
+          ENV
+      - run: npm ci && npm audit --omit=dev --audit-level=high
+        working-directory: data
+      - name: Data block (attack and feature tests against a real Postgres 17)
+        run: npm test
+        working-directory: data
+      # Cloud's tests run the real Basalt Auth in-process.
+      - run: npm ci && npm run build
+        working-directory: auth
+      - name: Basalt Cloud and Guard
+        run: npm test
+        working-directory: cloud

@@ -23,17 +23,16 @@ const host = new Host({ cfg, db, box: new SecretBox(cfg.masterKey), docker: new 
 try {
   if (cmd === 'create-workspace' && arg) {
     const { workspaceId, token } = await host.createWorkspace(arg);
-    console.log(`Workspace ${workspaceId} created.\n\nGive the user's coding agent this MCP server (e.g. in .mcp.json):\n`);
-    console.log(
-      JSON.stringify(
-        { mcpServers: { basalt: { command: 'npx', args: ['-y', '--registry', `https://registry.${cfg.ROOT_DOMAIN}/`, '@basalt/host-mcp'], env: { BASALT_HOST_URL: `https://host.${cfg.ROOT_DOMAIN}`, BASALT_HOST_TOKEN: token } } } },
-        null,
-        2,
-      ),
-    );
+    const env = { BASALT_HOST_URL: cfg.hostPublicUrl, BASALT_HOST_TOKEN: token, BASALT_ROOT_DOMAIN: cfg.ROOT_DOMAIN, BASALT_REGISTRY_URL: cfg.registryPublicUrl };
+    const args = ['-y', '--registry', cfg.registryPublicUrl, '@basalt/host-mcp'];
+    console.log(`Workspace ${workspaceId} created.\n`);
+    console.log("Add the Basalt connector to the user's coding agent. Claude Code, from the app's folder:\n");
+    console.log(`  claude mcp add basalt ${Object.entries(env).map(([k, v]) => `-e ${k}=${v}`).join(' ')} -- npx ${args.join(' ')}\n`);
+    console.log('Or as .mcp.json in the project (keep it out of git; the token is a secret):\n');
+    console.log(JSON.stringify({ mcpServers: { basalt: { command: 'npx', args, env } } }, null, 2));
   } else if (cmd === 'under-attack' && (arg === 'on' || arg === 'off')) {
     await host.setUnderAttack(arg === 'on');
-    console.log(`Global under-attack mode ${arg}.`);
+    console.log(`Global under-attack mode ${arg} (the edge applies it within a few seconds).`);
   } else {
     console.log('usage: basalt-admin create-workspace <name> | under-attack on|off');
     process.exitCode = 1;

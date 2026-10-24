@@ -51,6 +51,10 @@ function withDb(url: string, db: string): string {
 
 async function connect(url: string): Promise<pg.Client> {
   const client = new pg.Client({ connectionString: url });
+  // Deleting an app drops its database WITH (FORCE), which ends every session on it, including
+  // one a revocation sync or rule change is using right then. Its query still fails (and the
+  // caller handles that); without a listener the 'error' event would take down all of Cloud.
+  client.on('error', () => {});
   await client.connect();
   return client;
 }

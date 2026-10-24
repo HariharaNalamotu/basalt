@@ -32,6 +32,9 @@ function describeField(name: string, spec: FieldSpec): string {
     case 'user':
       kind = 'a person using the app';
       break;
+    case 'file':
+      kind = 'an uploaded photo or document';
+      break;
   }
   const range =
     spec.min !== undefined && spec.max !== undefined

@@ -112,7 +112,8 @@ export class Environments {
       await this.ensureNetwork(env);
       const platform = this.platformFor(app, env);
       const auth = this.ctx.authFor(app.workspace_id);
-      const r = await setupApp({ platform, auth }, { app: envKey(app.name, slug), name: app.name, origins: [`https://${env.host}`] });
+      const r = await setupApp({ platform, auth }, { app: envKey(app.name, slug), name: app.name, origins: [...new Set([`https://${env.host}`, this.ctx.cfg.appUrl(env.host)])] });
+      // https is what the internal edge (tests, browser tools) uses; appUrl is what people's browsers use.
       await platform.restrictRedis(r.projectId);
       await platform.writeEnv(envKey(app.name, slug), {
         // Tokens carry the public issuer; the backend fetches keys over the private network.

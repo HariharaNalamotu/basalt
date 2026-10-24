@@ -36,7 +36,7 @@ Agents should call the `auth_integration_guide` MCP tool, which returns complete
 
 Authentication only says who is asking. Most real breaches in small apps happen afterwards: a query that forgot `WHERE owner_id = ?`, an IDOR, an SQL injection. Basalt Auth extends the session into the app's own Postgres so **the database checks ownership itself**:
 
-1. Every access token carries a **data grant**: `bdg1.<keyVersion>.<projectId>.<userId>.<sessionId>.<exp>.<HMAC-SHA256>`, bound to one live session and expiring with the token.
+1. Every access token carries a **data grant** (claim `bdg`): a compact HS256 JWT signed with the project's own data key, header `{alg: HS256, kid: "v<keyVersion>"}`, payload `{sub, sid, iat, exp, aud: "authenticated", role: "authenticated", iss}`. It is bound to one live session, expires with the access token (at most 1 hour) and is the same token the Basalt Data block (`data/`) checks, so one login works for `ctx.sql`, `ctx.data` and the browser's `/_basalt/data`.
 2. `auth_enable_data_protection` installs the `basalt_auth` schema into the app database. It holds the project's grant key, readable only via `SECURITY DEFINER` functions, and a verifier written against built-in `sha256()` (no extensions needed).
 3. `SELECT basalt_auth.protect('todos')` turns on forced RLS. `owner_id` then defaults to the verified user, and every read or write is limited to `owner_id = basalt_auth.uid()`.
 4. `auth.withUserDb(pool, req, fn)` runs `fn` in a transaction after `basalt_auth.authenticate(grant)`. Postgres checks the signature, project, expiry and revocation list before any row is visible.
@@ -80,7 +80,7 @@ Tokens carry `auth_time`. Backends call `auth.requireUser(req, { maxAgeSeconds: 
 | Revocation lag | Access tokens last 10 minutes by default (max 1 h). Auth-service endpoints always check the live session, and the backend SDK offers `{ strict: true }` for instant revocation on high-stakes actions. |
 | Code guessing | 6-digit codes, HMAC'd with a server-side pepper (a DB leak doesn't allow offline brute force), 5 attempts per code then burned, single-use, 15–30 min expiry, issuance rate-limited. |
 | MFA bypass / replay | TOTP (RFC 6238) with ±1 step drift and last-used-step tracking (no code reuse). Recovery codes are single-use. Password reset and email verification never bypass MFA. |
-| Misconfiguration | Every setting is bounded (TTLs, lengths). Origins must be exact https (http only for localhost). Production refuses to start without Redis, https, secure cookies or a real mailer. |
+| Misconfiguration | Every setting is bounded (TTLs, lengths). Origins must be exact https (http only for loopback names: localhost, 127.0.0.1, [::1] and *.localhost). Production refuses to start without Redis, https, secure cookies or a real mailer. |
 | Broken object-level authorization in app code | Database-enforced ownership via session-bound data grants and forced RLS (see above). |
 | Stale proof for sensitive actions | `auth_time` claim, `maxAgeSeconds`, step-up re-authentication. |
 | Cross-tenant access | Every query is scoped by `project_id`. Control-plane calls are scoped to the `X-Basalt-Owner` workspace, and foreign projects are indistinguishable from nonexistent ones. |

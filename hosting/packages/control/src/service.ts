@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { dataUrlFor, setDataRules, type DataRulesResult } from './data-link.js';
+import { dataStatus, dataUrlFor, requestDataAdmin, runDataCheck, setDataRules, type DataRulesResult, type GuardFinding } from './data-link.js';
 import { z } from 'zod';
 import { mergeConfig, readConfig, setRoutePolicy, writeConfig } from '@basalt/api-mcp';
 import { DEFAULT_PROTECTION, EMPTY_CSP, type AppRoute, type CspSettings, type ProtectionSettings, type Route, type RouteTable } from '@basalt/host-shared';
@@ -122,7 +122,7 @@ export class Host {
     return Promise.all(
       apps.map(async (a) => ({
         name: a.name,
-        environments: (await this.envs.list(a.id)).map((e) => ({ name: e.kind === 'preview' ? e.slug : e.kind, kind: e.kind, url: `https://${e.host}`, status: e.status, sleeping: e.sleeping, release: e.current_release_id, expiresAt: e.expires_at })),
+        environments: (await this.envs.list(a.id)).map((e) => ({ name: e.kind === 'preview' ? e.slug : e.kind, kind: e.kind, url: this.ctx.cfg.appUrl(e.host), status: e.status, sleeping: e.sleeping, release: e.current_release_id, expiresAt: e.expires_at })),
       })),
     );
   }
@@ -200,19 +200,19 @@ export class Host {
     await this.copyUserSecrets(app, preview);
     const passed = await this.deployAndTest(app, preview, dep, pipelineId);
     if (!passed) return this.log(pipelineId, 'preview', 'preview tests failed', 'failed');
-    if (target === 'preview') return this.log(pipelineId, 'done', `preview ready at https://${preview.host}`, 'passed');
+    if (target === 'preview') return this.log(pipelineId, 'done', `preview ready at ${this.ctx.cfg.appUrl(preview.host)}`, 'passed');
 
     const staging = await this.envs.ensure(app, 'staging', 'staging');
     if (!(await this.deployAndTest(app, staging, dep, pipelineId))) return this.log(pipelineId, 'staging', 'staging tests failed', 'failed');
     const prod = await this.envs.ensure(app, 'production', 'prod');
     await this.runtime.release(app, prod, dep, 'ship');
-    await this.log(pipelineId, 'production', `live at https://${prod.host} (watching for errors; automatic rollback is armed)`);
+    await this.log(pipelineId, 'production', `live at ${this.ctx.cfg.appUrl(prod.host)} (watching for errors; automatic rollback is armed)`);
     const smoke = await this.testing.smoke(app, prod, dep);
     if (smoke.status !== 'passed') {
       await this.runtime.rollback(app, (await this.envs.get(prod.id))!, undefined, 'automatic: production smoke test failed').catch(() => {});
       return this.log(pipelineId, 'production', `production smoke test failed; rolled back: ${JSON.stringify(smoke.summary)}`, 'failed');
     }
-    return this.log(pipelineId, 'done', `shipped to https://${prod.host}`, 'passed');
+    return this.log(pipelineId, 'done', `shipped to ${this.ctx.cfg.appUrl(prod.host)}`, 'passed');
   }
 
   private async deployAndTest(app: AppRow, env: EnvRow, dep: DeploymentRow, pipelineId: string): Promise<boolean> {
@@ -223,7 +223,7 @@ export class Host {
       await this.log(pipelineId, stage, `release failed: ${(err as Error).message}`);
       return false;
     }
-    await this.log(pipelineId, stage, `deployed to https://${env.host}; running smoke tests`);
+    await this.log(pipelineId, stage, `deployed to ${this.ctx.cfg.appUrl(env.host)}; running smoke tests`);
     const fresh = (await this.envs.get(env.id))!;
     const smoke = await this.testing.smoke(app, fresh, dep);
     if (smoke.status !== 'passed') {
@@ -260,7 +260,7 @@ export class Host {
       await this.ctx.db.query('INSERT INTO pipelines (id, app_id, deployment_id, target) VALUES ($1, $2, $3, $4)', [pipelineId, app.id, depId, 'staging']);
       void this.deployAndTest(app, env, dep, pipelineId).then((ok) => this.log(pipelineId, 'done', ok ? 'staging passed' : 'staging failed', ok ? 'passed' : 'failed'));
       await this.audit(ws, 'promote', appName, { depId, to });
-      return { pipelineId, url: `https://${env.host}` };
+      return { pipelineId, url: this.ctx.cfg.appUrl(env.host) };
     }
     const release = await this.runtime.release(app, env, dep, 'promote');
     const smoke = await this.testing.smoke(app, (await this.envs.get(env.id))!, dep);
@@ -269,7 +269,7 @@ export class Host {
       throw new UserError(`Released, but the production smoke test failed, so it was rolled back: ${JSON.stringify(smoke.summary)}`, 500);
     }
     await this.audit(ws, 'promote', appName, { depId, to, releaseId: release.id });
-    return { releaseId: release.id, url: `https://${env.host}` };
+    return { releaseId: release.id, url: this.ctx.cfg.appUrl(env.host) };
   }
 
   async deployment(ws: string, depId: string): Promise<DeploymentRow> {
@@ -291,7 +291,7 @@ export class Host {
       manifest: d.manifest,
       pipelines,
       tests,
-      liveIn: envs.map((e) => ({ env: e.kind === 'preview' ? e.slug : e.kind, url: `https://${e.host}` })),
+      liveIn: envs.map((e) => ({ env: e.kind === 'preview' ? e.slug : e.kind, url: this.ctx.cfg.appUrl(e.host) })),
     };
   }
 
@@ -354,14 +354,44 @@ export class Host {
 
   /** Sets what an environment's data saves and who can see it (see data-link.ts). */
   async dataRules(ws: string, appName: string, envName: string, contract: unknown): Promise<DataRulesResult> {
+    const { env, link, adminKey } = await this.#dataEnv(ws, appName, envName);
+    const r = await setDataRules(link, { projectId: env.data_project_id!, adminKey, kind: env.kind }, contract).catch((err: Error) => this.#cloudError(err));
+    await this.audit(ws, 'data_rules.updated', `${appName}/${envName}`);
+    return r;
+  }
+
+  /** The environment's data project: Cloud link and admin key, or a clear error. */
+  async #dataEnv(ws: string, appName: string, envName: string) {
     const { env } = await this.env(ws, appName, envName);
     const link = this.ctx.cfg.dataLink;
     const adminKey = this.envs.dataAdminKey(env);
     if (!link || !env.data_project_id || !adminKey) throw new UserError('This environment has no Basalt data store. It needs Basalt Cloud configured on the platform.', 409);
-    const r = await setDataRules(link, { projectId: env.data_project_id, adminKey, kind: env.kind }, contract).catch((err: Error) => {
-      throw new UserError(err.message.replace(/^Basalt Cloud: /, ''), 400);
-    });
-    await this.audit(ws, 'data_rules.updated', `${appName}/${envName}`);
+    return { env, link, adminKey };
+  }
+
+  /** Cloud's answers are written for the person building; pass them through as user errors. */
+  #cloudError(err: Error): never {
+    throw new UserError(err.message.replace(/^Basalt Cloud: /, ''), 400);
+  }
+
+  async dataStatus(ws: string, appName: string, envName: string) {
+    const { link, adminKey } = await this.#dataEnv(ws, appName, envName);
+    return dataStatus(link, adminKey).catch((err: Error) => this.#cloudError(err));
+  }
+
+  /** Asks the human owner to make someone an admin of an environment's data. */
+  async dataAdmin(ws: string, appName: string, envName: string, who: { who?: string; userId?: string; label?: string }) {
+    const { link, adminKey } = await this.#dataEnv(ws, appName, envName);
+    const r = await requestDataAdmin(link, adminKey, who).catch((err: Error) => this.#cloudError(err));
+    await this.audit(ws, 'data_admin.requested', `${appName}/${envName}`);
+    return r;
+  }
+
+  /** Guard: real test people and a stranger try to reach data that isn't theirs. */
+  async dataCheck(ws: string, appName: string, envName: string, scan: GuardFinding[] | null) {
+    const { link, adminKey } = await this.#dataEnv(ws, appName, envName);
+    const r = await runDataCheck(link, adminKey, scan).catch((err: Error) => this.#cloudError(err));
+    await this.audit(ws, 'data_check.ran', `${appName}/${envName}`);
     return r;
   }
 
@@ -427,7 +457,7 @@ export class Host {
     const rel = await this.runtime.liveRelease(env);
     const container = rel?.container ? await this.ctx.docker.inspectOrNull(rel.container) : null;
     return {
-      url: `https://${env.host}`,
+      url: this.ctx.cfg.appUrl(env.host),
       edge: m?.hosts?.[env.host] ?? { requests: 0 },
       backend: container ? { state: container.State.Status, health: container.State.Health?.Status, restarts: container.RestartCount, startedAt: container.State.StartedAt } : null,
       sleeping: env.sleeping,

@@ -34,7 +34,17 @@ cd hosting/deploy
 ./setup.sh basalt.localhost --local
 ```
 
-Apps are then at `http://<app>.basalt.localhost:8080`, owner pages at `http://cloud.basalt.localhost:8080` and the control API at `http://127.0.0.1:4000`. Give Docker at least 8 GB of memory first. On Windows, run this inside WSL2 from a clone made inside WSL2 (a Windows checkout can turn the scripts' line endings into ones bash can't run).
+Apps are then at `http://<app>.basalt.localhost:8080`, owner pages at `http://cloud.basalt.localhost:8080` and the control API at `http://127.0.0.1:4000`. The script waits until every service is healthy. Give Docker at least 8 GB of memory first (the local overlay caps builds and tests at 1 GB each, so 4 GB works for one build at a time). On Windows, run this inside WSL2 from a clone made inside WSL2 (a Windows checkout can turn the scripts' line endings into ones bash can't run).
+
+On a real server: `./setup.sh <your-domain> --tunnel <cloudflare-tunnel-token>`, then in the Cloudflare dashboard point the tunnel's public hostnames `<your-domain>` and `*.<your-domain>` at `http://edge:8080`. Nothing else is exposed.
+
+## Connect Claude Code (one connector)
+
+```sh
+docker exec basalt-control node dist/admin.js create-workspace <name>
+```
+
+This prints a ready `claude mcp add basalt …` command (and the same as `.mcp.json`). It runs `@basalt/host-mcp` from the platform's own registry with `npx`, so there is nothing else to install. That one connector gives Claude every tool: create, deploy, test, stage and ship (`host_*`), drive the app in a real browser (`browser_*`), the per-person data rules, Guard and the owner's approvals (`host_data_*`), and Auth/API guides and code review (`auth_*`, `api_*`). Claude starts with `host_guide { topic: "workflow" }`. See [WORKLOG.md](WORKLOG.md) for everything that was built and how it was verified.
 
 ## Tests
 
@@ -48,6 +58,6 @@ cd api && npm test
 
 ## Still open
 
-- Nothing has run on a real server with a domain and Cloudflare tunnel yet. The local demo setup above is being tried end to end.
-- Two sets of Claude tools still overlap (Cloud's `basalt_*` and hosting's `host_*`). They should become one.
+- Nothing has run on a real server with a domain and Cloudflare tunnel yet. The local demo setup above passes the full end-to-end run (47 checks) and a real-browser check.
+- Hosted apps now use one connector. Cloud's standalone `basalt_*` connector remains for apps that aren't hosted on Basalt.
 - The demo story: plain vibe coded apps vs Basalt apps. A first test found plain builds got basic per-customer checks right. The pitch is that nothing guarantees it, and later edits can quietly break it, while Basalt's rules sit below the code.
