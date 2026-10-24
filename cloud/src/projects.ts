@@ -17,6 +17,8 @@ export interface CloudConfig {
   masterKey: string;
 }
 
+export class ConflictError extends Error {}
+
 export interface Project {
   id: string;
   name: string;
@@ -111,6 +113,7 @@ export class Projects {
         -- The hosting platform's id for the environment a project belongs to (one each).
         alter table cloud.projects add column if not exists external_id text;
         create unique index if not exists projects_external_id on cloud.projects (external_id) where external_id is not null;
+        alter table cloud.projects add column if not exists hosted boolean not null default false;
 
         create table if not exists cloud.checks (
           id bigint generated always as identity primary key,
@@ -129,12 +132,17 @@ export class Projects {
     } finally {
       c.release();
     }
+    // Projects the hosting platform made before the hosted flag existed belong to its workspaces.
+    await this.#pool.query('update cloud.projects set hosted = true where not hosted and auth_owner is not null and auth_owner <> $1', [this.#auth.defaultOwner]);
   }
+
 
   // Setup changes roles and grants shared by every database on the server, and Postgres
   // refuses two of those at once. So app setups take turns, across all Cloud instances.
   async #createDatabase(dbName: string, vars: Record<string, string>): Promise<void> {
-    const lock = await this.#pool.connect();
+    // A connection of its own: holding a pool connection while the work below takes more from
+    // the same pool deadlocks once enough setups wait at once.
+    const lock = await connect(this.#cfg.adminUrl);
     try {
       await lock.query("select pg_advisory_lock(hashtext('basalt cloud create database'))");
       await lock.query(`create database "${dbName}"`);
@@ -147,8 +155,7 @@ export class Projects {
         await appDb.end();
       }
     } finally {
-      await lock.query("select pg_advisory_unlock(hashtext('basalt cloud create database'))").catch(() => {});
-      lock.release();
+      await lock.end().catch(() => {}); // ending the session releases the lock
     }
   }
 
@@ -160,11 +167,15 @@ export class Projects {
     if (!attach?.externalId) return this.#create(name, attach);
     // Asking again for the same environment (a retry, or a lost reply) returns its database
     // with a fresh admin key instead of making a second one.
-    const lock = await this.#pool.connect();
+    const lock = await connect(this.#cfg.adminUrl);
     const tag = `basalt cloud env ${attach.externalId}`;
     try {
       await lock.query('select pg_advisory_lock(hashtext($1))', [tag]);
-      const row = (await lock.query('select id from cloud.projects where external_id = $1', [attach.externalId])).rows[0];
+      const row = (await lock.query('select id, auth_project_id, auth_owner from cloud.projects where external_id = $1', [attach.externalId])).rows[0];
+      if (row && (row.auth_project_id !== attach.authProjectId || row.auth_owner !== attach.authOwner)) {
+        // Its database only accepts the old Auth project's tokens. Reusing it would fail every login.
+        throw new ConflictError('This environment already has a data project tied to a different Auth project. Delete the environment\'s data project first.');
+      }
       if (row) {
         const adminKey = `bsk_${row.id}_${randomSecret()}`;
         await lock.query('update cloud.projects set admin_key_hash = $2 where id = $1', [row.id, sha256(adminKey)]);
@@ -172,8 +183,7 @@ export class Projects {
       }
       return await this.#create(name, attach);
     } finally {
-      await lock.query('select pg_advisory_unlock(hashtext($1))', [tag]).catch(() => {});
-      lock.release();
+      await lock.end().catch(() => {});
     }
   }
 
@@ -199,12 +209,17 @@ export class Projects {
 
     {
       await this.#pool.query(
-        `insert into cloud.projects (id, name, db_name, owner_role, exec_role, data_role, data_password, jwt_secret, admin_key_hash, auth_project_id, auth_owner, external_id)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [id, name, dbName, roles.owner, roles.exec, roles.data, encrypt(this.#cfg.masterKey, dataPassword), encrypt(this.#cfg.masterKey, jwtSecret), sha256(adminKey), authProjectId, authOwner, attach?.externalId ?? null],
+        `insert into cloud.projects (id, name, db_name, owner_role, exec_role, data_role, data_password, jwt_secret, admin_key_hash, auth_project_id, auth_owner, external_id, hosted)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [id, name, dbName, roles.owner, roles.exec, roles.data, encrypt(this.#cfg.masterKey, dataPassword), encrypt(this.#cfg.masterKey, jwtSecret), sha256(adminKey), authProjectId, authOwner, attach?.externalId ?? null, Boolean(attach)],
       );
     }
-    return { project: { id, name, dbName, roles, dataPassword, authProjectId, authOwner, approvedContract: null, hosted: Boolean(attach?.externalId) }, adminKey };
+    return { project: { id, name, dbName, roles, dataPassword, authProjectId, authOwner, approvedContract: null, hosted: Boolean(attach) }, adminKey };
+  }
+
+  async getByExternalId(externalId: string): Promise<Project | null> {
+    const row = (await this.#pool.query('select id from cloud.projects where external_id = $1', [externalId])).rows[0];
+    return row ? this.get(row.id) : null;
   }
 
   /** Removes an app's database, roles and records. Irreversible. Only for the platform. */
@@ -230,7 +245,7 @@ export class Projects {
         authProjectId: r.auth_project_id ?? null,
         authOwner: r.auth_owner ?? this.#auth.defaultOwner,
         approvedContract: r.approved_contract,
-        hosted: r.external_id !== null && r.external_id !== undefined,
+        hosted: r.hosted === true || (r.external_id !== null && r.external_id !== undefined),
       };
     }
   }

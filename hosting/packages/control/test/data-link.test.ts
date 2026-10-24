@@ -29,13 +29,13 @@ describe('Basalt Cloud data projects for environments', () => {
     await expect(createDataProject(cfg, { name: 'x', authProjectId: 'prj_abc12345', authOwner: 'ws_1', externalId: 'env_1' }, stub({ status: 201, body: { ok: true, project: { id: '../../x' }, adminKey: 'k' } }).f)).rejects.toThrow(/unexpected/);
   });
 
-  it('deletes the data project with the environment, counts "already gone" as done and reports real failures', async () => {
+  it('deletes by environment id (even if the project id was never recorded), counts "already gone" as done and reports real failures', async () => {
     const { f, calls } = stub({ status: 200, body: { ok: true } });
-    await deleteDataProject(cfg, 'abcde12345', f);
-    expect(calls[0]!.url).toBe('http://cloud:8790/api/platform/projects/abcde12345');
+    await deleteDataProject(cfg, 'env_1', f);
+    expect(calls[0]!.url).toBe('http://cloud:8790/api/platform/environments/env_1');
     expect(calls[0]!.init.method).toBe('DELETE');
-    await deleteDataProject(cfg, 'abcde12345', stub({ status: 404, body: { ok: false, error: { message: 'Unknown project.' } } }).f);
-    await expect(deleteDataProject(cfg, 'abcde12345', stub({ status: 503, body: { ok: false, error: { message: 'down' } } }).f)).rejects.toThrow(/down/);
+    await deleteDataProject(cfg, 'env_1', stub({ status: 404, body: { ok: false, error: { message: 'Unknown environment.' } } }).f);
+    await expect(deleteDataProject(cfg, 'env_1', stub({ status: 503, body: { ok: false, error: { message: 'down' } } }).f)).rejects.toThrow(/down/);
   });
 
   it('test environments get their rules right away, production waits for the owner', async () => {

@@ -474,9 +474,14 @@ describe('hosted environments on the platform API', () => {
   let host: ReturnType<typeof createCloudServer>;
   let url: string;
   before(async () => {
-    host = createCloudServer({ projects, auth, platformKey, publicUrl: 'https://cloud.example.com', trustProxy: true });
-    await new Promise<void>((r) => host.server.listen(0, '127.0.0.1', () => r()));
-    url = `http://127.0.0.1:${(host.server.address() as AddressInfo).port}`;
+    // Port picked first so Guard can be told to call the server directly (selfUrl).
+    const probe = createCloudServer({ projects, auth, publicUrl: 'http://x' });
+    await new Promise<void>((r) => probe.server.listen(0, '127.0.0.1', () => r()));
+    const port = (probe.server.address() as AddressInfo).port;
+    await new Promise((r) => probe.server.close(r));
+    url = `http://127.0.0.1:${port}`;
+    host = createCloudServer({ projects, auth, platformKey, publicUrl: 'https://cloud.example.com', selfUrl: url, trustProxy: true });
+    await new Promise<void>((r) => host.server.listen(port, '127.0.0.1', () => r()));
   });
   after(async () => {
     await host.close();
@@ -499,6 +504,44 @@ describe('hosted environments on the platform API', () => {
     const me = (key: string) => fetch(`${url}/api/projects/me`, { headers: { authorization: `Bearer ${key}` } }).then((r) => r.status);
     assert.equal(await me(b.body.adminKey), 200);
     assert.equal(await me(a.body.adminKey), 401);
+  });
+
+  test('a burst of retries for one environment neither hangs nor makes a second database', async () => {
+    const { projectId } = await auth.createProject('Env');
+    const all = await Promise.all(Array.from({ length: 8 }, () => make(projectId, 'env_burst1')));
+    assert.deepEqual([...new Set(all.map((r) => r.status))], [201]);
+    assert.equal(new Set(all.map((r) => r.body.project.id)).size, 1);
+  });
+
+  test('a retry tied to a different Auth project is refused instead of reusing the old database', async () => {
+    const first = await auth.createProject('Env');
+    const second = await auth.createProject('Env again');
+    assert.equal((await make(first.projectId, 'env_rebind1')).status, 201);
+    const r = await make(second.projectId, 'env_rebind1');
+    assert.equal(r.status, 409);
+  });
+
+  test('an environment can be deleted by its id even if its project id was never recorded', async () => {
+    const { projectId } = await auth.createProject('Env');
+    const made = await make(projectId, 'env_lost1');
+    const del = () => fetch(`${url}/api/platform/environments/env_lost1`, { method: 'DELETE', headers: { authorization: `Bearer ${platformKey}` } }).then((r) => r.status);
+    assert.equal(await del(), 200);
+    assert.equal(await projects.get(made.body.project.id), null);
+    assert.equal(await del(), 404);
+  });
+
+  test("Guard checks a hosted environment's data directly, not through Cloud's public address", async () => {
+    const { projectId } = await auth.createProject('Env');
+    const made = await make(projectId, 'env_guard1');
+    await fetch(`${url}/api/platform/projects/${made.body.project.id}/rules`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${platformKey}` },
+      body: JSON.stringify({ contract: { tables: { notes: { fields: { text: { type: 'text' } } } } } }),
+    });
+    const r = await fetch(`${url}/api/projects/me/check`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${made.body.adminKey}` }, body: '{}' });
+    const body = (await r.json()) as any;
+    assert.equal(r.status, 200, JSON.stringify(body));
+    assert.equal(body.failed, 0, JSON.stringify(body.results));
   });
 
   test("a hosted environment's data is only served on the app's own site, not on Cloud's public address", async () => {

@@ -17,7 +17,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { BasaltData, BasaltError, createDataHandler, parseContract, setServerLimits, type Contract, type DataHandler } from '../../data/src/index.ts';
-import { Projects, type Project } from './projects.ts';
+import { ConflictError, Projects, type Project } from './projects.ts';
 import { resign, runChecks } from './guard.ts';
 import { renderReceipt } from './receipt.ts';
 import type { ScanFinding } from './scan.ts';
@@ -37,6 +37,9 @@ export interface CloudServerOptions {
   maxProjects?: number;
   projectsPerIpPerHour?: number;
   trustProxy?: boolean;
+  // Where this server reaches itself directly (Guard's checks), like http://127.0.0.1:8790.
+  // Default: publicUrl. Set it when publicUrl goes through the edge.
+  selfUrl?: string;
 }
 
 class HttpError extends Error {
@@ -198,8 +201,20 @@ export function createCloudServer(options: CloudServerOptions) {
       const authOwner = typeof body.authOwner === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(body.authOwner) ? body.authOwner : '';
       if (!name || !authProjectId || !authOwner) throw new HttpError(400, 'name, authProjectId and authOwner are required.');
       if (body.externalId !== undefined && (typeof body.externalId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(body.externalId))) throw new HttpError(400, 'externalId must be 1 to 64 letters, numbers, _ or -.');
-      const { project, adminKey } = await projects.create(name, { authProjectId, authOwner, externalId: body.externalId as string | undefined });
+      const { project, adminKey } = await projects.create(name, { authProjectId, authOwner, externalId: body.externalId as string | undefined }).catch((err) => {
+        throw err instanceof ConflictError ? new HttpError(409, err.message) : err;
+      });
       return sendJson(res, 201, { ok: true, project: await status(project), adminKey });
+    }
+    // Deletes an environment's data project by the platform's environment id, so one whose
+    // creation reply was lost can still be cleaned up.
+    const envMatch = /^\/api\/platform\/environments\/([A-Za-z0-9_-]{1,64})$/.exec(path);
+    if (envMatch && req.method === 'DELETE') {
+      const p = await projects.getByExternalId(envMatch[1]);
+      if (!p) throw new HttpError(404, 'Unknown environment.');
+      await dropHandler(p.id);
+      await projects.delete(p);
+      return sendJson(res, 200, { ok: true });
     }
     const m = /^\/api\/platform\/projects\/([a-z0-9]{10})(\/rules)?$/.exec(path);
     const p = m ? await projects.get(m[1]) : null;
@@ -321,7 +336,7 @@ export function createCloudServer(options: CloudServerOptions) {
         const signing = await options.auth.signing(p.authProjectId, p.authOwner);
         const now = Math.floor(Date.now() / 1000);
         const results = await runChecks(parseContract(p.approvedContract), {
-          url: `${base}/p/${p.id}`,
+          url: `${(options.selfUrl ?? base).replace(/\/+$/, '')}/p/${p.id}`,
           tokenA: a.token,
           tokenB: b.token,
           userA: a.userId,
@@ -479,7 +494,14 @@ if (import.meta.main) {
   await projects.init();
   const port = Number(process.env.PORT ?? 8790);
   const host = process.env.HOST ?? '127.0.0.1';
-  const { server } = createCloudServer({ projects, auth, platformKey: process.env.CLOUD_PLATFORM_KEY || undefined, publicUrl: process.env.PUBLIC_URL ?? `http://${host}:${port}`, trustProxy: process.env.TRUST_PROXY === '1' });
+  const { server } = createCloudServer({
+    projects,
+    auth,
+    platformKey: process.env.CLOUD_PLATFORM_KEY || undefined,
+    publicUrl: process.env.PUBLIC_URL ?? `http://${host}:${port}`,
+    selfUrl: `http://127.0.0.1:${port}`,
+    trustProxy: process.env.TRUST_PROXY === '1',
+  });
   server.listen(port, host, () => console.log(`basalt cloud on http://${host}:${port}`));
 
   // Sessions ended in Basalt Auth stop working in every app database within ~10 seconds.

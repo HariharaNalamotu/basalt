@@ -48,11 +48,15 @@ export async function createDataProject(
   return { projectId, adminKey: out.adminKey };
 }
 
-/** Already gone counts as done. Any other failure throws, so the caller can keep its record and retry. */
-export async function deleteDataProject(cfg: DataLinkConfig, projectId: string, f: typeof fetch = fetch): Promise<void> {
-  if (!PROJECT_ID.test(projectId)) return;
+/**
+ * Deletes an environment's data project by the environment id, so one whose creation reply was
+ * lost is found too. Already gone counts as done. Any other failure throws, so the caller can
+ * keep its record and retry.
+ */
+export async function deleteDataProject(cfg: DataLinkConfig, envId: string, f: typeof fetch = fetch): Promise<void> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(envId)) return;
   try {
-    await cloudCall(cfg, 'DELETE', `/api/platform/projects/${projectId}`, undefined, f);
+    await cloudCall(cfg, 'DELETE', `/api/platform/environments/${envId}`, undefined, f);
   } catch (err) {
     if (!(err instanceof CloudError && err.status === 404)) throw err;
   }
