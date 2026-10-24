@@ -9,7 +9,10 @@
 //   POST /v1/data/restore { table, id }
 //   GET  /healthz         (never touches the database)
 //
-// Every request needs  Authorization: Bearer <user login token>.
+// Every request needs the user's login token, either
+//   Authorization: Bearer <data token>        (servers, native apps, other tools), or
+//   the Basalt Auth session cookie            (browsers on the app's own origin: the token
+//                                              never has to be readable by page scripts).
 //
 //   node --env-file=.env src/server.ts contract.json
 
@@ -39,9 +42,10 @@ const STATUS: Record<BasaltErrorCode, number> = {
 
 const OPS = new Set(['get', 'list', 'create', 'update', 'archive', 'restore']);
 
-// Most vibe coded apps call this straight from the browser. Logins travel in
-// the Authorization header, never in cookies, so any site may call it: a page
-// can only act as a user whose token it already holds.
+// Bearer logins travel in the Authorization header, so any site may call with
+// one: a page can only act as a user whose token it already holds. Cookie logins
+// are separately limited to the app's own origin (see fromSessionCookie), and
+// "*" never allows credentials, so other sites can't use a visitor's cookie.
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'POST, GET, OPTIONS',
@@ -100,12 +104,54 @@ async function readJson(req: IncomingMessage, maxBytes: number, timeoutMs: numbe
   return body as Record<string, unknown>;
 }
 
+const DENIED = 'Your login is missing, expired or not valid. Log in again.';
+// Basalt Auth's HttpOnly access cookie (secure and plain-http development names).
+const SESSION_COOKIES = ['__Host-basalt_at', 'basalt_at'];
+
 function bearer(req: IncomingMessage): string {
-  const header = req.headers.authorization ?? '';
+  const header = req.headers.authorization;
+  if (header === undefined) return fromSessionCookie(req);
   const match = /^Bearer (\S{1,4096})$/.exec(header);
   // Check the token's shape before reading any body. The database checks the signature.
-  if (!match || !TOKEN.test(match[1])) throw new BasaltError('denied', 'Your login is missing, expired or not valid. Log in again.');
+  if (!match || !TOKEN.test(match[1])) throw new BasaltError('denied', DENIED);
   return match[1];
+}
+
+/**
+ * Browsers on the app's own origin send Basalt Auth's HttpOnly session cookie instead of a token.
+ * The data token rides inside it (claim "bdg"); it's taken out as is and the database verifies it,
+ * so this service still never needs a secret. Cookies are sent automatically by browsers, so they
+ * are only honored for same-origin requests (blocks cross-site request forgery).
+ */
+function fromSessionCookie(req: IncomingMessage): string {
+  const raw = req.headers.cookie;
+  if (!raw) throw new BasaltError('denied', DENIED);
+  const origin = req.headers.origin;
+  const host = (req.headers['x-forwarded-host'] as string | undefined)?.split(',')[0]?.trim() ?? req.headers.host;
+  let sameOrigin = false;
+  try {
+    sameOrigin = typeof origin === 'string' && Boolean(host) && new URL(origin).host === host;
+  } catch {
+    sameOrigin = false;
+  }
+  if (!sameOrigin) throw new BasaltError('denied', 'Cookie logins only work from the app\'s own site.');
+  let cookie: string | undefined;
+  for (const part of raw.split(';')) {
+    const i = part.indexOf('=');
+    const name = part.slice(0, i).trim();
+    if (i > 0 && SESSION_COOKIES.includes(name)) cookie = part.slice(i + 1).trim();
+  }
+  const segments = cookie?.split('.');
+  if (!segments || segments.length !== 3 || segments[1].length > 8000) throw new BasaltError('denied', DENIED);
+  let claims: unknown;
+  try {
+    claims = JSON.parse(Buffer.from(segments[1], 'base64url').toString('utf8'));
+  } catch {
+    throw new BasaltError('denied', DENIED);
+  }
+  const token = (claims as { bdg?: unknown } | null)?.bdg;
+  if (typeof token !== 'string' || !TOKEN.test(token)) throw new BasaltError('denied', DENIED);
+  return token;
 }
 
 // Drops rows from the end of a page until it fits, and points next at the

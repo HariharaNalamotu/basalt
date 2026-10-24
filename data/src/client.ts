@@ -8,13 +8,18 @@ import { BasaltError, type BasaltErrorCode } from './errors.ts';
 import type { CreateOptions, ListOptions, Row } from './data.ts';
 
 export interface BasaltClientOptions {
-  url: string;
-  token: string | (() => string | Promise<string>);
+  /** On Basalt the Data service is served on the app's own origin at /_basalt/data (the default). */
+  url?: string;
+  /**
+   * The user's data token. Leave it out in browsers using Basalt Auth: the HttpOnly session
+   * cookie is sent instead, so page scripts never hold a token.
+   */
+  token?: string | (() => string | Promise<string>);
   timeoutMs?: number;
 }
 
-export function createBasalt(options: BasaltClientOptions) {
-  const base = options.url.replace(/\/+$/, '');
+export function createBasalt(options: BasaltClientOptions = {}) {
+  const base = (options.url ?? '/_basalt/data').replace(/\/+$/, '');
   const timeoutMs = options.timeoutMs ?? 10_000;
 
   async function call<T>(op: string, body: Record<string, unknown>): Promise<T> {
@@ -23,7 +28,8 @@ export function createBasalt(options: BasaltClientOptions) {
     try {
       res = await fetch(`${base}/v1/data/${op}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        credentials: token ? 'omit' : 'same-origin',
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       });

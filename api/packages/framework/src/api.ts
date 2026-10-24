@@ -22,6 +22,7 @@ import { parseServiceConfig, tightenAuth, type ApiServiceConfig } from './config
 import { ipRateLimitKey, MemoryRateLimiter, RedisRateLimiter, type RateLimiter, type RateLimitRule } from './ratelimit.js';
 import { createSafeFetch, type SafeFetch } from './safe-fetch.js';
 import { SqlQuery, type QueryResult } from './sql.js';
+import { createDataClient, type DataClient } from './data.js';
 
 // ------------------------------------------------------------------------------------ public types
 
@@ -106,6 +107,12 @@ export interface HandlerContext<P, Q, B, U> {
   body: B;
   /** Injection-proof SQL in a per-request transaction; the database enforces row ownership. */
   sql: SqlRunner;
+  /**
+   * The Basalt Data block as the signed-in user (get/list/create/update/archive/restore).
+   * Postgres checks the user's token inside basalt.api(), so each user only ever reaches their
+   * own (or shared) rows. Needs a signed-in user and BASALT_DATA_URL.
+   */
+  data: DataClient;
   request: { id: string; ip: string; method: string; path: string; header(name: string): string | undefined };
   /** Aborted when the request times out; pass it to slow operations. */
   signal: AbortSignal;
@@ -134,6 +141,8 @@ export interface ApiOptions {
   auth?: AuthServer | AuthServerOptions;
   /** Postgres for ctx.sql. Default: DATABASE_URL (the restricted app role). `false` disables. */
   database?: { pool?: PgPoolLike & { end?: () => Promise<void> }; url?: string; maxConnections?: number } | false;
+  /** Basalt Data service for ctx.data. Default BASALT_DATA_URL. */
+  dataUrl?: string;
   /** Shared state for rate limits + idempotency. Default REDIS_URL. Required in production. */
   redisUrl?: string;
   /** Shared secret with the platform edge. Default BASALT_EDGE_SECRET. Required in production. */
@@ -308,6 +317,7 @@ export function createApi(options: ApiOptions = {}): Api {
     };
   }
   const safeFetch = options.safeFetch ?? createSafeFetch();
+  const dataUrl = options.dataUrl ?? process.env.BASALT_DATA_URL;
 
   const routes: RouteDef[] = [];
   let app: Hono<Env> | undefined;
@@ -651,6 +661,15 @@ export function createApi(options: ApiOptions = {}): Api {
       query,
       body,
       sql: db.runner(),
+      data: createDataClient(
+        dataUrl ?? 'http://basalt-data.invalid',
+        () => {
+          if (!dataUrl) throw new Error('ctx.data needs BASALT_DATA_URL (the Basalt Data service).');
+          if (!user) throw new ApiError('unauthenticated', 'Sign in required.');
+          return auth.dataGrant(user);
+        },
+        controller.signal,
+      ),
       request: {
         id: rs.id,
         ip: rs.ip,

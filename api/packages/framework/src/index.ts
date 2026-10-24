@@ -7,3 +7,4 @@ export { createLogger, type Logger } from './logger.js';
 export type { AuthUser } from '@basalt/auth/server';
 export { z } from 'zod';
 export { ApiServiceConfigSchema, RouteOverrideSchema, parseServiceConfig, tightenAuth, type ApiServiceConfig, type RouteOverride } from './config.js';
+export { createDataClient, type DataClient, type Row } from './data.js';

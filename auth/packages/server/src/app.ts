@@ -173,6 +173,8 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
     c.header('content-type', 'application/sql; charset=utf-8');
     return c.body(await services.dataGrants.installSql(project.id));
   });
+  // Signing configuration for databases that verify this project's data tokens (Data block).
+  platform.get('/projects/:id/data-protection/signing', async (c) => c.json(await services.dataGrants.signing((await owned(c)).id)));
   platform.get('/projects/:id/data-protection/revocations', async (c) =>
     c.json(await services.dataGrants.revocations((await owned(c)).id, feedQuery(c))),
   );

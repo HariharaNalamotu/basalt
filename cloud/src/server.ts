@@ -11,14 +11,19 @@
 //
 //   node --env-file=.env src/server.ts
 
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { BasaltData, BasaltError, createDataHandler, parseContract, setServerLimits, type Contract, type DataHandler } from '../../data/src/index.ts';
 import { Projects, type Project } from './projects.ts';
-import { signToken, testUserId } from './secrets.ts';
+import type { AuthLink } from './auth.ts';
 import { loosens, summarize } from './summary.ts';
 
 export interface CloudServerOptions {
   projects: Projects;
+  auth: AuthLink;
+  // Lets the hosting platform make databases bound to its environments' Auth projects and
+  // apply rules to non-production environments. Unset: the platform API is disabled.
+  platformKey?: string;
   publicUrl: string;
   maxProjects?: number;
   projectsPerIpPerHour?: number;
@@ -156,7 +161,50 @@ export function createCloudServer(options: CloudServerOptions) {
     };
   }
 
+  function requirePlatform(req: IncomingMessage): void {
+    const presented = /^Bearer (\S+)$/.exec(req.headers.authorization ?? '')?.[1] ?? '';
+    const ok =
+      Boolean(options.platformKey) &&
+      timingSafeEqual(createHash('sha256').update(presented).digest(), createHash('sha256').update(options.platformKey!).digest());
+    if (!ok) throw new HttpError(401, 'Platform key required.');
+  }
+
+  async function handlePlatform(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+    requirePlatform(req);
+    if (req.method === 'POST' && path === '/api/platform/projects') {
+      const body = await readJson(req);
+      const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
+      const authProjectId = typeof body.authProjectId === 'string' && /^prj_[A-Za-z0-9]{8,40}$/.test(body.authProjectId) ? body.authProjectId : '';
+      const authOwner = typeof body.authOwner === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(body.authOwner) ? body.authOwner : '';
+      if (!name || !authProjectId || !authOwner) throw new HttpError(400, 'name, authProjectId and authOwner are required.');
+      const { project, adminKey } = await projects.create(name, { authProjectId, authOwner });
+      return sendJson(res, 201, { ok: true, project: await status(project), adminKey });
+    }
+    const m = /^\/api\/platform\/projects\/([a-z0-9]{10})(\/rules)?$/.exec(path);
+    const p = m ? await projects.get(m[1]) : null;
+    if (!m || !p) throw new HttpError(404, 'Unknown project.');
+    // Test environments: rules apply right away (only test data is at stake). Production goes
+    // through the owner-approval flow in /api/projects/me/rules instead.
+    if (req.method === 'PUT' && m[2]) {
+      const body = await readJson(req);
+      try {
+        await projects.apply(p, body.contract);
+      } catch (err) {
+        throw new HttpError(409, (err as Error).message);
+      }
+      await dropHandler(p.id);
+      return sendJson(res, 200, { ok: true, status: 'live', summary: summarize(parseContract(body.contract)).text });
+    }
+    if (req.method === 'DELETE' && !m[2]) {
+      await dropHandler(p.id);
+      await projects.delete(p);
+      return sendJson(res, 200, { ok: true });
+    }
+    throw new HttpError(404, 'Unknown route.');
+  }
+
   async function handleApi(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+    if (path.startsWith('/api/platform/')) return handlePlatform(req, res, path);
     if (req.method === 'POST' && path === '/api/projects') {
       const body = await readJson(req);
       const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
@@ -210,8 +258,10 @@ export function createCloudServer(options: CloudServerOptions) {
       const p = await adminProject(req);
       const body = await readJson(req);
       const who = typeof body.who === 'string' && /^[A-Za-z0-9 _-]{1,40}$/.test(body.who) ? body.who : 'test person';
-      const userId = testUserId(p.jwtSecret, who);
-      return sendJson(res, 200, { ok: true, who, userId, token: signToken(p.jwtSecret, userId), expiresInSeconds: 3600 });
+      if (!p.authProjectId) throw new HttpError(409, 'This app was made before Basalt Auth was connected. Make a new one with basalt_start.');
+      // A real Basalt Auth user and session: the database checks this token like any other login.
+      const login = await options.auth.testLogin(p.authProjectId, who, p.authOwner);
+      return sendJson(res, 200, { ok: true, who, userId: login.userId, token: login.token, expiresInSeconds: login.expiresInSeconds });
     }
 
     if (req.method === 'POST' && path === '/api/projects/me/admins') {
@@ -224,7 +274,8 @@ export function createCloudServer(options: CloudServerOptions) {
         uid = body.userId;
         label = typeof body.label === 'string' ? body.label.slice(0, 60) : 'this person';
       } else if (typeof body.who === 'string' && /^[A-Za-z0-9 _-]{1,40}$/.test(body.who)) {
-        uid = testUserId(p.jwtSecret, body.who);
+        if (!p.authProjectId) throw new HttpError(409, 'This app was made before Basalt Auth was connected.');
+        uid = (await options.auth.testLogin(p.authProjectId, body.who, p.authOwner)).userId;
         label = body.who;
       } else {
         throw new HttpError(400, 'Say who should be an admin: a test person\'s name (who) or a user id (userId).');
@@ -345,10 +396,21 @@ if (import.meta.main) {
     if (!v) throw new Error(`Set ${name} in .env (see .env.example).`);
     return v;
   };
-  const projects = new Projects({ adminUrl: env('CLOUD_ADMIN_URL'), dbHost: env('CLOUD_DB_HOST'), masterKey: env('CLOUD_MASTER_KEY') });
+  const { AuthLink } = await import('./auth.ts');
+  const auth = new AuthLink({ url: env('AUTH_URL'), platformKey: env('AUTH_PLATFORM_KEY'), masterKey: env('CLOUD_MASTER_KEY') });
+  const projects = new Projects({ adminUrl: env('CLOUD_ADMIN_URL'), dbHost: env('CLOUD_DB_HOST'), masterKey: env('CLOUD_MASTER_KEY') }, auth);
   await projects.init();
   const port = Number(process.env.PORT ?? 8790);
   const host = process.env.HOST ?? '127.0.0.1';
-  const { server } = createCloudServer({ projects, publicUrl: process.env.PUBLIC_URL ?? `http://${host}:${port}`, trustProxy: process.env.TRUST_PROXY === '1' });
+  const { server } = createCloudServer({ projects, auth, platformKey: process.env.CLOUD_PLATFORM_KEY || undefined, publicUrl: process.env.PUBLIC_URL ?? `http://${host}:${port}`, trustProxy: process.env.TRUST_PROXY === '1' });
   server.listen(port, host, () => console.log(`basalt cloud on http://${host}:${port}`));
+
+  // Sessions ended in Basalt Auth stop working in every app database within ~10 seconds.
+  const sync = async () => {
+    for (const id of await projects.linkedProjectIds().catch(() => [])) {
+      const p = await projects.get(id);
+      if (p) await projects.syncRevocations(p).catch((err) => console.error('basalt cloud: revocation sync failed', id, (err as Error).message));
+    }
+  };
+  setInterval(() => void sync(), 10_000).unref();
 }

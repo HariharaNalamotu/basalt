@@ -9,10 +9,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { pg } from '../../data/src/index.ts';
+import { AuthLink } from '../src/auth.ts';
 import { Projects } from '../src/projects.ts';
 import { createCloudServer } from '../src/server.ts';
+import { startAuth } from './auth-server.ts';
 
-const projects = new Projects({ adminUrl: process.env.CLOUD_ADMIN_URL!, dbHost: process.env.CLOUD_DB_HOST!, masterKey: process.env.CLOUD_MASTER_KEY! });
+let authServer: Awaited<ReturnType<typeof startAuth>>;
+let auth: AuthLink;
+let projects: Projects;
 let base: string;
 let cloud: ReturnType<typeof createCloudServer>;
 
@@ -75,13 +79,16 @@ async function data(dataUrl: string, token: string, op: string, body: unknown) {
 }
 
 before(async () => {
+  authServer = await startAuth(process.env.CLOUD_ADMIN_URL!);
+  auth = new AuthLink({ url: authServer.url, platformKey: authServer.platformKey, masterKey: process.env.CLOUD_MASTER_KEY! });
+  projects = new Projects({ adminUrl: process.env.CLOUD_ADMIN_URL!, dbHost: process.env.CLOUD_DB_HOST!, masterKey: process.env.CLOUD_MASTER_KEY! }, auth);
   await projects.init();
-  cloud = createCloudServer({ projects, publicUrl: 'http://placeholder', projectsPerIpPerHour: 1000 });
+  cloud = createCloudServer({ projects, auth, publicUrl: 'http://placeholder', projectsPerIpPerHour: 1000 });
   await new Promise<void>((r) => cloud.server.listen(0, '127.0.0.1', () => r()));
   base = `http://127.0.0.1:${(cloud.server.address() as AddressInfo).port}`;
   // Links in replies use the public URL; point it at the test server.
   cloud.server.close();
-  cloud = createCloudServer({ projects, publicUrl: base, projectsPerIpPerHour: 1000 });
+  cloud = createCloudServer({ projects, auth, publicUrl: base, projectsPerIpPerHour: 1000 });
   await new Promise<void>((r) => cloud.server.listen(Number(new URL(base).port), '127.0.0.1', () => r()));
 });
 
@@ -89,6 +96,58 @@ after(async () => {
   await cloud.close();
   await new Promise((r) => cloud.server.close(r));
   await projects.close();
+  await authServer.close();
+});
+
+describe('logins come from Basalt Auth', () => {
+  test('test logins are real Auth users and sessions, the same person every time', async () => {
+    const app = await liveApp();
+    const maria = await login(app.key, 'maria');
+    const again = await login(app.key, 'maria');
+    const sam = await login(app.key, 'sam');
+    assert.equal(maria.userId, again.userId);
+    assert.notEqual(maria.userId, sam.userId);
+    const p = (await projects.get(app.id))!;
+    const users = await (await fetch(`${authServer.url}/v1/platform/projects/${p.authProjectId}/users?email=maria@test.basalt.invalid`, {
+      headers: { authorization: `Bearer ${authServer.platformKey}`, 'x-basalt-owner': 'basalt-cloud' },
+    })).json();
+    assert.equal(users.users[0].id, maria.userId);
+    const made = await data(app.dataUrl, maria.token, 'create', { table: 'bookings', input: { service: 'Cut', starts_at: '2026-10-25T15:00:00Z' } });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    assert.equal(made.body.data.owner_id, maria.userId);
+    const theirs = await data(app.dataUrl, sam.token, 'get', { table: 'bookings', id: made.body.data.id });
+    assert.equal(theirs.status, 404);
+  });
+
+  test("the database checks Auth's issuer and signature: tokens from another app or self-made ones are refused", async () => {
+    const one = await liveApp();
+    const two = await liveApp();
+    const fromTwo = await login(two.key, 'maria');
+    assert.equal((await data(one.dataUrl, fromTwo.token, 'list', { table: 'bookings' })).status, 401);
+    const { createHmac } = await import('node:crypto');
+    const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const now = Math.floor(Date.now() / 1000);
+    const unsigned = `${enc({ alg: 'HS256', typ: 'JWT' })}.${enc({ sub: fromTwo.userId, aud: 'authenticated', role: 'authenticated', iat: now, exp: now + 600 })}`;
+    const selfMade = `${unsigned}.${createHmac('sha256', 'not-the-secret-not-the-secret-0123456789').update(unsigned).digest('base64url')}`;
+    assert.equal((await data(one.dataUrl, selfMade, 'list', { table: 'bookings' })).status, 401);
+  });
+
+  test('signing out everywhere in Auth stops the token in the database after a sync', async () => {
+    const app = await liveApp();
+    const maria = await login(app.key, 'maria-revoke');
+    assert.equal((await data(app.dataUrl, maria.token, 'list', { table: 'bookings' })).status, 200);
+    const p = (await projects.get(app.id))!;
+    const r = await fetch(`${authServer.url}/v1/platform/projects/${p.authProjectId}/users/${maria.userId}/revoke-sessions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${authServer.platformKey}`, 'x-basalt-owner': 'basalt-cloud', 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(r.status, 200);
+    assert.ok((await projects.syncRevocations(p)) >= 1);
+    assert.equal((await data(app.dataUrl, maria.token, 'list', { table: 'bookings' })).status, 401);
+    // Running the sync again is harmless.
+    await projects.syncRevocations(p);
+  });
 });
 
 describe('a new app', () => {
@@ -232,7 +291,9 @@ describe('apps are walled off from each other', () => {
     const crossUrl = projects.dataUrl(pa).replace(`/app_${a.id}`, `/app_${b.id}`);
     const c = new pg.Client({ connectionString: crossUrl });
     await assert.rejects(c.connect());
-    assert.notEqual(pa.jwtSecret, pb.jwtSecret);
+    // Each app has its own Auth project and therefore its own token signing secret.
+    assert.notEqual(pa.authProjectId, pb.authProjectId);
+    assert.notEqual((await auth.signing(pa.authProjectId!)).secret, (await auth.signing(pb.authProjectId!)).secret);
 
     // A token from app A means nothing in app B.
     const maria = await login(a.key, 'maria');
@@ -328,7 +389,7 @@ describe('the MCP server Claude Code uses', () => {
       const connect = await tool('basalt_connect_app');
       assert.match(connect.text, /export function basalt\(getToken\)/);
       const login1 = await tool('basalt_test_login', { who: 'maria' });
-      assert.match(login1.text, /good for one hour/);
+      assert.match(login1.text, /good for \d+ minutes/);
 
       const bad = await tool('basalt_set_rules', { rules: { tables: {} } });
       assert.equal(bad.isError, true);
