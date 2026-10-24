@@ -178,7 +178,7 @@ textarea.control{min-height:120px;resize:vertical}
 .field-error{font-size:14px;color:var(--error)}
 .slots{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px}
 .slot{min-height:48px;padding:10px 8px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font:600 16px/1.5 var(--sans);font-variant-numeric:tabular-nums;cursor:pointer}
-.slot:hover:not(:disabled){background:var(--soft)}
+.slot:hover:not(:disabled):not([aria-pressed="true"]){background:var(--soft)}
 .slot[aria-pressed="true"]{background:var(--brand);color:var(--on-brand);border-color:var(--brand);box-shadow:inset 0 0 0 2px var(--on-brand)}
 .slot:disabled{background:var(--disabled);color:var(--muted);text-decoration:line-through;cursor:not-allowed}
 .booking-list{list-style:none;margin:0;padding:0;display:grid;gap:16px}

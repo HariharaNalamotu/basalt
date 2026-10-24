@@ -26,6 +26,9 @@ describe('the agent guide', () => {
     expect(design).toMatch(/viewport: "phone"/);
     expect(design).toMatch(/colorScheme: "dark"/);
     expect(design).not.toMatch(/\u2014/); // no em dashes in anything shown to people
+    // A tapped slot stays hovered on phones: the hover color must never replace the selected one
+    // (it made the selected slot's text invisible in a real agent-built app).
+    for (const rule of design.match(/\.slot:hover[^{]*/g) ?? []) expect(rule).toMatch(/:not\(\[aria-pressed="true"\]\)/);
   });
 
   it('sends the agent to the design topic before pages and its visual check before reporting', () => {
