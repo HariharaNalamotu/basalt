@@ -60,10 +60,15 @@ export interface RequireUserOptions extends GetUserOptions {
   mfa?: boolean;
 }
 
+/** Anything with a `get(name)` method: Fetch Headers, Next.js `headers()`, etc. */
+export interface HeaderReader {
+  get(name: string): string | null | undefined;
+}
+
 /** Anything request-shaped: Fetch API Request, Node/Express IncomingMessage, or a headers bag. */
 export type RequestLike =
   | Request
-  | { headers: Headers | Record<string, string | string[] | undefined>; method?: string; url?: string };
+  | { headers: HeaderReader | Record<string, string | string[] | undefined>; method?: string; url?: string };
 
 export interface AuthServer {
   getUser(req: RequestLike, opts?: GetUserOptions): Promise<AuthUser | null>;
@@ -288,9 +293,9 @@ export function createAuthServer(options: AuthServerOptions = {}): AuthServer {
 }
 
 function headerGetter(req: RequestLike): (name: string) => string | undefined {
-  const headers = req.headers as Headers | Record<string, string | string[] | undefined>;
-  if (typeof (headers as Headers).get === 'function') {
-    return (name) => (headers as Headers).get(name) ?? undefined;
+  const headers = req.headers as HeaderReader | Record<string, string | string[] | undefined>;
+  if (typeof (headers as HeaderReader).get === 'function') {
+    return (name) => (headers as HeaderReader).get(name) ?? undefined;
   }
   return (name) => {
     const v = (headers as Record<string, string | string[] | undefined>)[name.toLowerCase()];

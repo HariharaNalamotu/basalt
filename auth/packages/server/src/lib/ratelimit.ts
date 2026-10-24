@@ -1,4 +1,8 @@
+import { createHash } from 'node:crypto';
 import type { Redis } from 'ioredis';
+
+/** Keys contain emails and IPs; hash them so Redis never holds user PII in plaintext. */
+const hashKey = (key: string) => createHash('sha256').update(key).digest('base64url').slice(0, 27);
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -108,7 +112,7 @@ export class RedisRateLimiter implements RateLimiter {
     const windowMs = rule.windowSeconds * 1000;
     const window = Math.floor(nowMs / windowMs);
     // Hash tag {key} keeps both windows in one Redis Cluster slot so the script stays atomic.
-    const base = `${this.prefix}{${key}}:${rule.windowSeconds}`;
+    const base = `${this.prefix}{${hashKey(key)}}:${rule.windowSeconds}`;
     const res = (await this.redis.eval(
       REDIS_SCRIPT,
       2,
@@ -127,7 +131,7 @@ export class RedisRateLimiter implements RateLimiter {
   }
 
   async reset(key: string): Promise<void> {
-    const stream = this.redis.scanStream({ match: `${this.prefix}{${key}}:*`, count: 100 });
+    const stream = this.redis.scanStream({ match: `${this.prefix}{${hashKey(key)}}:*`, count: 100 });
     for await (const keys of stream as AsyncIterable<string[]>) {
       if (keys.length) await this.redis.del(...keys);
     }

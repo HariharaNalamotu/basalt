@@ -20,6 +20,9 @@ export interface ServiceContext {
 
 /** Facts about the HTTP request that services record for auditing and rate limiting. */
 export interface RequestMeta {
+  /** Client address, recorded in the audit log. */
   ip: string;
+  /** Rate-limit bucket for the address: the IPv4 address, or the IPv6 /64 (one end-user allocation). */
+  ipKey: string;
   userAgent: string | undefined;
 }

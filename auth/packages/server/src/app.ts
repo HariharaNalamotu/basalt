@@ -9,6 +9,7 @@ import {
   clearSessionCookies,
   clientIp,
   clientMode,
+  ipRateLimitKey,
   readAccessToken,
   readJson,
   readRefreshToken,
@@ -18,6 +19,7 @@ import { AuthError } from './lib/errors.js';
 import { AccountService, type Principal } from './services/accounts.js';
 import { AdminService, UserPatchSchema } from './services/admin.js';
 import { audit } from './services/audit.js';
+import { LIMITS } from './services/limits.js';
 import { ProjectService, type Project } from './services/projects.js';
 import { SessionService } from './services/sessions.js';
 import { SigningKeyStore } from './services/signing-keys.js';
@@ -119,7 +121,8 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
       throw new AuthError('invalid_request', 'X-Basalt-Owner header is required.');
     }
     c.set('owner', owner);
-    c.set('meta', { ip: clientIp(c, opts), userAgent: 'basalt-platform' });
+    const ip = clientIp(c, opts);
+    c.set('meta', { ip, ipKey: ipRateLimitKey(ip), userAgent: 'basalt-platform' });
     await next();
   });
   const owned = (c: Context<Env>) => projects.getOwned(c.get('owner'), c.req.param('id') ?? '');
@@ -201,7 +204,8 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
     const project = await projects.find(c.req.param('projectId') ?? '');
     if (!project) throw new AuthError('not_found', 'Project not found.');
     c.set('project', project);
-    c.set('meta', { ip: clientIp(c, opts), userAgent: c.req.header('user-agent') });
+    const ip = clientIp(c, opts);
+    c.set('meta', { ip, ipKey: ipRateLimitKey(ip), userAgent: c.req.header('user-agent') });
 
     // CORS: only exact allow-listed origins, always with credentials, never "*".
     const origin = c.req.header('origin');
@@ -344,7 +348,7 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
     const mode = clientMode(c, project);
     const meta = c.get('meta');
     const body = await readJson(c);
-    const rl = await ctx.rateLimiter.hit(`rf:ip:${project.id}:${meta.ip}`, { limit: 600, windowSeconds: 60 });
+    const rl = await ctx.rateLimiter.hit(`rf:ip:${project.id}:${meta.ipKey}`, LIMITS.refreshPerIp);
     if (!rl.allowed) throw new AuthError('rate_limited', 'Too many requests.', { retryAfterSeconds: rl.retryAfterSeconds });
     const token = readRefreshToken(c, mode, body, opts);
     try {

@@ -54,7 +54,7 @@ export class AccountService {
   async signUp(project: Project, input: { email?: unknown; password?: unknown }, meta: RequestMeta): Promise<SignUpResult> {
     const email = normalizeEmail(input.email);
     const password = typeof input.password === 'string' ? input.password : '';
-    await this.limit(`su:ip:${project.id}:${meta.ip}`, LIMITS.signupPerIp);
+    await this.limit(`su:ip:${project.id}:${meta.ipKey}`, LIMITS.signupPerIp);
     await this.limit(`su:em:${project.id}:${email.normalized}`, LIMITS.signupPerEmail);
     await assertAcceptablePassword(
       password,
@@ -114,7 +114,7 @@ export class AccountService {
   }
 
   async verifySignup(project: Project, input: { signupToken?: unknown; code?: unknown }, meta: RequestMeta) {
-    await this.limit(`vs:ip:${project.id}:${meta.ip}`, LIMITS.verifyPerIp);
+    await this.limit(`vs:ip:${project.id}:${meta.ipKey}`, LIMITS.verifyPerIp);
     const token = typeof input.signupToken === 'string' ? input.signupToken : '';
     const code = normalizeNumericCode(input.code);
     if (!token.startsWith(SIGNUP_TOKEN_PREFIX) || !code) throw new AuthError('invalid_code', GENERIC_CODE_ERROR);
@@ -168,7 +168,7 @@ export class AccountService {
   }
 
   async resendSignupCode(project: Project, input: { signupToken?: unknown }, meta: RequestMeta) {
-    await this.limit(`vs:ip:${project.id}:${meta.ip}`, LIMITS.verifyPerIp);
+    await this.limit(`vs:ip:${project.id}:${meta.ipKey}`, LIMITS.verifyPerIp);
     const token = typeof input.signupToken === 'string' ? input.signupToken : '';
     if (!token.startsWith(SIGNUP_TOKEN_PREFIX)) return;
     await this.limit(`rs:${sha256(token).toString('hex')}`, LIMITS.resendPerSignup);
@@ -199,9 +199,10 @@ export class AccountService {
     const email = normalizeEmail(input.email);
     const password = typeof input.password === 'string' ? input.password : '';
     if (!password || password.length > 1024) throw new AuthError('invalid_credentials', 'Incorrect email or password.');
-    await this.limit(`si:ip:${project.id}:${meta.ip}`, LIMITS.signinPerIp);
-    const accountKey = `si:acct:${project.id}:${email.normalized}`;
-    await this.limit(accountKey, LIMITS.signinPerAccount);
+    await this.limit(`si:ip:${project.id}:${meta.ipKey}`, LIMITS.signinPerIp);
+    const accountIpKey = `si:acct-ip:${project.id}:${email.normalized}:${meta.ipKey}`;
+    await this.limit(accountIpKey, LIMITS.signinPerAccountIp);
+    await this.limit(`si:acct:${project.id}:${email.normalized}`, LIMITS.signinPerAccount);
 
     const user = await this.findUserByEmail(project.id, email.normalized);
     if (!user || !user.password_hash) {
@@ -214,7 +215,7 @@ export class AccountService {
       throw new AuthError('invalid_credentials', 'Incorrect email or password.');
     }
     // Below here the caller has proven knowledge of the password, so specific errors are safe.
-    await this.ctx.rateLimiter.reset(accountKey);
+    await this.ctx.rateLimiter.reset(accountIpKey);
     if (user.disabled_at) throw new AuthError('account_disabled', 'This account has been disabled.');
     if (this.ctx.hasher.needsRehash(user.password_hash)) {
       const rehashed = await this.ctx.hasher.hash(password);
@@ -298,7 +299,7 @@ export class AccountService {
   /** Always resolves the same way whether or not the account exists. Work happens in the background. */
   async requestPasswordReset(project: Project, input: { email?: unknown }, meta: RequestMeta) {
     const email = normalizeEmail(input.email);
-    await this.limit(`rr:ip:${project.id}:${meta.ip}`, LIMITS.resetRequestPerIp);
+    await this.limit(`rr:ip:${project.id}:${meta.ipKey}`, LIMITS.resetRequestPerIp);
     await this.limit(`rr:em:${project.id}:${email.normalized}`, LIMITS.resetRequestPerEmail);
     this.background(async () => {
       const user = await this.findUserByEmail(project.id, email.normalized);
@@ -308,7 +309,7 @@ export class AccountService {
 
   async resetPassword(project: Project, input: { email?: unknown; code?: unknown; newPassword?: unknown }, meta: RequestMeta) {
     const email = normalizeEmail(input.email);
-    await this.limit(`rc:ip:${project.id}:${meta.ip}`, LIMITS.resetConfirmPerIp);
+    await this.limit(`rc:ip:${project.id}:${meta.ipKey}`, LIMITS.resetConfirmPerIp);
     const code = normalizeNumericCode(input.code);
     const password = typeof input.newPassword === 'string' ? input.newPassword : '';
     if (!code) throw new AuthError('invalid_code', GENERIC_CODE_ERROR);
@@ -319,7 +320,10 @@ export class AccountService {
       { email: email.normalized, breachChecker: this.ctx.breachChecker },
     );
     const user = await this.findUserByEmail(project.id, email.normalized);
-    if (!user || user.disabled_at) throw new AuthError('invalid_code', GENERIC_CODE_ERROR);
+    if (!user || user.disabled_at) {
+      await this.ctx.hasher.verifyDummy(password); // same cost as the real path: no timing oracle
+      throw new AuthError('invalid_code', GENERIC_CODE_ERROR);
+    }
     const passwordHash = await this.ctx.hasher.hash(password);
 
     const outcome = await this.ctx.db.transaction(async (tx) => {
@@ -346,7 +350,7 @@ export class AccountService {
   /** Verifies an existing account's email with a code (sent at sign-in or via sendEmailVerification) and signs in. */
   async verifyEmail(project: Project, input: { email?: unknown; code?: unknown }, meta: RequestMeta) {
     const email = normalizeEmail(input.email);
-    await this.limit(`vs:ip:${project.id}:${meta.ip}`, LIMITS.verifyPerIp);
+    await this.limit(`vs:ip:${project.id}:${meta.ipKey}`, LIMITS.verifyPerIp);
     const code = normalizeNumericCode(input.code);
     if (!code) throw new AuthError('invalid_code', GENERIC_CODE_ERROR);
     const user = await this.findUserByEmail(project.id, email.normalized);

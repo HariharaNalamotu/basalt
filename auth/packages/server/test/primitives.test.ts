@@ -126,3 +126,17 @@ describe('identifiers and emails', () => {
     }
   });
 });
+
+describe('client address handling', async () => {
+  const { ipRateLimitKey, normalizeIp } = await import('../src/http.js');
+  it('buckets IPv6 by /64 so rotating addresses within an allocation does not evade limits', () => {
+    expect(ipRateLimitKey('2001:db8:abcd:12:1::1')).toBe('2001:0db8:abcd:0012::/64');
+    expect(ipRateLimitKey('2001:db8:abcd:12:ffff:ffff:ffff:fffe')).toBe('2001:0db8:abcd:0012::/64');
+    expect(ipRateLimitKey('2001:db8::1')).toBe('2001:0db8:0000:0000::/64');
+    expect(ipRateLimitKey('203.0.113.7')).toBe('203.0.113.7');
+  });
+  it('normalizes IPv4-mapped IPv6', () => {
+    expect(normalizeIp('::ffff:192.168.65.1')).toBe('192.168.65.1');
+    expect(normalizeIp('2001:db8::1')).toBe('2001:db8::1');
+  });
+});

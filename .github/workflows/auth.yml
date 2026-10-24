@@ -1,0 +1,51 @@
+name: auth
+
+on:
+  push:
+    paths: ['auth/**', '.github/workflows/auth.yml']
+  pull_request:
+    paths: ['auth/**', '.github/workflows/auth.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auth-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: auth
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: auth/package-lock.json
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Start Postgres, Redis and the auth image
+        run: docker compose up -d --build --wait
+      - name: End-to-end checks
+        run: node scripts/e2e.mjs
+      - name: Service logs
+        if: failure()
+        run: docker compose logs

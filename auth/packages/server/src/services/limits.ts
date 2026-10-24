@@ -10,7 +10,10 @@ export const LIMITS = {
   verifyPerIp: { limit: 60, windowSeconds: 600 },
   resendPerSignup: { limit: 5, windowSeconds: 3600 },
   signinPerIp: { limit: 60, windowSeconds: 600 },
-  signinPerAccount: { limit: 10, windowSeconds: 900 },
+  /** Tight: one source guessing one account. */
+  signinPerAccountIp: { limit: 10, windowSeconds: 900 },
+  /** Looser ceiling across all sources, so a distributed attacker can't lock the real user out cheaply. */
+  signinPerAccount: { limit: 50, windowSeconds: 3600 },
   mfaPerUser: { limit: 10, windowSeconds: 900 },
   resetRequestPerIp: { limit: 20, windowSeconds: 3600 },
   resetRequestPerEmail: { limit: 3, windowSeconds: 3600 },

@@ -1,0 +1,32 @@
+# Local stack: Postgres + Redis + auth server. For development and integration testing only.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: basalt
+      POSTGRES_PASSWORD: basalt
+      POSTGRES_DB: basalt_auth
+    ports: ["55432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U basalt"]
+      interval: 2s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    ports: ["56379:6379"]
+  auth:
+    build: .
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+    environment:
+      NODE_ENV: development
+      PUBLIC_URL: http://localhost:8787
+      DATABASE_URL: postgres://basalt:basalt@postgres:5432/basalt_auth
+      REDIS_URL: redis://redis:6379
+      # Development-only values. Generate real ones with: openssl rand -base64 32
+      BASALT_AUTH_MASTER_KEY: ZGV2LW9ubHktbWFzdGVyLWtleS0zMi1ieXRlcyEhISE=
+      BASALT_AUTH_PLATFORM_KEY: dev-only-platform-key-change-me-0123456789
+      COOKIE_SECURE: "false"
+      MAILER: console
+    ports: ["8787:8787"]

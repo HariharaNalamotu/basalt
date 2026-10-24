@@ -1,3 +1,4 @@
+import { isIPv4, isIPv6 } from 'node:net';
 import type { Context } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { getConnInfo } from '@hono/node-server/conninfo';
@@ -20,7 +21,31 @@ export function cookieNames(secure: boolean) {
     : { access: 'basalt_at', refresh: 'basalt_rt' };
 }
 
+/** Normalizes IPv4-mapped IPv6 (::ffff:1.2.3.4) to plain IPv4. */
+export function normalizeIp(ip: string): string {
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  return mapped ? mapped[1]! : ip;
+}
+
+/**
+ * Rate-limit key for an address. A single IPv6 subscriber typically controls a whole /64, so
+ * limiting per full IPv6 address would be trivially bypassed by rotating addresses.
+ */
+export function ipRateLimitKey(ip: string): string {
+  if (isIPv4(ip)) return ip;
+  if (!isIPv6(ip)) return ip;
+  const [head = '', tail = ''] = ip.split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  const groups = ip.includes('::') ? [...h, ...Array(8 - h.length - t.length).fill('0'), ...t] : h;
+  return `${groups.slice(0, 4).map((g) => g.toLowerCase().padStart(4, '0')).join(':')}::/64`;
+}
+
 export function clientIp(c: Context, opts: HttpOptions): string {
+  return normalizeIp(rawClientIp(c, opts));
+}
+
+function rawClientIp(c: Context, opts: HttpOptions): string {
   if (opts.trustProxyHops > 0) {
     const xff = c.req.header('x-forwarded-for');
     if (xff) {
@@ -43,7 +68,7 @@ function safeConnInfo(c: Context): string | undefined {
 }
 
 function isIp(s: string) {
-  return /^[0-9.]{7,15}$/.test(s) || /^[0-9a-fA-F:]{2,39}$/.test(s);
+  return isIPv4(s) || isIPv6(s);
 }
 
 /**

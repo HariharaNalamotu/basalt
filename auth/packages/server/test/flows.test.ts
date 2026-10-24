@@ -233,17 +233,29 @@ describe('sign-in', () => {
     await nativeSignIn(`  ${email.toUpperCase()} `);
   });
 
-  it('throttles guessing against a single account', async () => {
+  it('throttles guessing against a single account from one source', async () => {
     const { email } = await browserSignUp();
     const statuses: number[] = [];
     for (let i = 0; i < 12; i++) {
-      statuses.push((await h.request('POST', `${base()}/signin`, { ip: `198.51.100.${i}`, body: { email, password: `guess-number-${i}-xx` } })).status);
+      statuses.push((await h.request('POST', `${base()}/signin`, { ip: '198.51.100.7', body: { email, password: `guess-number-${i}-xx` } })).status);
     }
     expect(statuses.slice(0, 10).every((s) => s === 401)).toBe(true);
     expect(statuses.slice(10)).toEqual([429, 429]);
-    const res = await h.request('POST', `${base()}/signin`, { body: { email, password: GOOD_PASSWORD } });
+    const res = await h.request('POST', `${base()}/signin`, { ip: '198.51.100.7', body: { email, password: GOOD_PASSWORD } });
     expect(res.status).toBe(429);
     expect(res.headers.get('retry-after')).toBeTruthy();
+    // The real user, from their own network, is not locked out by someone else's guessing.
+    expect((await h.request('POST', `${base()}/signin`, { ip: '192.0.2.44', body: { email, password: GOOD_PASSWORD } })).status).toBe(200);
+  });
+
+  it('caps distributed guessing against one account', async () => {
+    const { email } = await browserSignUp();
+    const statuses: number[] = [];
+    for (let i = 0; i < 52; i++) {
+      statuses.push((await h.request('POST', `${base()}/signin`, { ip: `198.51.${Math.floor(i / 250)}.${i % 250}`, body: { email, password: `guess-number-${i}-xx` } })).status);
+    }
+    expect(statuses.slice(0, 50).every((s) => s === 401)).toBe(true);
+    expect(statuses.slice(50)).toEqual([429, 429]);
   });
 
   it('rejects browser requests from origins not on the allow-list', async () => {
