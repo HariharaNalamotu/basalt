@@ -275,8 +275,10 @@ export function createApi(options: ApiOptions = {}): Api {
   let idempotency: IdempotencyStore;
   if (redisUrl) {
     redis = createRedis(redisUrl);
-    rateLimiter = new RedisRateLimiter(redis, 'bapi:rl:');
-    idempotency = new RedisIdempotencyStore(redis);
+    // Per-project prefix: apps sharing a Redis never share limits or idempotency records.
+    const ns = (process.env.BASALT_PROJECT_ID ?? 'default').replace(/[^A-Za-z0-9_]/g, '');
+    rateLimiter = new RedisRateLimiter(redis, `bapi:${ns}:rl:`);
+    idempotency = new RedisIdempotencyStore(redis, `bapi:${ns}:idem:`);
   } else {
     rateLimiter = new MemoryRateLimiter();
     idempotency = new MemoryIdempotencyStore();

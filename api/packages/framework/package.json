@@ -15,6 +15,10 @@
     "./serve": {
       "types": "./dist/serve.d.ts",
       "default": "./dist/serve.js"
+    },
+    "./dev-edge": {
+      "types": "./dist/dev-edge.d.ts",
+      "default": "./dist/dev-edge.js"
     }
   },
   "files": [
@@ -40,5 +44,9 @@
     "@types/pg": "^8.23.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.12"
+  },
+  "bin": {
+    "basalt-dev-edge": "dist/dev-edge-cli.js",
+    "basalt-migrate": "dist/migrate-cli.js"
   }
 }

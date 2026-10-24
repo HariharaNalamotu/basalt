@@ -1,0 +1,61 @@
+name: api
+
+on:
+  push:
+    paths: ['api/**', 'auth/packages/sdk/**', 'auth/packages/mcp/**', '.github/workflows/api.yml']
+  pull_request:
+    paths: ['api/**', 'auth/packages/sdk/**', 'auth/packages/mcp/**', '.github/workflows/api.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            auth/package-lock.json
+            api/package-lock.json
+      # The API depends on the auth SDK/MCP (built) and reuses the auth test harness.
+      - run: npm ci && npm run build
+        working-directory: auth
+      - run: npm ci
+        working-directory: api
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: api
+      - run: npm run typecheck && npm test && npm run build
+        working-directory: api
+
+  plug-and-play:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            auth/package-lock.json
+            api/package-lock.json
+      - run: npm ci && npm run build && docker compose up -d --build --wait
+        working-directory: auth
+      - run: npm ci && npm run build
+        working-directory: api
+      - name: Agent provisions, scaffolds, runs and operates an app via MCP
+        run: node scripts/e2e-plug-and-play.mjs
+        working-directory: api
+      - name: Service logs
+        if: failure()
+        run: docker compose logs
+        working-directory: auth

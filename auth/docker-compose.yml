@@ -28,5 +28,7 @@ services:
       BASALT_AUTH_MASTER_KEY: ZGV2LW9ubHktbWFzdGVyLWtleS0zMi1ieXRlcyEhISE=
       BASALT_AUTH_PLATFORM_KEY: dev-only-platform-key-change-me-0123456789
       COOKIE_SECURE: "false"
+      # The dev edge (basalt-dev-edge) sits in front of auth in local development.
+      TRUST_PROXY_HOPS: "1"
       MAILER: console
     ports: ["8787:8787"]

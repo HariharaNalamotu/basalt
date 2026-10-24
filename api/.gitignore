@@ -6,3 +6,4 @@ dist/
 !.env.example
 coverage/
 .basalt/
+.e2e-app/
