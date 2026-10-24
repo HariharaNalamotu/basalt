@@ -13,3 +13,7 @@ services:
       BUILD_MEMORY_MB: "1024"
       TEST_MEMORY_MB: "1024"
       MAX_CONCURRENT_BUILDS: "1"
+  cloud:
+    environment:
+      # Owner pages (approvals, data map, safety receipt) through the local edge.
+      PUBLIC_URL: http://cloud.${ROOT_DOMAIN}:8080
