@@ -634,3 +634,19 @@ describe('HTTP hardening', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('platform test users', () => {
+  it('creates a verified user through the owner-scoped control plane only', async () => {
+    const email = uniqueEmail();
+    const res = await h.request('POST', `/v1/platform/projects/${pid}/users`, { bearer: PLATFORM_KEY, body: { email, password: GOOD_PASSWORD } });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as any).user.emailVerified).toBe(true);
+    expect((await h.request('POST', `${base()}/signin`, { body: { email, password: GOOD_PASSWORD } })).status).toBe(200);
+    const dupe = await h.request('POST', `/v1/platform/projects/${pid}/users`, { bearer: PLATFORM_KEY, body: { email, password: GOOD_PASSWORD } });
+    expect(dupe.status).toBe(409);
+    const foreign = await h.request('POST', `/v1/platform/projects/${pid}/users`, { bearer: PLATFORM_KEY, owner: 'ws_other', body: { email: uniqueEmail(), password: GOOD_PASSWORD } });
+    expect(foreign.status).toBe(404);
+    const weak = await h.request('POST', `/v1/platform/projects/${pid}/users`, { bearer: PLATFORM_KEY, body: { email: uniqueEmail(), password: 'short' } });
+    expect(weak.status).toBe(400);
+  });
+});

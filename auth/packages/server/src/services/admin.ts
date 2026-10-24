@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import type { RequestMeta, ServiceContext } from '../context.js';
 import { AuthError } from '../lib/errors.js';
+import { normalizeEmail } from '../lib/email.js';
+import { assertAcceptablePassword } from '../lib/password.js';
+import { uuidv7 } from '../lib/crypto.js';
 import { audit } from './audit.js';
 import type { SessionService } from './sessions.js';
 import { type UserRow, toPublicUser } from './users.js';
@@ -47,6 +50,27 @@ export class AdminService {
       users: page.map(toPublicUser),
       nextCursor: rows.length > limit && last ? encodeCursor(last.created_at, last.id) : null,
     };
+  }
+
+  /**
+   * Creates an already-verified user. Used by the hosting platform to give coding agents test
+   * accounts in preview/staging environments (the platform refuses this for production).
+   */
+  async createVerifiedUser(projectId: string, input: { email?: unknown; password?: unknown }, meta: RequestMeta) {
+    const email = normalizeEmail(input.email);
+    const password = typeof input.password === 'string' ? input.password : '';
+    const { rows: proj } = await this.ctx.db.query<{ settings: { passwordMinLength?: number } }>('SELECT settings FROM auth_projects WHERE id = $1', [projectId]);
+    await assertAcceptablePassword(password, { minLength: proj[0]?.settings?.passwordMinLength ?? 10, checkBreached: false }, { email: email.normalized });
+    const hash = await this.ctx.hasher.hash(password);
+    const now = this.ctx.now();
+    const { rows } = await this.ctx.db.query<UserRow>(
+      `INSERT INTO auth_users (id, project_id, email, email_normalized, email_verified_at, password_hash, password_changed_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $5, $5, $5) ON CONFLICT (project_id, email_normalized) DO NOTHING RETURNING *`,
+      [uuidv7(), projectId, email.display, email.normalized, now, hash],
+    );
+    if (!rows[0]) throw new AuthError('email_taken', 'A user with this email already exists.');
+    await audit(this.ctx.db, { projectId, userId: rows[0].id, type: 'user.signed_up', meta, data: { by: 'platform' } });
+    return toPublicUser(rows[0]);
   }
 
   async getUser(projectId: string, userId: string) {

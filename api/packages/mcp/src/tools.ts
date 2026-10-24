@@ -25,7 +25,8 @@ const rule = z.object({ limit: z.number().int(), windowSeconds: z.number().int()
 const routeKey = z.string().describe('Route as written in code, without /api: e.g. "POST /todos" or "GET /todos/:id".');
 
 /** Registers the Basalt API tools. `deps` is scoped to the authenticated workspace by the platform. */
-export function registerApiTools(server: McpServer, deps: Deps) {
+export function registerApiTools(mcp: McpServer, deps: Deps, opts: { include?: string[] } = {}) {
+  const server = onlyTools(mcp, opts.include);
   server.registerTool(
     'api_setup',
     {
@@ -248,3 +249,17 @@ export function registerApiTools(server: McpServer, deps: Deps) {
 }
 
 export { reviewCode };
+
+/** Wraps a server so only the named tools get registered. */
+export function onlyTools(server: McpServer, include?: string[]): McpServer {
+  if (!include) return server;
+  return new Proxy(server, {
+    get(target, prop, receiver) {
+      if (prop === 'registerTool') {
+        return (name: string, ...rest: unknown[]) =>
+          include.includes(name) ? (target.registerTool as (...a: unknown[]) => unknown)(name, ...rest) : undefined;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+}

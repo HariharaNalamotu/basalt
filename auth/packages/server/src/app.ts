@@ -178,6 +178,9 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
   );
 
   // User administration on behalf of the workspace owner (used by the MCP tools / dashboard).
+  platform.post('/projects/:id/users', async (c) =>
+    c.json({ user: await admin.createVerifiedUser((await owned(c)).id, await readJson(c), c.get('meta')) }, 201),
+  );
   platform.get('/projects/:id/users', async (c) =>
     c.json(
       await admin.listUsers((await owned(c)).id, {

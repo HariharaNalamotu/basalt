@@ -57,13 +57,16 @@ function envBlock(cp: ControlPlane, project: Project, secret: { envVar: string }
 export interface RegisterOptions {
   /** Prefix for tool names (default "auth_"). */
   prefix?: string;
+  /** Register only these tools (full names). Default: all. */
+  include?: string[];
 }
 
 /**
  * Registers the Basalt Auth tools on an MCP server. The platform's unified MCP server calls this
  * with a ControlPlane scoped to the authenticated workspace.
  */
-export function registerAuthTools(server: McpServer, cp: ControlPlane, opts: RegisterOptions = {}) {
+export function registerAuthTools(mcp: McpServer, cp: ControlPlane, opts: RegisterOptions = {}) {
+  const server = onlyTools(mcp, opts.include);
   const name = (n: string) => `${opts.prefix ?? 'auth_'}${n}`;
 
   server.registerTool(
@@ -327,4 +330,18 @@ export function registerAuthTools(server: McpServer, cp: ControlPlane, opts: Reg
     },
     async ({ projectId, ...q }) => run(async () => json((await cp.listEvents(projectId, q)).events)),
   );
+}
+
+/** Wraps a server so only the named tools get registered. */
+export function onlyTools(server: McpServer, include?: string[]): McpServer {
+  if (!include) return server;
+  return new Proxy(server, {
+    get(target, prop, receiver) {
+      if (prop === 'registerTool') {
+        return (name: string, ...rest: unknown[]) =>
+          include.includes(name) ? (target.registerTool as (...a: unknown[]) => unknown)(name, ...rest) : undefined;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
 }

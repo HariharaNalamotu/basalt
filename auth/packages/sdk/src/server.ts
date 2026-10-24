@@ -32,6 +32,12 @@ export interface AuthServerOptions {
    * its own origin. Defaults to env BASALT_APP_ORIGINS (comma separated).
    */
   allowedOrigins?: string[];
+  /**
+   * Where this server reaches the auth service (JWKS, admin API) if different from the public
+   * `authUrl`, e.g. a private network address. Defaults to env BASALT_AUTH_INTERNAL_URL, then authUrl.
+   * Tokens are still verified against the public issuer.
+   */
+  internalUrl?: string;
   /** Custom fetch (tests). */
   fetch?: typeof fetch;
 }
@@ -172,8 +178,9 @@ export function createAuthServer(options: AuthServerOptions = {}): AuthServer {
     throw new Error('Basalt Auth: the secret key must never be used in browser code. Use @basalt/auth/client.');
   }
 
-  const projectBase = `${authUrl}/v1/projects/${projectId}`;
-  const issuer = projectBase;
+  const issuer = `${authUrl}/v1/projects/${projectId}`;
+  const fetchBase = (options.internalUrl ?? env.BASALT_AUTH_INTERNAL_URL ?? authUrl).replace(/\/+$/, '');
+  const projectBase = `${fetchBase}/v1/projects/${projectId}`;
 
   // ---------------------------------------------------------------- JWKS cache
   let jwks: { set: ReturnType<typeof createLocalJWKSet>; kids: Set<string>; at: number } | null = null;
