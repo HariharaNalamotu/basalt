@@ -45,7 +45,7 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
     { name: 'basalt-host', version: '0.1.0' },
     {
       instructions:
-        'Basalt Host builds, tests, stages and ships apps. Workflow: host_guide "workflow" → write code following api_integration_guide / auth_integration_guide → host_deploy (local tool; builds, deploys a private preview and runs tests) → fix anything failing (host_deployment, host_logs, browser_* tools) → host_promote to staging → host_promote to production (only after staging tests pass). Never ask the user to do anything the tools can do.',
+        'Basalt Host builds, tests, stages and ships apps. Workflow: host_guide "workflow" → write code following api_integration_guide / auth_integration_guide (and host_guide "data" for anything the app saves) → host_deploy (local tool; builds, deploys a private preview and runs tests) → fix anything failing (host_deployment, host_logs, browser_* tools) → host_data_check → host_promote to staging → host_promote to production (only after staging tests pass). Never ask the user to do anything the tools can do.',
     },
   );
   const browser = async (path: string, init: { method?: string; body?: unknown } = {}) => {
@@ -66,11 +66,11 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
     server.registerTool(name, { description, inputSchema: shape, annotations }, ((a: z.infer<z.ZodObject<S>>) => run(() => fn(a))) as never);
 
   // ---------------------------------------------------------------- overview & guides
-  tool('host_guide', `How to build, test and ship on Basalt Host. Topics: ${GUIDE_TOPICS.join(', ')}. Read "workflow" first.`, { topic: z.enum(GUIDE_TOPICS) }, async ({ topic }) => text(hostGuide(topic, ctx.cfg.ROOT_DOMAIN)), { readOnlyHint: true });
+  tool('host_guide', `How to build, test and ship on Basalt Host. Topics: ${GUIDE_TOPICS.join(', ')}. Read "workflow" first.`, { topic: z.enum(GUIDE_TOPICS) }, async ({ topic }) => text(hostGuide(topic, ctx.cfg.ROOT_DOMAIN, ctx.cfg.registryPublicUrl)), { readOnlyHint: true });
   tool('host_status', 'All apps in this workspace with every environment, its URL, state and current release.', {}, async () => json(await host.listApps(ws)), { readOnlyHint: true });
   tool('host_create_app', 'Creates an app (reserves <app>.' + ctx.cfg.ROOT_DOMAIN + '). Idempotent for your own apps.', { app }, async (a) => {
     const r = await host.createApp(ws, a.app);
-    return text(`App "${r.name}" ready. Production URL will be https://${r.name}.${ctx.cfg.ROOT_DOMAIN}. Next: host_deploy.`);
+    return text(`App "${r.name}" ready. Production URL will be ${ctx.cfg.appUrl(`${r.name}.${ctx.cfg.ROOT_DOMAIN}`)}. Next: host_deploy.`);
   });
 
   // ---------------------------------------------------------------- deploy pipeline
@@ -136,7 +136,49 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
         : text(`Waiting for the owner. Show them this link and ask them to approve:\n${r.approveUrl}\n\nWhy: ${r.why.join(' ')}\n\n${r.summary}`);
     },
   );
-  tool('host_api_config', 'Reads the backend service config (BASALT_API_CONFIG) of an environment.', { app, env }, async (a) => json(await host.apiConfig(ws, a.app, a.env)), { readOnlyHint: true });
+  tool('host_data_status', 'Whether an environment\'s data rules are live or waiting for the owner, the rules in plain English, and the owner\'s data map link (where everything lives and who can reach it; share it only with the owner).', { app, env }, async (a) => {
+    const s = await host.dataStatus(ws, a.app, a.env);
+    if (s.status === 'no_rules') return text('No data rules yet. Set them with host_data_rules (host_guide "data" explains the format).');
+    if (s.status === 'waiting_for_owner') return text('Waiting for the owner to open the approval link and approve. If they lost it, call host_data_rules again for a fresh link.');
+    return text(`Live. Rules in plain English:\n${s.rules}${s.waitingForOwner ? '\n\nA newer change is still waiting for the owner to approve it.' : ''}${s.mapUrl ? `\n\nOwner's data map (share only with the owner):\n${s.mapUrl}` : ''}`);
+  }, { readOnlyHint: true });
+  tool(
+    'host_data_admin',
+    'Asks the owner to make one person an admin of an environment\'s data (they see and change every row, e.g. a business owner viewing all bookings). Always returns an approval link: show it to the human. who = a test person\'s name (test environments), or userId = a real signed-in user\'s id.',
+    { app, env, who: z.string().regex(/^[A-Za-z0-9 _-]{1,40}$/).optional(), userId: z.string().uuid().optional(), label: z.string().max(60).optional() },
+    async ({ app: ap, env: e, ...who }) => {
+      if (!who.who && !who.userId) throw new UserError('Say who: a test person\'s name (who) or a user id (userId).');
+      const r = await host.dataAdmin(ws, ap, e, who);
+      return text(`The owner needs to approve this. Show them this link and ask them to open it and approve:\n${r.approveUrl}\n\nUser id: ${r.userId}`);
+    },
+  );
+  tool(
+    'host_data_check',
+    'Guard, Basalt\'s safety check for an environment\'s data: signs in as two real test people and a stranger and tries 12 ways to reach data that isn\'t theirs (forged and expired logins, other people\'s rows by id, writes to protected fields, and more), then returns a safety receipt link for the owner. The local version also scans the project folder for data kept outside Basalt. Run it on staging before promoting to production.',
+    {
+      app,
+      env,
+      scan: z
+        .array(z.object({ rule: z.string(), file: z.string(), line: z.number().int(), problem: z.string(), fix: z.string() }))
+        .max(100)
+        .optional()
+        .describe('Local code scan findings (the local host_data_check fills this in).'),
+    },
+    async (a) => {
+      const r = await host.dataCheck(ws, a.app, a.env, a.scan ?? null);
+      const lines = [`${r.passed} of ${r.results.length} checks passed.`];
+      for (const x of r.results.filter((x) => !x.passed)) lines.push(`PROBLEM, ${x.title}${x.table ? ` (${x.table})` : ''}: ${x.detail}`);
+      if (a.scan) {
+        if (a.scan.length) {
+          lines.push('', 'Data kept outside Basalt (fix each one, then run host_data_check again):');
+          for (const f of a.scan) lines.push(`- ${f.file || 'Project folder'}${f.line ? `, line ${f.line}` : ''}: ${f.problem} Fix: ${f.fix}`);
+        } else lines.push('No data is kept outside Basalt.');
+      }
+      lines.push('', `Safety receipt for the owner (share it only with them):\n${r.receiptUrl}`);
+      return text(lines.join('\n'));
+    },
+  );
+  tool('host_api_config','Reads the backend service config (BASALT_API_CONFIG) of an environment.', { app, env }, async (a) => json(await host.apiConfig(ws, a.app, a.env)), { readOnlyHint: true });
   tool(
     'host_update_api_config',
     'Changes backend service config without code (limits, defaultRateLimits, per-route overrides, maintenance, logLevel). Deep-merged (null removes); validated and bounded; applied with a zero-downtime restart.',

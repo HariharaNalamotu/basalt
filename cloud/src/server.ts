@@ -502,10 +502,23 @@ if (import.meta.main) {
   server.listen(port, host, () => console.log(`basalt cloud on http://${host}:${port}`));
 
   // Sessions ended in Basalt Auth stop working in every app database within ~10 seconds.
+  // A few projects at a time, and never two rounds at once, so many apps (or a slow Auth) can't
+  // pile up overlapping rounds or open every app database at the same moment.
+  let syncing = false;
   const sync = async () => {
-    for (const id of await projects.linkedProjectIds().catch(() => [])) {
-      const p = await projects.get(id);
-      if (p) await projects.syncRevocations(p).catch((err) => console.error('basalt cloud: revocation sync failed', id, (err as Error).message));
+    if (syncing) return;
+    syncing = true;
+    try {
+      const queue = await projects.linkedProjectIds().catch(() => [] as string[]);
+      const worker = async () => {
+        for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+          const p = await projects.get(id).catch(() => null);
+          if (p) await projects.syncRevocations(p).catch((err) => console.error('basalt cloud: revocation sync failed', id, (err as Error).message));
+        }
+      };
+      await Promise.all(Array.from({ length: Number(process.env.REVOCATION_SYNC_CONCURRENCY ?? 4) || 4 }, worker));
+    } finally {
+      syncing = false;
     }
   };
   setInterval(() => void sync(), 10_000).unref();

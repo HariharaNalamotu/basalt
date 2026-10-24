@@ -54,7 +54,9 @@ export function parseSettings(raw: unknown): ProjectSettings {
 
 /**
  * Origins must be exact scheme://host[:port]. No wildcards, no paths. http is only accepted for
- * loopback hosts so a production app can never be configured to trust plaintext origins.
+ * loopback hosts so a production app can never be configured to trust plaintext origins. Names
+ * under .localhost are loopback by definition (RFC 6761) and browsers treat them as secure
+ * contexts; the one-laptop demo serves apps at http://<app>.basalt.localhost:8080.
  */
 export const OriginSchema = z.string().transform((value, ctx) => {
   let url: URL;
@@ -64,7 +66,7 @@ export const OriginSchema = z.string().transform((value, ctx) => {
     ctx.addIssue({ code: 'custom', message: `Invalid origin: ${value}` });
     return z.NEVER;
   }
-  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.hostname.endsWith('.localhost');
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
     ctx.addIssue({ code: 'custom', message: `Origin must use https (http allowed only for localhost): ${value}` });
     return z.NEVER;

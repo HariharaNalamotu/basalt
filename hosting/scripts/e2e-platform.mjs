@@ -16,6 +16,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 const envFile = Object.fromEntries(readFileSync(path.join(root, 'deploy/.env'), 'utf8').split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
 const ROOT = envFile.ROOT_DOMAIN;
+// The local stack serves apps over http on :8080 (docker-compose.local.yml); that's what browsers send as Origin.
+const PUBLIC = (host) => `http://${host}:8080`;
 const APP = `todo${Date.now().toString(36).slice(-5)}`;
 const appDir = path.join(root, '.e2e', APP);
 const ok = (c, m) => {
@@ -217,7 +219,7 @@ try {
   if (s1.pipelines[0].status !== 'passed') console.log(JSON.stringify(s1, null, 2).slice(0, 8000));
   ok(s1.status === 'built' && s1.pipelines[0].status === 'passed', `CI + preview pipeline passed in ${elapsed()} (${stepNames})`);
   ok(s1.tests.some((t) => t.kind === 'e2e' && t.status === 'passed' && t.summary.passed === 2), 'app e2e tests passed against the preview (2/2)');
-  const previewHost = new URL(preview.url).host;
+  const previewHost = new URL(preview.url).hostname;
 
   // Private preview: closed to the public, open to the agent's tools.
   const anon = await edge(previewHost, '/', { headers: { accept: 'text/html' } });
@@ -246,6 +248,50 @@ try {
   await tool('browser_close', { session: sessionId });
   void signedIn;
 
+  // The Data block on the app's own site: rules set by the agent, enforced in Postgres per user,
+  // reached with only the session cookie (no token in page code).
+  const access = new URL(share).searchParams.get('t');
+  const rules = await tool('host_data_rules', { app: APP, env: preview.env, rules: { tables: { notes: { fields: { text: { type: 'text', required: true, maxLength: 200 } } } } } });
+  ok(/^Live/.test(rules.text), 'host_data_rules: preview rules go live right away');
+  const origin = PUBLIC(previewHost);
+  const signInCookie = async (c) => {
+    const r = await edge(previewHost, '/_basalt/auth/signin', { method: 'POST', headers: { 'content-type': 'application/json', origin, 'x-basalt-access': access }, body: JSON.stringify({ email: c.email, password: c.password }) });
+    const cookie = [].concat(r.headers['set-cookie'] ?? []).find((x) => x.startsWith('__Host-basalt_at='));
+    if (r.status !== 200 || !cookie) throw new Error(`sign in failed: ${r.status} ${r.body}`);
+    return cookie.split(';')[0];
+  };
+  const dataCall = (cookie, op, body, from = origin) =>
+    edge(previewHost, `/_basalt/data/v1/data/${op}`, { method: 'POST', headers: { 'content-type': 'application/json', origin: from, 'x-basalt-access': access, ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) }).then((r) => ({ status: r.status, body: JSON.parse(r.body || '{}') }));
+  const aliceCookie = await signInCookie(creds);
+  const bobCookie = await signInCookie(JSON.parse((await tool('host_test_user', { app: APP, env: preview.env })).text));
+  const note = await dataCall(aliceCookie, 'create', { table: 'notes', input: { text: 'alice only' } });
+  ok(note.status === 200 && note.body.data?.text === 'alice only', `signed-in user saves through /_basalt/data with only the cookie (${note.status})`);
+  const aliceList = await dataCall(aliceCookie, 'list', { table: 'notes' });
+  const bobList = await dataCall(bobCookie, 'list', { table: 'notes' });
+  ok(aliceList.body.data.rows.length === 1 && bobList.body.data.rows.length === 0, 'each person only sees their own rows (enforced in Postgres)');
+  ok((await dataCall(bobCookie, 'get', { table: 'notes', id: note.body.data.id })).status === 404, "another person can't read the row by id");
+  ok((await dataCall(bobCookie, 'update', { table: 'notes', id: note.body.data.id, input: { text: 'pwned' } })).status === 404, "another person can't change it");
+  ok((await dataCall(aliceCookie, 'list', { table: 'notes' }, 'https://evil.example')).status === 401, 'cross-site use of the cookie is refused (CSRF)');
+  ok((await dataCall(null, 'list', { table: 'notes' })).status === 401, 'no login, no data');
+
+  // The rest of the data toolkit through the same connector: guide, status, admin, Guard.
+  ok(/_basalt\/data/.test((await tool('host_guide', { topic: 'data' })).text), 'host_guide "data" explains the Data block');
+  const dstatus = await tool('host_data_status', { app: APP, env: preview.env });
+  ok(/^Live/.test(dstatus.text) && dstatus.text.includes(`${PUBLIC(`cloud.${ROOT}`)}/owner/`), "host_data_status: rules in plain English and the owner's data map link");
+  const mapPath = new URL(/(http\S+\/owner\/\S+)/.exec(dstatus.text)[1]);
+  ok((await edge(`cloud.${ROOT}`, mapPath.pathname + mapPath.search)).status === 200, "the owner's data map opens through the edge");
+  const admin = await tool('host_data_admin', { app: APP, env: preview.env, who: 'owner' });
+  ok(/\/approve\//.test(admin.text), 'host_data_admin always asks the owner to approve');
+  write('src/cart.js', "export const save = (cart) => localStorage.setItem('cart', JSON.stringify(cart));\n");
+  const check = await tool('host_data_check', { app: APP, env: preview.env });
+  rmSync(path.join(appDir, 'src/cart.js'));
+  const [, passed, total] = /(\d+) of (\d+) checks passed/.exec(check.text) ?? [];
+  ok(Number(total) >= 10 && passed === total, `Guard: ${passed} of ${total} attacks on the preview's data were refused`);
+  ok(/src\/cart\.js, line 1/.test(check.text), 'Guard: the local scan found data kept in browser storage');
+  const receipt = new URL(/(http\S+\/check\?k=\S+)/.exec(check.text)[1]);
+  const receiptPage = await edge(`cloud.${ROOT}`, receipt.pathname + receipt.search);
+  ok(receiptPage.status === 200 && /<html/i.test(receiptPage.body), "the owner's safety receipt opens");
+
   // Sandbox network policy, from inside the running backend.
   const probe = JSON.parse((await edge(previewHost, '/api/probe', { headers: { 'x-basalt-access': new URL(share).searchParams.get('t') } })).body);
   ok(probe.metadata.startsWith('blocked'), `backend cannot reach cloud metadata (${probe.metadata})`);
@@ -261,13 +307,15 @@ try {
 
   console.log('  shipping to production…');
   const prod = JSON.parse((await tool('host_promote', { app: APP, deploymentId: depId, to: 'production' })).text);
-  ok(prod.url === `https://${APP}.${ROOT}`, `live in production at ${prod.url}`);
+  ok(prod.url === PUBLIC(`${APP}.${ROOT}`), `live in production at ${prod.url}`);
   const prodHost = `${APP}.${ROOT}`;
   const home = await edge(prodHost, '/', { headers: { accept: 'text/html', 'accept-encoding': 'br' } });
   ok(home.status === 200 && /default-src 'self'/.test(home.headers['content-security-policy']) && /max-age/.test(home.headers['strict-transport-security']), 'production serves the app publicly with CSP and HSTS');
   ok((await edge(prodHost, '/api/todos')).status === 401, 'production API requires sign-in');
   ok((await edge(prodHost, '/_basalt/introspect')).status === 404, 'backend internals are not reachable publicly');
   ok((await edge(prodHost, '/.env')).status === 404 && (await edge(prodHost, '/wp-login.php')).status === 404, 'scanner probes get nothing');
+  const prodRules = await tool('host_data_rules', { app: APP, env: 'production', rules: { tables: { notes: { fields: { text: { type: 'text', required: true, maxLength: 200 } } } } } });
+  ok(/Waiting for the owner/.test(prodRules.text) && /\/approve\//.test(prodRules.text), 'production data rules wait for the human owner to approve');
 
   // Operate it.
   await tool('host_set_secret', { app: APP, env: 'production', name: 'E2E_SECRET', value: 'sesame' });
@@ -301,13 +349,17 @@ try {
   const gate = await mcp.callTool({ name: 'host_promote', arguments: { app: APP, deploymentId: dep2Id, to: 'production' } });
   ok(gate.isError && /pass its tests in staging/.test(gate.content[0].text), 'production refuses deployments that have not passed staging');
 
-  // Deleting the app removes everything it owned.
-  const del = await tool('host_delete_app', { app: APP, confirm: true });
-  ok(/Deleted app/.test(del.text), 'host_delete_app');
-  const leftovers = execSync(`docker ps -a --filter label=basalt.app=${APP} -q; docker network ls --format '{{.Name}}' --filter label=basalt.env | xargs -r -n1 docker network inspect --format '{{.Name}} {{len .Containers}}' 2>/dev/null | grep -c ' 0$' || true`).toString().trim();
-  const pw = envFile.POSTGRES_PASSWORD;
-  const dbs = execSync(`docker exec -e PGPASSWORD=${pw} basalt-postgres psql -U postgres -tAc "select count(*) from pg_database where datname like 'basalt_${APP}%'"`).toString().trim();
-  ok(dbs === '0' && !/[0-9a-f]{12}/.test(leftovers), 'no containers, databases or roles left behind');
+  if (process.env.E2E_KEEP) {
+    console.log(`kept ${APP} running (E2E_KEEP); delete it with host_delete_app when done`);
+  } else {
+    // Deleting the app removes everything it owned.
+    const del = await tool('host_delete_app', { app: APP, confirm: true });
+    ok(/Deleted app/.test(del.text), 'host_delete_app');
+    const leftovers = execSync(`docker ps -a --filter label=basalt.app=${APP} -q; docker network ls --format '{{.Name}}' --filter label=basalt.env | xargs -r -n1 docker network inspect --format '{{.Name}} {{len .Containers}}' 2>/dev/null | grep -c ' 0$' || true`).toString().trim();
+    const pw = envFile.POSTGRES_PASSWORD;
+    const dbs = execSync(`docker exec -e PGPASSWORD=${pw} basalt-postgres psql -U postgres -tAc "select count(*) from pg_database where datname like 'basalt_${APP}%'"`).toString().trim();
+    ok(dbs === '0' && !/[0-9a-f]{12}/.test(leftovers), 'no containers, databases or roles left behind');
+  }
 
   console.log(`\nALL PLATFORM E2E CHECKS PASSED (${elapsed()})`);
 } catch (err) {

@@ -12,6 +12,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { initProject } from './init.js';
 import { packProject } from './pack.js';
+import { scanFolder } from './scan.js';
 
 const baseUrl = (process.env.BASALT_HOST_URL ?? '').replace(/\/+$/, '');
 const token = process.env.BASALT_HOST_TOKEN ?? '';
@@ -20,9 +21,10 @@ if (!baseUrl || !token) {
   process.exit(1);
 }
 const rootDomain = process.env.BASALT_ROOT_DOMAIN ?? new URL(baseUrl).hostname.replace(/^host\./, '');
+const registryUrl = process.env.BASALT_REGISTRY_URL || rootDomain;
 const projectRoot = (dir?: string) => path.resolve(process.env.BASALT_PROJECT_DIR ?? process.cwd(), dir ?? '.');
 
-const remote = new Client({ name: 'basalt-host-mcp', version: '0.1.0' });
+const remote = new Client({ name: 'basalt-host-mcp', version: '0.2.0' });
 await remote.connect(new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
 
 const LOCAL: Tool[] = [
@@ -42,13 +44,34 @@ const LOCAL: Tool[] = [
     },
   },
   {
+    name: 'host_data_check',
+    description:
+      "Guard, Basalt's safety check for an environment's data. Scans the local project folder for data kept outside Basalt (browser storage, other databases, data files, pasted keys; the code stays on this machine), then signs in as two real test people and a stranger and tries a dozen ways to reach data that isn't theirs. Returns problems to fix and a safety receipt link for the owner. Run it on the preview or staging after setting host_data_rules, and again after any change to how the app saves data.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        app: { type: 'string' },
+        env: { type: 'string', description: '"staging", "production" or a preview name like "p3f9a1x".' },
+        dir: { type: 'string', description: 'Project directory (default: current directory).' },
+      },
+      required: ['app', 'env'],
+    },
+  },
+  {
     name: 'host_init',
     description: 'Prepares the local project for Basalt Host: .npmrc for @basalt packages, basalt.json, playwright.config.ts and an example e2e test (never overwrites existing files). Run once, then npm install.',
     inputSchema: { type: 'object', properties: { dir: { type: 'string' } } },
   },
 ];
 
-const server = new Server({ name: 'basalt', version: '0.1.0' }, { capabilities: { tools: {} }, instructions: 'Basalt Host: call host_guide { topic: "workflow" } first. You build, test, stage and ship the app yourself with these tools.' });
+const server = new Server(
+  { name: 'basalt', version: '0.2.0' },
+  {
+    capabilities: { tools: {} },
+    instructions:
+      'Basalt: hosting, sign-in, backend and per-person data for this app. Call host_guide { topic: "workflow" } first, and host_guide { topic: "data" } before writing code that saves anything. You build, test, stage and ship the app yourself with these tools; never ask the person to run commands. The person may have no coding experience: explain results in plain words.',
+  },
+);
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const { tools } = await remote.listTools();
@@ -59,8 +82,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const args = (req.params.arguments ?? {}) as Record<string, unknown>;
   try {
     if (req.params.name === 'host_init') {
-      const r = await initProject(projectRoot(args.dir as string | undefined), rootDomain);
+      const r = await initProject(projectRoot(args.dir as string | undefined), registryUrl);
       return { content: [{ type: 'text', text: `Written: ${r.written.join(', ') || '(nothing)'}\nKept existing: ${r.kept.join(', ') || '(none)'}\n\nNext: npm install @basalt/api @basalt/auth && npm install -D @playwright/test@~1.64.0, then host_guide { topic: "project" }.` }] };
+    }
+    if (req.params.name === 'host_data_check') {
+      const scan = scanFolder(projectRoot(args.dir as string | undefined));
+      return await remote.callTool({ name: 'host_data_check', arguments: { app: args.app, env: args.env, scan: scan.slice(0, 100) } }, undefined, { timeout: 180_000 });
     }
     if (req.params.name === 'host_deploy') {
       const app = String(args.app ?? '');

@@ -45,14 +45,15 @@ docker build -t basalt/runtime:1 ../images/runtime
 docker pull mcr.microsoft.com/playwright:v1.64.1-noble
 "${COMPOSE[@]}" build
 if [[ -n "$LOCAL" ]]; then
-  "${COMPOSE[@]}" up -d
+  "${COMPOSE[@]}" up -d --wait --wait-timeout 300
   echo "Local mode: apps at http://<app>.${ROOT_DOMAIN}:8080, owner pages at http://cloud.${ROOT_DOMAIN}:8080, control API at http://127.0.0.1:4000."
 elif [[ -n "$(grep '^CF_TUNNEL_TOKEN=.\+' .env || true)" ]]; then
-  docker compose --profile tunnel up -d
+  docker compose --profile tunnel up -d --wait --wait-timeout 300
+  echo "Point the Cloudflare tunnel's public hostnames ${ROOT_DOMAIN} and *.${ROOT_DOMAIN} at http://edge:8080."
 else
   echo "No Cloudflare tunnel token: starting without public ingress."
-  docker compose up -d
+  docker compose up -d --wait --wait-timeout 300
 fi
 echo
-echo "Platform is starting. Create a workspace for a user with:"
+echo "Platform is up. Create a workspace (prints the coding agent's connector setup):"
 echo "  docker exec basalt-control node dist/admin.js create-workspace <name>"

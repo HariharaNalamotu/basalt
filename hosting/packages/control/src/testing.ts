@@ -36,7 +36,8 @@ export class Testing {
 
   shareLink(env: EnvRow, ttlMinutes: number): string {
     const token = this.accessToken(env, ttlMinutes * 60);
-    return token ? `https://${env.host}/_basalt/access?t=${token}` : `https://${env.host}/`;
+    const base = this.ctx.cfg.appUrl(env.host);
+    return token ? `${base}/_basalt/access?t=${token}` : `${base}/`;
   }
 
   /** GET through the internal TLS edge with the environment's Host and access token. */
@@ -149,6 +150,12 @@ export default defineConfig({
     baseURL: process.env.BASE_URL,
     ignoreHTTPSErrors: true,
     extraHTTPHeaders: { ...(base.use?.extraHTTPHeaders ?? {}), 'x-basalt-access': process.env.BASALT_ACCESS ?? '' },
+    // Chromium ignores /etc/hosts for *.localhost names (the one-laptop demo), so map the app's
+    // host to the edge inside the browser too.
+    launchOptions: {
+      ...(base.use?.launchOptions ?? {}),
+      args: [...(base.use?.launchOptions?.args ?? []), \`--host-resolver-rules=MAP \${process.env.BASALT_APP_HOST} \${process.env.BASALT_EDGE_IP}\`],
+    },
     trace: 'off',
     screenshot: 'only-on-failure',
   },
@@ -178,6 +185,8 @@ export default defineConfig({
         Env: [
           `BASE_URL=https://${env.host}`,
           `BASALT_ACCESS=${this.accessToken(env, 1800) ?? ''}`,
+          `BASALT_APP_HOST=${env.host}`,
+          `BASALT_EDGE_IP=${edgeIp}`,
           `TEST_USER_EMAIL=${user.email}`,
           `TEST_USER_PASSWORD=${user.password}`,
           'HOME=/tmp',

@@ -47,13 +47,14 @@ describe('platform API', () => {
   });
 
   it('refuses insecure origins and out-of-bounds settings', async () => {
-    for (const origin of ['http://evil.com', 'https://app.com/path', '*', 'https://*.app.com']) {
+    for (const origin of ['http://evil.com', 'http://localhost.evil.com', 'http://evil.com.localhost.evil', 'https://app.com/path', '*', 'https://*.app.com']) {
       const res = await h.request('POST', '/v1/platform/projects', { bearer: PLATFORM_KEY, body: { name: 'x', allowedOrigins: [origin] } });
       expect(res.status, origin).toBe(400);
     }
     const ok = await h.request('POST', '/v1/platform/projects', {
       bearer: PLATFORM_KEY,
-      body: { name: 'x', allowedOrigins: ['http://localhost:5173'] },
+      // *.localhost is loopback by definition (the one-laptop demo's apps live there).
+      body: { name: 'x', allowedOrigins: ['http://localhost:5173', 'http://todo.basalt.localhost:8080'] },
     });
     expect(ok.status).toBe(201);
     for (const settings of [{ accessTokenTtlSeconds: 86_400 }, { passwordMinLength: 4 }, { sessionMaxLifetimeSeconds: 10 ** 9 }, { unknownKnob: true }]) {

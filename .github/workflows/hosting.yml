@@ -1,0 +1,57 @@
+name: hosting
+
+on:
+  push:
+    paths: ['hosting/**', 'auth/packages/**', 'api/packages/**', 'cloud/src/scan.ts', '.github/workflows/hosting.yml']
+  pull_request:
+    paths: ['hosting/**', 'auth/packages/**', 'api/packages/**', 'cloud/src/scan.ts', '.github/workflows/hosting.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosting-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            auth/package-lock.json
+            api/package-lock.json
+            hosting/package-lock.json
+      # Hosting builds on the auth and API toolkits (file: dependencies).
+      - run: npm ci && npm run build
+        working-directory: auth
+      - run: npm ci && npm run build
+        working-directory: api
+      - run: npm ci && npm audit --omit=dev --audit-level=high
+        working-directory: hosting
+      # The browser worker's tests drive a real Chromium (same Playwright version as the platform).
+      - run: npx playwright install --with-deps chromium
+        working-directory: hosting/packages/browser
+      - run: npm run build && npm run typecheck && npm test
+        working-directory: hosting
+      - name: The connector's local scan matches Basalt Cloud's
+        run: node hosting/scripts/check-scan-sync.mjs
+      - name: Platform images build
+        run: |
+          docker build -f hosting/Dockerfile --target control -t basalt/control:ci .
+          docker build -f hosting/Dockerfile --target edge -t basalt/edge:ci .
+          docker build -f cloud/Dockerfile -t basalt/cloud:ci .
+      - name: Compose files are valid
+        working-directory: hosting/deploy
+        run: |
+          printf 'ROOT_DOMAIN=basalt.example.com\n' > .env
+          for k in POSTGRES_PASSWORD REDIS_PASSWORD AUTH_PLATFORM_KEY INTERNAL_TOKEN MAIL_WEBHOOK_SECRET EDGE_KEY REGISTRY_PUBLISH_PASSWORD CLOUD_MASTER_KEY CLOUD_PLATFORM_KEY; do echo "$k=$(openssl rand -hex 32)" >> .env; done
+          for k in AUTH_MASTER_KEY HOST_MASTER_KEY; do echo "$k=$(openssl rand -base64 32)" >> .env; done
+          docker compose config -q
+          docker compose -f docker-compose.yml -f docker-compose.local.yml config -q
+          bash -n setup.sh

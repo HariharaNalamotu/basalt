@@ -3,8 +3,12 @@ import path from 'node:path';
 
 const exists = (p: string) => stat(p).then(() => true, () => false);
 
-/** Writes the files the Basalt build relies on, never overwriting existing ones. */
-export async function initProject(root: string, rootDomain: string) {
+/**
+ * Writes the files the Basalt build relies on, never overwriting existing ones. `registry` is the
+ * @basalt registry URL, or just the root domain (then https://registry.<domain>/).
+ */
+export async function initProject(root: string, registry: string) {
+  const registryUrl = /^https?:\/\//.test(registry) ? registry.replace(/\/*$/, '/') : `https://registry.${registry}/`;
   const written: string[] = [];
   const kept: string[] = [];
   const put = async (rel: string, content: string) => {
@@ -18,7 +22,7 @@ export async function initProject(root: string, rootDomain: string) {
   const npmrcPath = path.join(root, '.npmrc');
   const npmrc = await readFile(npmrcPath, 'utf8').catch(() => '');
   if (!npmrc.includes('@basalt:registry')) {
-    await writeFile(npmrcPath, `${npmrc}${npmrc && !npmrc.endsWith('\n') ? '\n' : ''}@basalt:registry=https://registry.${rootDomain}/\n`);
+    await writeFile(npmrcPath, `${npmrc}${npmrc && !npmrc.endsWith('\n') ? '\n' : ''}@basalt:registry=${registryUrl}\n`);
     written.push('.npmrc');
   }
   await put('basalt.json', JSON.stringify({ backend: { entry: 'server/index.ts' }, frontend: { output: 'dist' } }, null, 2) + '\n');

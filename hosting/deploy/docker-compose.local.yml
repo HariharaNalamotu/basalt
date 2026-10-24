@@ -1,9 +1,14 @@
 # Local testing without Cloudflare: publish the edge and control API on loopback only.
 services:
   edge:
-    ports: ["127.0.0.1:8080:8080"]
+    # *.localhost names resolve to ::1 as well as 127.0.0.1 (npm and Node try ::1 first).
+    ports: ["127.0.0.1:8080:8080", "[::1]:8080:8080"]
     environment:
       TRUSTED_PROXIES: ""
+      # Browsers reach apps at http://<app>.<root>:8080; backends and the Data service compare
+      # the request's Origin against that.
+      PUBLIC_SCHEME: http
+      PUBLIC_PORT: "8080"
     networks:
       outbound: {}
   control:
@@ -13,6 +18,12 @@ services:
       BUILD_MEMORY_MB: "1024"
       TEST_MEMORY_MB: "1024"
       MAX_CONCURRENT_BUILDS: "1"
+      # Links handed to people (and Auth's allowed origins) use the local address.
+      PUBLIC_SCHEME: http
+      PUBLIC_PORT: "8080"
+      # What basalt-admin create-workspace prints for the coding agent's connector.
+      HOST_PUBLIC_URL: http://127.0.0.1:4000
+      REGISTRY_PUBLIC_URL: http://registry.${ROOT_DOMAIN}:8080/
   cloud:
     environment:
       # Owner pages (approvals, data map, safety receipt) through the local edge.

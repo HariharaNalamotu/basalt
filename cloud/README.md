@@ -6,6 +6,8 @@ Each app gets its own Postgres database and its own three roles, built by the [D
 
 ## MCP tools
 
+This standalone connector is for apps that keep their data in Basalt Cloud but aren't hosted on Basalt. Apps hosted on Basalt Host use the single Basalt Host connector (`@basalt/host-mcp`), which covers the same ground per environment: `host_data_rules`, `host_data_status`, `host_data_admin`, `host_data_check` (Guard, with the same local code scan) and `host_guide { topic: "data" }`.
+
 | Tool | What it does |
 | --- | --- |
 | `basalt_start` | Makes the app's database and saves its key in `.basalt/` (kept out of git) |

@@ -98,3 +98,51 @@ export function dataUrlFor(cfg: DataLinkConfig | null, projectId: string | null)
   if (!cfg || !projectId || !PROJECT_ID.test(projectId)) return null;
   return `${cfg.url.replace(/\/+$/, '')}/p/${projectId}`;
 }
+
+export interface DataStatus {
+  status: 'live' | 'waiting_for_owner' | 'no_rules';
+  rules: string;
+  waitingForOwner: boolean;
+  mapUrl: string | null;
+}
+
+/** An environment's data rules in plain English, and the owner's data map link. */
+export async function dataStatus(cfg: DataLinkConfig, adminKey: string, f: typeof fetch = fetch): Promise<DataStatus> {
+  const { project: p } = await cloudCall(cfg, 'GET', '/api/projects/me', undefined, f, adminKey);
+  return {
+    status: p.status === 'live' || p.status === 'waiting_for_owner' ? p.status : 'no_rules',
+    rules: String(p.rules ?? ''),
+    waitingForOwner: Boolean(p.waitingForOwner),
+    mapUrl: typeof p.mapUrl === 'string' ? p.mapUrl : null,
+  };
+}
+
+/** Asks the owner to make someone an admin of an environment's data (always needs their approval). */
+export async function requestDataAdmin(cfg: DataLinkConfig, adminKey: string, who: { who?: string; userId?: string; label?: string }, f: typeof fetch = fetch): Promise<{ approveUrl: string; userId: string }> {
+  const out = await cloudCall(cfg, 'POST', '/api/projects/me/admins', who, f, adminKey);
+  return { approveUrl: String(out.approveUrl), userId: String(out.userId) };
+}
+
+export interface GuardFinding {
+  rule: string;
+  file: string;
+  line: number;
+  problem: string;
+  fix: string;
+}
+
+export interface GuardResult {
+  passed: number;
+  failed: number;
+  results: Array<{ id: string; title: string; passed: boolean; detail: string; table?: string }>;
+  receiptUrl: string;
+}
+
+/**
+ * Runs Guard against an environment's data: two real test people and a stranger try to reach
+ * data that isn't theirs. `scan` is the local code scan (data kept outside Basalt), or null.
+ */
+export async function runDataCheck(cfg: DataLinkConfig, adminKey: string, scan: GuardFinding[] | null, f: typeof fetch = fetch): Promise<GuardResult> {
+  const out = await cloudCall(cfg, 'POST', '/api/projects/me/check', scan === null ? {} : { scan }, f, adminKey);
+  return { passed: Number(out.passed), failed: Number(out.failed), results: Array.isArray(out.results) ? out.results : [], receiptUrl: String(out.receiptUrl) };
+}
