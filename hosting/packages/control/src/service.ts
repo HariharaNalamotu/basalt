@@ -265,6 +265,17 @@ export class Host {
       return false;
     }
     await this.log(pipelineId, stage, 'e2e passed');
+    if (dep.manifest?.dataRules) {
+      // Guard: the app's live data, attacked the ways a careless or malicious user would try.
+      const guard = await this.testing.guard((await this.envs.get(env.id))!, dep);
+      const s = guard.summary as { passed?: number; failed?: number; failures?: Array<{ title: string; detail: string; table?: string }>; receiptUrl?: string; error?: string };
+      if (guard.status !== 'passed') {
+        const what = s.failures?.map((f) => `- ${f.title}${f.table ? ` (${f.table})` : ''}: ${f.detail}`).join('\n') ?? s.error ?? '';
+        await this.log(pipelineId, stage, `Guard found data reachable by the wrong people, so this stops here:\n${what}\nReceipt: ${s.receiptUrl ?? 'none'}`);
+        return false;
+      }
+      await this.log(pipelineId, stage, `Guard passed: ${s.passed} of ${s.passed} attempts to reach other people's data were refused. Receipt: ${s.receiptUrl}`);
+    }
     return true;
   }
 
@@ -278,6 +289,10 @@ export class Host {
       const runs = staging ? await this.testing.latest(staging.id, depId) : [];
       const smoke = runs.find((r) => r.kind === 'smoke');
       const e2e = runs.find((r) => r.kind === 'e2e');
+      const guard = runs.find((r) => r.kind === 'guard');
+      if (dep.manifest?.dataRules && guard?.status !== 'passed') {
+        throw new UserError('Production promotion requires Guard to pass in staging: promote to staging (Guard runs after the tests), fix anything it finds, then promote to production.', 409);
+      }
       if (smoke?.status !== 'passed' || (dep.manifest?.e2e && e2e?.status !== 'passed')) {
         throw new UserError('Production promotion requires this deployment to pass its tests in staging first: promote to staging (tests run automatically), fix any failures, then promote to production.', 409);
       }
@@ -393,6 +408,17 @@ export class Host {
     });
     await this.audit(ws, 'data_rules.updated', `${appName}/${envName}`);
     return r;
+  }
+
+  /** Runs Guard on a test environment's live data now (see Testing.guard). */
+  async dataCheck(ws: string, appName: string, envName: string) {
+    const { env } = await this.env(ws, appName, envName);
+    if (env.kind === 'production') throw new UserError('Guard runs on preview and staging (every promotion to production needs it to pass there), never on real customers.', 400);
+    const rel = env.current_release_id ? (await this.ctx.db.query<{ deployment_id: string }>('SELECT deployment_id FROM releases WHERE id = $1', [env.current_release_id])).rows[0] : undefined;
+    if (!rel) throw new UserError('Nothing is deployed to this environment yet.', 409);
+    const run = await this.testing.guard(env, await this.deployment(ws, rel.deployment_id));
+    await this.audit(ws, 'data_check', `${appName}/${envName}`);
+    return { status: run.status, ...run.summary };
   }
 
   async apiConfig(ws: string, appName: string, envName: string) {

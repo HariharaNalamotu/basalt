@@ -93,6 +93,25 @@ export async function setDataRules(
   return { status: 'live', summary: String(out.summary ?? '') };
 }
 
+export interface GuardResult {
+  passed: number;
+  failed: number;
+  /** Checks that didn't pass, each saying in plain words what got through. */
+  failures: Array<{ id: string; title: string; passed: boolean; detail: string; table?: string }>;
+  /** The owner's safety receipt page. */
+  receiptUrl: string;
+}
+
+/**
+ * Guard: signs in to the environment's data as two test people and a stranger and tries every way
+ * to reach data that isn't theirs (see cloud/src/guard.ts). Uses the environment's own admin key.
+ */
+export async function runGuard(cfg: DataLinkConfig, adminKey: string, f: typeof fetch = fetch): Promise<GuardResult> {
+  const out = await cloudCall(cfg, 'POST', '/api/projects/me/check', {}, f, adminKey);
+  const results = Array.isArray(out.results) ? out.results : [];
+  return { passed: Number(out.passed ?? 0), failed: Number(out.failed ?? 0), failures: results.filter((r: { passed?: unknown }) => r.passed !== true), receiptUrl: String(out.receiptUrl ?? '') };
+}
+
 /** Where the edge sends /_basalt/data for an environment, or null when it has no data project. */
 export function dataUrlFor(cfg: DataLinkConfig | null, projectId: string | null): string | null {
   if (!cfg || !projectId || !PROJECT_ID.test(projectId)) return null;

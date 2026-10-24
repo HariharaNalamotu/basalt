@@ -243,6 +243,8 @@ try {
   if (s1.pipelines[0].status !== 'passed') console.log(JSON.stringify(s1, null, 2).slice(0, 6000));
   ok(s1.pipelines[0].status === 'passed', `preview passed in ${elapsed()}: rules from basalt.data.json applied before the app's own browser tests`);
   ok(s1.tests.some((t) => t.kind === 'e2e' && t.status === 'passed'), "the app's browser tests booked through /_basalt/data and passed");
+  const guard1 = s1.tests.find((t) => t.kind === 'guard');
+  ok(guard1?.status === 'passed' && guard1.summary.failed === 0 && guard1.summary.passed >= 10, `Guard ran after the tests and every attempt was refused (${guard1?.summary.passed} checks)`);
 
   // Preview: private, so sign in carries the share-link cookie too.
   const preview = s1.liveIn.find((e) => e.env.startsWith('p'));
@@ -253,10 +255,20 @@ try {
   const userB = JSON.parse(await must('host_test_user', { app: APP, env: preview.env }));
   await isolation(previewHost, await customer(previewHost, userA.email, userA.password, access), await customer(previewHost, userB.email, userB.password, access), 'preview');
 
+  // Guard on demand, and the owner's safety receipt through the edge.
+  const check = await must('host_data_check', { app: APP, env: preview.env });
+  const receipt = /(http\S+\/owner\/[a-z0-9]{10}\/check\?k=\S+)/.exec(check)?.[1];
+  ok(/checks passed/.test(check) && !/PROBLEM/.test(check) && Boolean(receipt), 'host_data_check: Guard on demand, nothing got through');
+  const ru = new URL(receipt);
+  const receiptPage = await edge(ru.hostname, ru.pathname + ru.search, { headers: { accept: 'text/html' } });
+  ok(receiptPage.status === 200 && /Safety receipt/.test(receiptPage.text) && /checks passed/.test(receiptPage.text), "the owner's safety receipt opens on cloud.<root>");
+
   // Staging, then production. Production's first rules show data to people, so they wait for the owner.
   await must('host_promote', { app: APP, deploymentId: depId, to: 'staging' });
   const { p: stagingRun } = await waitPipeline(depId, 'staging');
   ok(stagingRun.status === 'passed', `staging passed (${elapsed()})`);
+  const sStaging = JSON.parse((await must('host_deployment', { deploymentId: depId })).replace(/^[^{]*/, ''));
+  ok(sStaging.tests.some((t) => t.kind === 'guard' && t.env === 'staging' && t.status === 'passed'), 'Guard passed on staging, which production requires');
   const blocked = await tool('host_promote', { app: APP, deploymentId: depId, to: 'production' });
   const approveUrl = /(http\S+\/approve\/[a-z0-9]{16}\?t=\S+)/.exec(blocked.text)?.[1];
   ok(blocked.isError && Boolean(approveUrl), 'production waits for the owner: promote returns the approval link and releases nothing');

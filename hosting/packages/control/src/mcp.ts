@@ -180,6 +180,20 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
     if (!emailsReadable(e.kind, { localHttpPort: ctx.cfg.LOCAL_HTTP_PORT, resendKey: ctx.cfg.RESEND_API_KEY })) throw new UserError('Production email is private.');
     return json(await host.testing.emails(e.id));
   }, { readOnlyHint: true });
+  tool(
+    'host_data_check',
+    "Runs Guard on a test environment's data now: signs in as two test people and a stranger and tries every way to reach data that isn't theirs (opening, listing, changing and removing someone else's entries, forged and expired logins, sneaking database code into a search). It also runs automatically after the tests on every deploy, and production needs it to pass in staging. Returns what got through, if anything, and the owner's safety receipt link.",
+    { app, env: testEnv },
+    async (a) => {
+      const r = (await host.dataCheck(ws, a.app, a.env)) as { status: string; passed?: number; failed?: number; failures?: Array<{ title: string; detail: string; table?: string }>; receiptUrl?: string; error?: string };
+      if (r.error) return text(`Guard couldn't run: ${r.error}`);
+      const lines = [`${r.passed} of ${(r.passed ?? 0) + (r.failed ?? 0)} checks passed.`];
+      for (const f of r.failures ?? []) lines.push(`PROBLEM, ${f.title}${f.table ? ` (${f.table})` : ''}: ${f.detail}`);
+      lines.push('', `Safety receipt for the owner: ${r.receiptUrl}`);
+      return text(lines.join('\n'));
+    },
+    { readOnlyHint: true },
+  );
   tool('host_share_link', 'A time-limited link that lets a human open a private preview/staging environment in their browser.', { app, env: testEnv, ttlMinutes: z.number().int().min(5).max(7 * 24 * 60).optional() }, async (a) => {
     const { env: e } = await host.env(ws, a.app, a.env);
     return text(host.testing.shareLink(e, a.ttlMinutes ?? 24 * 60));

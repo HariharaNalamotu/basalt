@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDataProject, dataUrlFor, deleteDataProject, setDataRules } from '../src/data-link.js';
+import { createDataProject, dataUrlFor, deleteDataProject, runGuard, setDataRules } from '../src/data-link.js';
 
 const cfg = { url: 'http://cloud:8790/', platformKey: 'k'.repeat(40) };
 
@@ -62,6 +62,18 @@ describe('Basalt Cloud data projects for environments', () => {
     expect(r).toEqual({ status: 'waiting_for_owner', approveUrl: 'https://cloud.example.com/approve/x?t=y', why: ['New rules.'], summary: 's' });
     expect(prod.calls[0]!.url).toBe('http://cloud:8790/api/projects/me/rules');
     expect((prod.calls[0]!.init.headers as Record<string, string>).authorization).toBe('Bearer bsk_x');
+  });
+
+  it("runs Guard with the environment's key and reports what leaked, with the owner's receipt", async () => {
+    const results = [
+      { id: 'no_login', title: 'Someone with no login', passed: true, detail: 'Was turned away.' },
+      { id: 'other_person_list', title: "Listing everyone's entries", passed: false, detail: "Person A's entry showed up in person B's list.", table: 'bookings' },
+    ];
+    const { f, calls } = stub({ status: 200, body: { ok: true, passed: 1, failed: 1, results, codeFindings: null, receiptUrl: 'https://cloud.example.com/owner/abcde12345/check?k=x' } });
+    const r = await runGuard(cfg, 'bsk_x', f);
+    expect(calls[0]!.url).toBe('http://cloud:8790/api/projects/me/check');
+    expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe('Bearer bsk_x');
+    expect(r).toEqual({ passed: 1, failed: 1, failures: [results[1]], receiptUrl: 'https://cloud.example.com/owner/abcde12345/check?k=x' });
   });
 
   it('points the edge at the data project, or nowhere when Cloud is not set up', () => {
