@@ -20,7 +20,7 @@ export function checkId(id: unknown): string {
   return id.toLowerCase();
 }
 
-function checkValue(table: string, name: string, spec: FieldSpec, value: unknown): unknown {
+export function checkValue(table: string, name: string, spec: FieldSpec, value: unknown): unknown {
   const where = `${table}.${name}`;
 
   if (value === null) {

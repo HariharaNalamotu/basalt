@@ -1,7 +1,7 @@
 import pg from 'pg';
-import { getTable, type Contract } from './contract.ts';
+import { getTable, SYSTEM_COLUMNS, type Contract, type TableSpec } from './contract.ts';
 import { BasaltError, type BasaltErrorCode } from './errors.ts';
-import { checkId, checkWrite } from './validate.ts';
+import { checkId, checkValue, checkWrite, ISO_TIMESTAMP } from './validate.ts';
 
 // The Data block core. This is the only way to touch an app's database:
 // get, list, create, update, archive and restore. There is no raw SQL method
@@ -19,11 +19,17 @@ export interface BasaltDataOptions {
   poolSize?: number;
 }
 
+export type FilterValue = string | number | boolean | { gte?: string | number; gt?: string | number; lte?: string | number; lt?: string | number };
+
 export interface ListOptions {
   limit?: number;
   after?: string;
   // true lists only archived rows. By default they're left out.
   archived?: boolean;
+  // { service: 'Color' } or { starts_at: { gte: '2026-11-06T00:00:00Z', lt: '2026-11-07T00:00:00Z' } }
+  where?: Record<string, FilterValue>;
+  // Newest first by default. Any required field, created_at or updated_at.
+  sort?: { field: string; direction?: 'asc' | 'desc' };
 }
 
 export interface CreateOptions {
@@ -43,20 +49,61 @@ const KEY = /^[A-Za-z0-9_-]{1,200}$/;
 const CURSOR_TIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:?\d{2})?)$/;
 const CODES = new Set<BasaltErrorCode>(['invalid_input', 'not_found', 'denied', 'rate_limited', 'unavailable']);
 
-export function encodeCursor(row: Row): string {
-  return Buffer.from(JSON.stringify([row.created_at, row.id])).toString('base64url');
+// A page cursor remembers the sort field, that field's value on the last row and its id.
+export function encodeCursor(row: Row, sortField = 'created_at'): string {
+  return Buffer.from(JSON.stringify([sortField, row[sortField], row.id])).toString('base64url');
 }
 
-function decodeCursor(cursor: unknown): [string, string] {
+function decodeCursor(cursor: unknown, sortField: string): [unknown, string] {
   try {
-    if (typeof cursor !== 'string' || cursor.length > 200) throw new Error();
+    if (typeof cursor !== 'string' || cursor.length > 2000) throw new Error();
     const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-    if (!Array.isArray(parsed) || parsed.length !== 2) throw new Error();
-    if (typeof parsed[0] !== 'string' || !CURSOR_TIME.test(parsed[0])) throw new Error();
-    return [parsed[0], checkId(parsed[1])];
+    if (!Array.isArray(parsed) || parsed.length !== 3 || parsed[0] !== sortField) throw new Error();
+    const v = parsed[1];
+    if (!['string', 'number', 'boolean'].includes(typeof v)) throw new Error();
+    if ((sortField === 'created_at' || sortField === 'updated_at') && !CURSOR_TIME.test(String(v))) throw new Error();
+    return [v, checkId(parsed[2])];
   } catch {
-    throw new BasaltError('invalid_input', 'That page cursor is not valid.');
+    throw new BasaltError('invalid_input', 'That page cursor is not valid for this sort.');
   }
+}
+
+const RANGE_OPS = new Set(['gte', 'gt', 'lte', 'lt']);
+
+function checkWhere(spec: TableSpec, where: unknown): Record<string, unknown> {
+  if (typeof where !== 'object' || where === null || Array.isArray(where)) {
+    throw new BasaltError('invalid_input', 'where must be an object like { service: "Color" }.');
+  }
+  const out: Record<string, unknown> = {};
+  const keys = Object.keys(where);
+  if (keys.length > 10) throw new BasaltError('invalid_input', 'You can filter on up to 10 fields at once.');
+  const allowed = [...spec.fields.keys(), ...SYSTEM_COLUMNS];
+  for (const key of keys) {
+    const field = spec.fields.get(key);
+    const system = (SYSTEM_COLUMNS as readonly string[]).includes(key);
+    if (!field && !system) {
+      throw new BasaltError('invalid_input', `You can't filter on "${key.slice(0, 50)}". Fields you can filter on: ${allowed.join(', ')}.`);
+    }
+    const check = (v: unknown) => {
+      if (field) return checkValue(spec.name, key, { ...field, required: true }, v);
+      if (key.endsWith('_at')) {
+        if (typeof v !== 'string' || !ISO_TIMESTAMP.test(v)) throw new BasaltError('invalid_input', `${key} must be a date and time.`);
+        return v;
+      }
+      return checkId(v);
+    };
+    const value = (where as Record<string, unknown>)[key];
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      const ops = Object.keys(value);
+      if (ops.length === 0 || ops.some((o) => !RANGE_OPS.has(o))) {
+        throw new BasaltError('invalid_input', `A range filter on ${key} can use gte, gt, lte and lt.`);
+      }
+      out[key] = Object.fromEntries(ops.map((o) => [o, check((value as Record<string, unknown>)[o])]));
+    } else {
+      out[key] = check(value);
+    }
+  }
+  return out;
 }
 
 export class BasaltData {
@@ -94,19 +141,33 @@ export class BasaltData {
       throw new BasaltError('invalid_input', `limit must be a whole number from 1 to ${MAX_PAGE}.`);
     }
     const args: Record<string, unknown> = { limit };
+    let sortField = 'created_at';
+    if (options.sort !== undefined) {
+      const sort = options.sort as { field?: unknown; direction?: unknown };
+      const sortable = ['created_at', 'updated_at', ...[...spec.fields].filter(([, f]) => f.required).map(([n]) => n)];
+      if (typeof sort !== 'object' || sort === null || typeof sort.field !== 'string' || !sortable.includes(sort.field)) {
+        throw new BasaltError('invalid_input', `You can sort by: ${sortable.join(', ')}.`);
+      }
+      if (sort.direction !== undefined && sort.direction !== 'asc' && sort.direction !== 'desc') {
+        throw new BasaltError('invalid_input', 'Sort direction must be "asc" or "desc".');
+      }
+      sortField = sort.field;
+      args.sort = { field: sort.field, direction: sort.direction ?? 'desc' };
+    }
+    if (options.where !== undefined) args.where = checkWhere(spec, options.where);
     if (options.archived !== undefined) {
       if (typeof options.archived !== 'boolean') throw new BasaltError('invalid_input', 'archived must be true or false.');
       args.archived = options.archived;
     }
     if (options.after !== undefined && options.after !== null) {
-      const [at, id] = decodeCursor(options.after);
-      args.after_ts = at;
+      const [value, id] = decodeCursor(options.after, sortField);
+      args.after = { [sortField]: value };
       args.after_id = id;
     }
     // The database returns one extra row so we know whether there's a next page.
     const rows = (await this.#call(token, 'list', spec.name, args)) as Row[];
     const page = rows.slice(0, limit);
-    return { rows: page, next: rows.length > limit ? encodeCursor(page[page.length - 1]) : null };
+    return { rows: page, next: rows.length > limit ? encodeCursor(page[page.length - 1], sortField) : null };
   }
 
   async create(token: string, table: string, input: unknown, options: CreateOptions = {}): Promise<Row> {

@@ -439,6 +439,72 @@ describe('sharing and paging together', () => {
   });
 });
 
+describe('filters and sorting', () => {
+  const day = (d: number, h: number) => `2026-11-${String(d).padStart(2, '0')}T${String(h).padStart(2, '0')}:00:00Z`;
+  let t: string;
+
+  before(async () => {
+    t = userToken(randomUUID());
+    await db.create(t, 'bookings', { service: 'Color', starts_at: day(6, 15), party_size: 2 });
+    await db.create(t, 'bookings', { service: 'Haircut', starts_at: day(6, 10), party_size: 1 });
+    await db.create(t, 'bookings', { service: 'Color', starts_at: day(7, 9), party_size: 3 });
+    await db.create(t, 'bookings', { service: 'Trim', starts_at: day(8, 12), party_size: 1 });
+  });
+
+  test('equal-to filter', async () => {
+    const { rows } = await db.list(t, 'bookings', { where: { service: 'Color' } });
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((r) => r.service === 'Color'));
+  });
+
+  test('range filter, like bookings on one day', async () => {
+    const { rows } = await db.list(t, 'bookings', { where: { starts_at: { gte: day(6, 0), lt: day(7, 0) } } });
+    assert.deepEqual(rows.map((r) => r.service).sort(), ['Color', 'Haircut']);
+  });
+
+  test('filters combine', async () => {
+    const { rows } = await db.list(t, 'bookings', { where: { service: 'Color', party_size: { gte: 3 } } });
+    assert.equal(rows.length, 1);
+  });
+
+  test('sort by a field, both directions, and page through without repeats', async () => {
+    const asc = await db.list(t, 'bookings', { sort: { field: 'starts_at', direction: 'asc' }, limit: 100 });
+    assert.deepEqual(asc.rows.map((r) => r.service), ['Haircut', 'Color', 'Color', 'Trim']);
+    const desc = await db.list(t, 'bookings', { sort: { field: 'starts_at', direction: 'desc' }, limit: 100 });
+    assert.deepEqual(desc.rows.map((r) => r.service), ['Trim', 'Color', 'Color', 'Haircut']);
+
+    const seen: string[] = [];
+    let next: string | null | undefined;
+    do {
+      const page = await db.list(t, 'bookings', { sort: { field: 'starts_at', direction: 'asc' }, limit: 1, after: next ?? undefined });
+      seen.push(...page.rows.map((r) => r.service as string));
+      next = page.next;
+    } while (next);
+    assert.deepEqual(seen, ['Haircut', 'Color', 'Color', 'Trim']);
+  });
+
+  test('filters never widen access', async () => {
+    const { rows } = await db.list(bobToken, 'bookings', { where: { service: 'Haircut' }, limit: 100 });
+    assert.ok(rows.every((r) => r.owner_id === bob));
+  });
+
+  test('bad filters and sorts are refused', async () => {
+    await rejects(db.list(t, 'bookings', { where: { nope: 1 } as any }), 'invalid_input');
+    await rejects(db.list(t, 'bookings', { where: { 'service" or 1=1 --': 'x' } as any }), 'invalid_input');
+    await rejects(db.list(t, 'bookings', { where: { party_size: 'three' } as any }), 'invalid_input');
+    await rejects(db.list(t, 'bookings', { where: { starts_at: { like: '%' } } as any }), 'invalid_input');
+    await rejects(db.list(t, 'bookings', { sort: { field: 'phone' } }), 'invalid_input');
+    await rejects(db.list(t, 'bookings', { sort: { field: 'starts_at', direction: 'sideways' as any } }), 'invalid_input');
+  });
+
+  test('the database refuses bad filters even if the code check is skipped', async () => {
+    await asRawDataLogin(async (c) => {
+      assert.equal((await rawApi(c, t, 'list', 'bookings', { where: { 'x; drop table app.bookings': 1 } })).code, 'invalid_input');
+      assert.equal((await rawApi(c, t, 'list', 'bookings', { sort: { field: 'note' } })).code, 'invalid_input');
+    });
+  });
+});
+
 describe('archive instead of delete', () => {
   test('archiving hides a row from lists, and restoring brings it back', async () => {
     const t = userToken(randomUUID());

@@ -87,7 +87,9 @@ export function basalt(getToken) {
   }
   return {
     get: (table, id) => call('get', { table, id }),
-    // Newest first. Pass { after: page.next } to get the next page.
+    // Newest first. Options: { limit, after: page.next, archived: true,
+    //   where: { service: 'Color', starts_at: { gte: '2026-11-06T00:00:00Z', lt: '2026-11-07T00:00:00Z' } },
+    //   sort: { field: 'starts_at', direction: 'asc' } } (sort by any required field).
     list: (table, options = {}) => call('list', { table, ...options }),
     // Pass { key } (for example an order number) so a retry never saves twice.
     create: (table, input, options = {}) => call('create', { table, input, ...options }),

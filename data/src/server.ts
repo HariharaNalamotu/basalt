@@ -2,7 +2,7 @@
 // login, so whatever the AI writes in the app can only use these calls.
 //
 //   POST /v1/data/get     { table, id }
-//   POST /v1/data/list    { table, limit?, after?, archived? }
+//   POST /v1/data/list    { table, limit?, after?, archived?, where?, sort? }
 //   POST /v1/data/create  { table, input, key? }
 //   POST /v1/data/update  { table, id, input }
 //   POST /v1/data/archive { table, id }
@@ -16,7 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { parseContract } from './contract.ts';
-import { BasaltData, encodeCursor, type Row } from './data.ts';
+import { BasaltData, encodeCursor, type ListOptions, type Row } from './data.ts';
 import { BasaltError, type BasaltErrorCode } from './errors.ts';
 
 export interface DataServerOptions {
@@ -110,13 +110,13 @@ function bearer(req: IncomingMessage): string {
 
 // Drops rows from the end of a page until it fits, and points next at the
 // last row kept so the caller just keeps paging.
-function fitPage(page: { rows: Row[]; next: string | null }, maxBytes: number): { rows: Row[]; next: string | null } {
+function fitPage(page: { rows: Row[]; next: string | null }, maxBytes: number, sortField = 'created_at'): { rows: Row[]; next: string | null } {
   const rows = [...page.rows];
   let size = Buffer.byteLength(JSON.stringify(rows));
   while (rows.length > 1 && size > maxBytes) {
     size -= Buffer.byteLength(JSON.stringify(rows.pop())) + 1;
   }
-  return { rows, next: encodeCursor(rows[rows.length - 1]) };
+  return { rows, next: encodeCursor(rows[rows.length - 1], sortField) };
 }
 
 export type DataHandler = (req: IncomingMessage, res: ServerResponse, path: string) => Promise<void>;
@@ -166,6 +166,8 @@ export function createDataHandler(options: DataServerOptions): DataHandler {
             limit: body.limit as number | undefined,
             after: body.after as string | undefined,
             archived: body.archived as boolean | undefined,
+            where: body.where as ListOptions['where'],
+            sort: body.sort as ListOptions['sort'],
           });
           break;
         case 'create':
@@ -184,7 +186,7 @@ export function createDataHandler(options: DataServerOptions): DataHandler {
       let json = JSON.stringify({ ok: true, data: result });
       // Serialize once; only trim a list page in the rare case it's too big.
       if (match[1] === 'list' && Buffer.byteLength(json) > maxListBytes) {
-        json = JSON.stringify({ ok: true, data: fitPage(result as { rows: Row[]; next: string | null }, maxListBytes) });
+        json = JSON.stringify({ ok: true, data: fitPage(result as { rows: Row[]; next: string | null }, maxListBytes, (body.sort as { field?: string } | undefined)?.field) });
       }
       send(res, 200, null, json);
     } catch (err) {
