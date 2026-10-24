@@ -36,7 +36,7 @@ begin
        where t."archived_at" is null
          and ($1 is null or t.%2$I >= (select (jsonb_populate_record(null::app.%4$I, $1)).%2$I))
          and ($2 is null or t.%2$I < (select (jsonb_populate_record(null::app.%4$I, $2)).%2$I))
-       order by 1 limit 1000) r',
+       order by 1 limit 200) r',
     pairs, grp[1], cols, tbl)
   into out using lo, hi;
   return out;

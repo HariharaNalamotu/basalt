@@ -92,8 +92,8 @@ begin
   elsif op = 'get' then
     cost_r := 1;
   elsif op = 'taken' then
-    -- Up to 1000 values in one read, so it costs like a long list.
-    cost_r := 10;
+    -- Up to 200 values in one call, charged like a list of 200.
+    cost_r := 200;
   else
     -- create, update, archive and restore are all writes.
     cost_w := 1;

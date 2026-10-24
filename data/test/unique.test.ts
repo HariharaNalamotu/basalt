@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, describe, test } from 'node:test';
-import { BasaltData, BasaltError, parseContract } from '../src/index.ts';
+import { BasaltData, BasaltError, parseContract, pg } from '../src/index.ts';
 import { migrate } from '../src/migrate.ts';
 import { userToken } from './helpers.ts';
 
@@ -114,6 +114,20 @@ describe("which values are taken (so the app can grey out booked slots)", () => 
     await db.create(carol, 'handles', { handle: 'carols-cuts' });
     const h = await db.taken(dave, 'handles', { field: 'handle' });
     assert.ok(h.taken.some((v) => v.handle === 'carols-cuts'));
+  });
+
+  test('costs as many reads as the values it can send back, like a list', async () => {
+    const c = new pg.Client({ connectionString: ADMIN_URL });
+    await c.connect();
+    const left = 60_000 - (Date.now() % 60_000);
+    if (left < 5000) await new Promise((r) => setTimeout(r, left + 250));
+    await c.query('update basalt.settings set reads_per_minute = 150');
+    try {
+      await refused(db.taken(userToken(randomUUID()), 'slots', { field: 'starts_at' }), 'rate_limited');
+    } finally {
+      await c.query('update basalt.settings set reads_per_minute = 1000000');
+      await c.end();
+    }
   });
 
   test("only for fields the rules keep unique, and only when signed in", async () => {
