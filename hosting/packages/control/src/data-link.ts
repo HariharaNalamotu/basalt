@@ -131,10 +131,15 @@ export interface GuardFinding {
   fix: string;
 }
 
+export type GuardCheck = { id: string; title: string; passed: boolean; detail: string; table?: string };
+
 export interface GuardResult {
   passed: number;
   failed: number;
-  results: Array<{ id: string; title: string; passed: boolean; detail: string; table?: string }>;
+  results: GuardCheck[];
+  /** The checks that didn't pass, each saying in plain words what got through. */
+  failures: GuardCheck[];
+  /** The owner's safety receipt page. */
   receiptUrl: string;
 }
 
@@ -144,5 +149,6 @@ export interface GuardResult {
  */
 export async function runDataCheck(cfg: DataLinkConfig, adminKey: string, scan: GuardFinding[] | null, f: typeof fetch = fetch): Promise<GuardResult> {
   const out = await cloudCall(cfg, 'POST', '/api/projects/me/check', scan === null ? {} : { scan }, f, adminKey);
-  return { passed: Number(out.passed), failed: Number(out.failed), results: Array.isArray(out.results) ? out.results : [], receiptUrl: String(out.receiptUrl) };
+  const results: GuardCheck[] = Array.isArray(out.results) ? out.results : [];
+  return { passed: Number(out.passed ?? 0), failed: Number(out.failed ?? 0), results, failures: results.filter((r) => r.passed !== true), receiptUrl: String(out.receiptUrl ?? '') };
 }

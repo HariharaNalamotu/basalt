@@ -53,6 +53,8 @@ declare
   sortable text[];
   st text;
   col text;
+  con text;
+  taken text;
 begin
   -- An older snapshot could miss a fresh revocation or secret change.
   if current_setting('transaction_isolation') <> 'read committed' then
@@ -286,7 +288,19 @@ begin
   when query_canceled then
     return jsonb_build_object('ok', false, 'code', 'unavailable', 'message', 'That took too long and was stopped. Try again.');
   when others then
-    get stacked diagnostics st = returned_sqlstate, col = column_name;
+    get stacked diagnostics st = returned_sqlstate, col = column_name, con = constraint_name;
+    -- A table's "unique across everyone" rule (see schema.ts). Says which values are taken,
+    -- never whose row has them.
+    if st = '23505' and con ~ '^[a-z][a-z0-9_]*_unique_[1-5]$' then
+      select string_agg(replace(a.attname, '_', ' '), ' and ' order by k.n) into taken
+      from pg_class ic
+      join pg_index i on i.indexrelid = ic.oid
+      cross join lateral unnest(i.indkey) with ordinality as k(attnum, n)
+      join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+      where ic.relname = con and ic.relnamespace = 'app'::regnamespace;
+      return jsonb_build_object('ok', false, 'code', 'conflict', 'message',
+        'That ' || coalesce(taken, 'value') || ' is already taken. Pick a different one.');
+    end if;
     if st = '23502' and col = 'owner_id' then
       return jsonb_build_object('ok', false, 'code', 'denied', 'message', 'You need to be logged in to do that.');
     elsif st = '42501' then

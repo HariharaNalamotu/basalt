@@ -4,6 +4,7 @@ import { registerApiTools } from '@basalt/api-mcp';
 import { registerAuthTools } from '@basalt/auth-mcp';
 import type { Ctx } from './ctx.js';
 import { GUIDE_TOPICS, hostGuide } from './guides.js';
+import { emailsReadable } from './naming.js';
 import type { Host } from './service.js';
 import { UserError } from './service.js';
 
@@ -154,10 +155,10 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
   );
   tool(
     'host_data_check',
-    'Guard, Basalt\'s safety check for an environment\'s data: signs in as two real test people and a stranger and tries 12 ways to reach data that isn\'t theirs (forged and expired logins, other people\'s rows by id, writes to protected fields, and more), then returns a safety receipt link for the owner. The local version also scans the project folder for data kept outside Basalt. Run it on staging before promoting to production.',
+    'Guard, Basalt\'s safety check for a test environment\'s data, run now: signs in as two real test people and a stranger and tries every way to reach data that isn\'t theirs (opening, listing, changing and archiving someone else\'s entries, forged and expired logins, writes to protected fields, sneaky searches), then returns what got through and the owner\'s safety receipt link. The local version also scans the project folder for data kept outside Basalt. Guard also runs automatically after the tests on every preview and staging deploy of an app with basalt.data.json, and production needs it to pass in staging. Never runs on production.',
     {
       app,
-      env,
+      env: testEnv,
       scan: z
         .array(z.object({ rule: z.string(), file: z.string(), line: z.number().int(), problem: z.string(), fix: z.string() }))
         .max(100)
@@ -166,8 +167,8 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
     },
     async (a) => {
       const r = await host.dataCheck(ws, a.app, a.env, a.scan ?? null);
-      const lines = [`${r.passed} of ${r.results.length} checks passed.`];
-      for (const x of r.results.filter((x) => !x.passed)) lines.push(`PROBLEM, ${x.title}${x.table ? ` (${x.table})` : ''}: ${x.detail}`);
+      const lines = [`${r.passed} of ${r.passed + r.failed} checks passed.`];
+      for (const x of r.failures) lines.push(`PROBLEM, ${x.title}${x.table ? ` (${x.table})` : ''}: ${x.detail}`);
       if (a.scan) {
         if (a.scan.length) {
           lines.push('', 'Data kept outside Basalt (fix each one, then run host_data_check again):');
@@ -216,9 +217,9 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
     const { app: ap, env: e } = await host.env(ws, a.app, a.env);
     return json(await host.testing.createTestUser(ap, e));
   });
-  tool('host_test_emails', 'Emails the app sent in a test environment (e.g. sign-up verification codes, password reset codes), newest first.', { app, env: testEnv }, async (a) => {
+  tool('host_test_emails', 'Emails the app sent in a test environment (e.g. sign-up verification codes, password reset codes), newest first. On a one-laptop demo with no email provider, production too.', { app, env }, async (a) => {
     const { env: e } = await host.env(ws, a.app, a.env);
-    if (e.kind === 'production') throw new UserError('Production email is private.');
+    if (!emailsReadable(e.kind, { localDemo: ctx.cfg.PUBLIC_SCHEME === 'http', resendKey: ctx.cfg.RESEND_API_KEY })) throw new UserError('Production email is private.');
     return json(await host.testing.emails(e.id));
   }, { readOnlyHint: true });
   tool('host_share_link', 'A time-limited link that lets a human open a private preview/staging environment in their browser.', { app, env: testEnv, ttlMinutes: z.number().int().min(5).max(7 * 24 * 60).optional() }, async (a) => {

@@ -22,6 +22,8 @@ export interface Manifest {
   e2e: boolean;
   lockfile: boolean;
   scripts: string[];
+  /** basalt.data.json: what the app saves and who can see it (Basalt Cloud's rules), or null. */
+  dataRules: Record<string, unknown> | null;
 }
 
 export interface Step {
@@ -61,7 +63,20 @@ export async function detectManifest(work: string): Promise<Manifest> {
   const e2e = (await exists(e2eDir)) && (await readdir(e2eDir)).some((f) => /\.(spec|test)\.[cm]?[jt]s$/.test(f));
   const migDir = path.join(work, 'db/migrations');
   const migrations = (await exists(migDir)) && (await readdir(migDir)).some((f) => f.endsWith('.sql'));
-  return { backend, frontend, migrations, e2e, lockfile: await exists(path.join(work, 'package-lock.json')), scripts };
+  let dataRules: Manifest['dataRules'] = null;
+  const rulesRaw = await readFile(path.join(work, 'basalt.data.json'), 'utf8').catch(() => null);
+  if (rulesRaw !== null) {
+    if (rulesRaw.length > 256 * 1024) throw new Error('basalt.data.json is over 256 KB.');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rulesRaw);
+    } catch {
+      throw new Error('basalt.data.json is not valid JSON.');
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('basalt.data.json must be an object like { "tables": { ... } }.');
+    dataRules = parsed as Record<string, unknown>;
+  }
+  return { backend, frontend, migrations, e2e, lockfile: await exists(path.join(work, 'package-lock.json')), scripts, dataRules };
 }
 
 export class Pipeline {

@@ -42,7 +42,9 @@ for key in CLOUD_MASTER_KEY CLOUD_PLATFORM_KEY; do
 done
 
 docker build -t basalt/runtime:1 ../images/runtime
-docker pull mcr.microsoft.com/playwright:v1.64.1-noble
+# The test browser image is several GB. Download it alongside the build; only app test runs need it.
+docker pull mcr.microsoft.com/playwright:v1.64.1-noble > /dev/null &
+PULL=$!
 "${COMPOSE[@]}" build
 if [[ -n "$LOCAL" ]]; then
   "${COMPOSE[@]}" up -d --wait --wait-timeout 300
@@ -54,6 +56,8 @@ else
   echo "No Cloudflare tunnel token: starting without public ingress."
   docker compose up -d --wait --wait-timeout 300
 fi
+echo "Waiting for the test browser image to finish downloading (app test runs need it)..."
+wait "$PULL"
 echo
 echo "Platform is up. Create a workspace (prints the coding agent's connector setup):"
 echo "  docker exec basalt-control node dist/admin.js create-workspace <name>"

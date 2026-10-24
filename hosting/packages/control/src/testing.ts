@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { signToken } from '@basalt/host-shared';
 import type { Ctx } from './ctx.js';
+import { runDataCheck, type GuardFinding } from './data-link.js';
 import { id } from './crypto.js';
 import { hardened } from './docker.js';
 import type { AppRow, EnvRow, Environments } from './environments.js';
@@ -13,7 +14,7 @@ export interface TestRunRow {
   id: string;
   env_id: string;
   deployment_id: string;
-  kind: 'smoke' | 'e2e';
+  kind: 'smoke' | 'e2e' | 'guard';
   status: 'running' | 'passed' | 'failed' | 'error';
   summary: Record<string, unknown>;
   created_at: Date;
@@ -67,7 +68,7 @@ export class Testing {
     });
   }
 
-  private async record(env: EnvRow, dep: DeploymentRow, kind: 'smoke' | 'e2e') {
+  private async record(env: EnvRow, dep: DeploymentRow, kind: TestRunRow['kind']) {
     const runId = id('run');
     await this.ctx.db.query('INSERT INTO test_runs (id, env_id, deployment_id, kind) VALUES ($1, $2, $3, $4)', [runId, env.id, dep.id, kind]);
     return async (status: TestRunRow['status'], summary: Record<string, unknown>) => {
@@ -223,6 +224,23 @@ export default defineConfig({
       await this.ctx.docker.disconnect(net, this.ctx.cfg.EDGE_CONTAINER).catch(() => {});
       await this.ctx.docker.removeNetwork(net).catch(() => {});
       await rm(path.join(out, 'node_modules'), { force: true }).catch(() => {});
+    }
+  }
+
+  /**
+   * Guard against the environment's live data: two test people and a stranger try every way to
+   * reach data that isn't theirs. Passes only if every check got a clear refusal.
+   */
+  async guard(env: EnvRow, dep: DeploymentRow, scan: GuardFinding[] | null = null): Promise<TestRunRow> {
+    const finish = await this.record(env, dep, 'guard');
+    const link = this.ctx.cfg.dataLink;
+    const adminKey = this.envs.dataAdminKey(env);
+    if (!link || !env.data_project_id || !adminKey) return finish('error', { error: 'This environment has no Basalt data store.' });
+    try {
+      const r = await runDataCheck(link, adminKey, scan);
+      return finish(r.failed === 0 ? 'passed' : 'failed', { ...r });
+    } catch (err) {
+      return finish('error', { error: (err as Error).message });
     }
   }
 

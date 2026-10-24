@@ -104,7 +104,8 @@ This document records everything built in this repository up to 2026-10-24, how 
 | # | Commit | Author | What landed | Size |
 |---|---|---|---|---|
 | 26 | `569a411` | Hari | Hosting e2e covers the hosted Data block path; lockfile sync | |
-| 27 | this pass | Hari | **Deployment readiness** (§11). <ul><li>one MCP connector covering data (`host_data_status`, `host_data_admin`, `host_data_check`, the `data` guide)</li><li>a correct connector setup printout</li><li>a working local demo origin</li><li>registry tarball URLs fixed</li><li>demo-mode test browsers and browser tools fixed</li><li>a Cloud crash on app deletion fixed</li><li>health-gated startup</li><li>CI for hosting, Data and Cloud</li><li>this document</li></ul> | 33 files, +527/−85, plus new files |
+| 27 | `bea69d5`, `77e8413` (PR #4) | Hari | **Deployment readiness** (§11). <ul><li>one MCP connector covering data (`host_data_status`, `host_data_admin`, `host_data_check`, the `data` guide)</li><li>a correct connector setup printout</li><li>a working local demo origin</li><li>registry tarball URLs fixed</li><li>demo-mode test browsers and browser tools fixed</li><li>a Cloud crash on app deletion fixed</li><li>health-gated startup</li><li>CI for hosting, Data and Cloud</li><li>this document</li></ul> | 33 files, +527/−85, plus new files |
+| 28 | PR #3 → PR #5 | Mihir, merged by Hari | **Rules as code, Guard as a deploy gate, unique fields** (§11b). Mihir's PR #3 merged onto main with its conflicts and bugs fixed | |
 
 ### Earlier issues found and fixed (before this pass)
 
@@ -876,7 +877,67 @@ Each bug was fixed and has a test.
 
 ---
 
-## 12. Known limitations and open items
+## 11b. Rules as code, Guard as a deploy gate, unique fields (PR #3 → PR #5)
+
+Mihir's PR #3 branched before PR #4 merged. It conflicted with main in 12 files. PR #5 merges it onto main (his commits are kept), keeps his features, takes main's version wherever both solved the same problem, and fixes the bugs the merge exposed.
+
+### Kept from PR #3
+
+- **`basalt.data.json` (rules as code).**
+  - The build reads the app's data rules (up to 256 KB of JSON).
+  - Every preview and staging deploy applies them before the release and its tests. If Cloud refuses them, the deploy fails with Cloud's reason.
+  - Shipping or promoting to production applies them first. When they need the owner's approval, it stops with the approval link and releases nothing. After the owner says yes, promoting again goes live.
+- **Guard as a deploy gate.**
+  - For apps with `basalt.data.json`, Guard runs after the e2e tests on every preview and staging deploy. It is recorded as a `guard` test run.
+  - Any check that gets through fails the deploy.
+  - Promoting to production requires a passed Guard run in staging.
+- **`unique` in the Data block.**
+  - Up to 5 groups of 1 to 3 required fields per table, enforced by partial unique indexes over active rows only. Archiving frees the value.
+  - A clash returns `conflict` (HTTP 409), naming the fields but never whose row holds them.
+  - It can only be set when a table is created; migrations refuse to change it.
+  - Guard generates fresh values for unique fields.
+  - Owner pages describe it in plain words.
+  - Tests: 5 in `data/test/unique.test.ts`, plus one for the summary text.
+- **Production sign-up emails readable in demo mode.** Production email is readable by the agent only on the one-laptop demo (`PUBLIC_SCHEME=http`) with no email provider configured. Otherwise a demo sign-up could never be finished. Real deployments keep production email private.
+- **`host_init` serves a plain `public/` site as is** when there is no build script.
+- **The workflow guide tells agents not to run `npm install` on the human's computer.**
+- **`setup.sh` downloads the 3.5 GB test-browser image in parallel** with the build.
+- **The Data service compares the cookie origin by hostname.** Compatible with main's port-aware edge, and covered by a test.
+- **`hosting/scripts/e2e-salon.mjs`:**
+  - a salon app with no backend that signs in with Basalt Auth and books through `/_basalt/data`
+  - two customers kept apart on preview and on production
+  - the owner approving production rules
+  - real sign-ups verifying their emails
+
+### Superseded by main (dropped)
+
+- `LOCAL_HTTP_PORT`, `appUrl()` and `appOrigins()`: main's `PUBLIC_SCHEME` and `PUBLIC_PORT` (`cfg.appUrl()`) already cover links, Auth origins and the edge.
+- Auth `*.localhost` origins: identical in main.
+- `BASALT_HOST_RULES` in the e2e runner: main already maps the host. The automatic merge produced two `launchOptions` keys in the generated Playwright config, which is invalid; main's copy is the one kept.
+- `EGRESS_PROXY: ""` for the browser worker in demo mode: dropped. It would have let pages opened by the agent's browser tools reach internal services directly. Main fixes the same Chrome problem with the proxy still on, and that was verified.
+
+### Fixed while merging
+
+1. **Hidden type clash.** `data-link.ts` merged "cleanly" with two different `GuardResult` interfaces and two Guard calls (`runGuard`, `runDataCheck`). Now there is one `runDataCheck`, returning both `results` and `failures`.
+2. **Duplicate `host_data_check` tool and `Host.dataCheck`.** Registering a tool twice would fail the MCP server at startup. There is now one tool and one method. It has main's local folder scan and PR #3's refusal to run on production, where Guard's test people and rows don't belong among real customers. It records a `guard` test run, so on-demand checks count toward the production gate.
+3. **Broken file links in the data guide.** `fileUrl` called `/_basalt/data/v1/data/files/link`, which the edge 404s; the real route is `/v1/files/link`. A new test checks every Data path in the guide against the edge's allow-list.
+4. **Privacy warning.** A `conflict` tells whoever tried that a value is taken. The guide now says not to make personal details (email, phone, name) unique. Unique is for slots, seats and order numbers.
+5. **Data guide merged.** Mihir's fuller guide is kept. It now also covers `host_data_status`, `host_data_admin`, `host_data_rules` and the local scan in `host_data_check`.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Auth tests | 116 |
+| Data tests | 110 (5 new uniqueness tests, 1 new port test) |
+| Cloud tests | 52 |
+| Hosting tests | 62 |
+| Hosting typecheck | clean |
+| Platform e2e (`e2e-platform.mjs`) on the rebuilt demo stack | 47/47 in 149 s |
+| Salon e2e (`e2e-salon.mjs`) | 25/25 |
+| Leftovers after both runs | none |
+
+
 
 ### Deployment
 
