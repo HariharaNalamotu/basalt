@@ -1,0 +1,26 @@
+{
+  "name": "basalt-hosting",
+  "private": true,
+  "description": "Basalt Host: build, test, stage and ship apps from a single machine, fully driven by coding agents.",
+  "workspaces": [
+    "packages/shared",
+    "packages/edge",
+    "packages/egress",
+    "packages/browser",
+    "packages/control",
+    "packages/mcp"
+  ],
+  "engines": {
+    "node": ">=24.7.0"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.12"
+  }
+}

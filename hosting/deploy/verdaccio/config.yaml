@@ -1,0 +1,32 @@
+# Platform package registry: serves @basalt/* (published by the control plane only) and proxies
+# npmjs for everything else. Builds can reach ONLY this registry.
+storage: /verdaccio/storage/data
+auth:
+  htpasswd:
+    file: /verdaccio/storage/htpasswd
+    max_users: 1          # only the platform publisher account can ever be created
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+    timeout: 30s
+    maxage: 10m
+packages:
+  '@basalt/*':
+    access: $all
+    publish: basalt-platform
+    unpublish: basalt-platform
+    # No proxy: @basalt never resolves from npmjs (dependency-confusion protection).
+  '**':
+    access: $all
+    publish: basalt-platform
+    unpublish: basalt-platform
+    proxy: npmjs
+middlewares:
+  audit:
+    enabled: true
+web:
+  enable: false
+server:
+  keepAliveTimeout: 60
+listen: 0.0.0.0:4873
+log: { type: stdout, format: json, level: warn }
