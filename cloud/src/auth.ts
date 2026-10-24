@@ -80,6 +80,10 @@ export class AuthLink {
     return `${who.toLowerCase().trim().replace(/[\s_]+/g, '-').replace(/[^a-z0-9-]/g, '') || 'test'}@test.basalt.invalid`;
   }
 
+  #legacyTestPassword(projectId: string, who: string): string {
+    return `Tp-${createHmac('sha256', this.#o.masterKey).update(`test-user|${projectId}|${who.toLowerCase().trim()}`).digest('base64url')}`;
+  }
+
   #testPassword(projectId: string, who: string): string {
     // Keyed on the email, so names that map to the same test person share one password.
     return `Tp-${createHmac('sha256', this.#o.masterKey).update(`test-user|${projectId}|${this.#testEmail(who)}`).digest('base64url')}`;
@@ -101,13 +105,18 @@ export class AuthLink {
       if (err.status !== 409) throw err;
     });
     // Sign in like a native app (no Origin): Auth returns the tokens in the body.
-    const res = await fetch(`${this.#o.url.replace(/\/+$/, '')}/v1/projects/${projectId}/signin`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    const body = (await res.json().catch(() => ({}))) as { accessToken?: string; user?: { id: string }; error?: { message?: string } };
+    const signIn = async (pw: string) => {
+      const res = await fetch(`${this.#o.url.replace(/\/+$/, '')}/v1/projects/${projectId}/signin`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password: pw }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      return { res, body: (await res.json().catch(() => ({}))) as { accessToken?: string; user?: { id: string }; error?: { message?: string } } };
+    };
+    let { res, body } = await signIn(password);
+    // Test people made before passwords were keyed on the email used the plain name.
+    if (res.status === 401) ({ res, body } = await signIn(this.#legacyTestPassword(projectId, who)));
     if (!res.ok || !body.accessToken || !body.user) throw new Error(body.error?.message ?? `Test sign in failed (${res.status}).`);
     const claims = JSON.parse(Buffer.from(body.accessToken.split('.')[1]!, 'base64url').toString('utf8')) as { bdg: string; exp: number };
     const entry = { userId: body.user.id, token: claims.bdg, expiresAt: claims.exp * 1000 };
