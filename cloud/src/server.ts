@@ -210,10 +210,7 @@ export function createCloudServer(options: CloudServerOptions) {
     // creation reply was lost can still be cleaned up.
     const envMatch = /^\/api\/platform\/environments\/([A-Za-z0-9_-]{1,64})$/.exec(path);
     if (envMatch && req.method === 'DELETE') {
-      const p = await projects.getByExternalId(envMatch[1]);
-      if (!p) throw new HttpError(404, 'Unknown environment.');
-      await dropHandler(p.id);
-      await projects.delete(p);
+      if (!(await projects.deleteByExternalId(envMatch[1], (p) => dropHandler(p.id)))) throw new HttpError(404, 'Unknown environment.');
       return sendJson(res, 200, { ok: true });
     }
     const m = /^\/api\/platform\/projects\/([a-z0-9]{10})(\/rules)?$/.exec(path);

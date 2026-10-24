@@ -38,6 +38,18 @@ describe('Basalt Cloud data projects for environments', () => {
     await expect(deleteDataProject(cfg, 'env_1', stub({ status: 503, body: { ok: false, error: { message: 'down' } } }).f)).rejects.toThrow(/down/);
   });
 
+  it('falls back to the recorded project id for projects made before environment ids were sent', async () => {
+    const calls: string[] = [];
+    const f = (async (url: string) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify(String(url).includes('/environments/') ? { ok: false, error: { message: 'Unknown environment.' } } : { ok: true }), {
+        status: String(url).includes('/environments/') ? 404 : 200,
+      });
+    }) as unknown as typeof fetch;
+    await deleteDataProject(cfg, 'env_1', f, 'abcde12345');
+    expect(calls).toEqual(['http://cloud:8790/api/platform/environments/env_1', 'http://cloud:8790/api/platform/projects/abcde12345']);
+  });
+
   it('test environments get their rules right away, production waits for the owner', async () => {
     const contract = { tables: { notes: { fields: { text: { type: 'text' } } } } };
     const test = stub({ status: 200, body: { ok: true, status: 'live', summary: 'Each person sees their own notes.' } });

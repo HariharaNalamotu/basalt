@@ -53,12 +53,16 @@ export async function createDataProject(
  * lost is found too. Already gone counts as done. Any other failure throws, so the caller can
  * keep its record and retry.
  */
-export async function deleteDataProject(cfg: DataLinkConfig, envId: string, f: typeof fetch = fetch): Promise<void> {
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(envId)) return;
-  try {
-    await cloudCall(cfg, 'DELETE', `/api/platform/environments/${envId}`, undefined, f);
-  } catch (err) {
+export async function deleteDataProject(cfg: DataLinkConfig, envId: string, f: typeof fetch = fetch, recordedProjectId?: string | null): Promise<void> {
+  const gone = (err: unknown) => {
     if (!(err instanceof CloudError && err.status === 404)) throw err;
+    return true;
+  };
+  let found = true;
+  if (/^[A-Za-z0-9_-]{1,64}$/.test(envId)) await cloudCall(cfg, 'DELETE', `/api/platform/environments/${envId}`, undefined, f).catch((err) => (found = !gone(err)));
+  // Projects made before environment ids were sent are only known by their recorded id.
+  if (!found && recordedProjectId && PROJECT_ID.test(recordedProjectId)) {
+    await cloudCall(cfg, 'DELETE', `/api/platform/projects/${recordedProjectId}`, undefined, f).catch(gone);
   }
 }
 

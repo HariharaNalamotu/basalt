@@ -141,7 +141,9 @@ export class Environments {
         env = await this.ctx.db.tx(async (q) => {
           await q('SELECT pg_advisory_xact_lock(hashtext($1))', [`data:${envId}`]);
           const current = (await q<EnvRow>('SELECT * FROM environments WHERE id = $1', [envId])).rows[0]!;
-          if (current.data_project_id && current.data_admin_key_enc) return current;
+          // Reused only while it's bound to the Auth project this setup produced. Otherwise Cloud is
+          // asked again, and refuses (so setup fails loudly) if its database is tied to another one.
+          if (current.data_project_id && current.data_admin_key_enc && current.auth_project_id === r.projectId) return current;
           const data = await createDataProject(link, { name: `${app.name} (${slug})`, authProjectId: r.projectId, authOwner: app.workspace_id, externalId: envId });
           return (
             await q<EnvRow>('UPDATE environments SET data_project_id = $2, data_admin_key_enc = $3 WHERE id = $1 RETURNING *', [envId, data.projectId, this.ctx.box.seal(data.adminKey, `data:${envId}`)])
@@ -210,7 +212,7 @@ export class Environments {
     step('auth');
     // Not swallowed: if Cloud can't delete it now, the environment stays 'deleting' with its
     // data project recorded, and deleting again finishes the job.
-    if (this.ctx.cfg.dataLink) await deleteDataProject(this.ctx.cfg.dataLink, env.id);
+    if (this.ctx.cfg.dataLink) await deleteDataProject(this.ctx.cfg.dataLink, env.id, fetch, env.data_project_id);
     step('data');
     await this.ctx.redis.call('ACL', 'DELUSER', `u_${env.id}`).catch(() => {});
     await this.ctx.redis.call('ACL', 'SAVE').catch(() => {});

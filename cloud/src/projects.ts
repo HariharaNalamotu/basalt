@@ -217,9 +217,24 @@ export class Projects {
     return { project: { id, name, dbName, roles, dataPassword, authProjectId, authOwner, approvedContract: null, hosted: Boolean(attach) }, adminKey };
   }
 
-  async getByExternalId(externalId: string): Promise<Project | null> {
-    const row = (await this.#pool.query('select id from cloud.projects where external_id = $1', [externalId])).rows[0];
-    return row ? this.get(row.id) : null;
+  /**
+   * Deletes the project made for a platform environment. Takes the same lock as creating it, so a
+   * delete that arrives while a create is still running waits for it instead of missing it.
+   */
+  async deleteByExternalId(externalId: string, beforeDelete: (p: Project) => Promise<void>): Promise<boolean> {
+    const lock = await connect(this.#cfg.adminUrl);
+    const tag = `basalt cloud env ${externalId}`;
+    try {
+      await lock.query('select pg_advisory_lock(hashtext($1))', [tag]);
+      const row = (await lock.query('select id from cloud.projects where external_id = $1', [externalId])).rows[0];
+      const p = row ? await this.get(row.id) : null;
+      if (!p) return false;
+      await beforeDelete(p);
+      await this.delete(p);
+      return true;
+    } finally {
+      await lock.end().catch(() => {});
+    }
   }
 
   /** Removes an app's database, roles and records. Irreversible. Only for the platform. */
