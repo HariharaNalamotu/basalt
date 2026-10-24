@@ -97,12 +97,35 @@ function sample(spec: FieldSpec, userA: string, fileId: string | null): unknown 
   }
 }
 
+// A value unlikely to be taken already, for fields the table keeps unique across everyone.
+function freshSample(spec: FieldSpec, userA: string, fileId: string | null): unknown {
+  const tag = Math.random().toString(36).slice(2, 8);
+  switch (spec.type) {
+    case 'text': {
+      const byFormat = { email: `c${tag}@b.co`, phone: `555${Math.floor(1e6 + Math.random() * 8e6)}`, url: `http://${tag}.co`, postal_code: tag.slice(0, 5), slug: `c${tag}` };
+      return spec.format ? byFormat[spec.format] : `Basalt check ${tag}`.slice(0, spec.maxLength);
+    }
+    case 'timestamp':
+      // Far from any real booking: a random minute in 2099.
+      return new Date(Date.UTC(2099, 0, 1) + Math.floor(Math.random() * 5e5) * 60_000).toISOString();
+    case 'integer':
+    case 'number': {
+      const lo = spec.min ?? 1;
+      const hi = spec.max ?? lo + 1e6;
+      return lo + Math.floor(Math.random() * (hi - lo + 1));
+    }
+    default:
+      return sample(spec, userA, fileId);
+  }
+}
+
 function sampleInput(table: TableSpec, userA: string, fileId: string | null): Record<string, unknown> {
   const input: Record<string, unknown> = {};
+  const unique = new Set((table.unique ?? []).flat());
   for (const [name, spec] of table.fields) {
     // Optional people and files stay empty, so the test row is A's alone.
     if ((spec.type === 'user' || spec.type === 'file') && !spec.required) continue;
-    input[name] = sample(spec, userA, fileId);
+    input[name] = unique.has(name) ? freshSample(spec, userA, fileId) : sample(spec, userA, fileId);
   }
   return input;
 }

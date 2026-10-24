@@ -47,7 +47,7 @@ const TOKEN = /^[A-Za-z0-9_-]{2,1024}\.[A-Za-z0-9_-]{2,3000}\.[A-Za-z0-9_-]{43}$
 const KEY = /^[A-Za-z0-9_-]{1,200}$/;
 // Timestamps as Postgres writes them in JSON, like 2026-10-24T08:55:20.123456+00:00.
 const CURSOR_TIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:?\d{2})?)$/;
-const CODES = new Set<BasaltErrorCode>(['invalid_input', 'not_found', 'denied', 'rate_limited', 'unavailable']);
+const CODES = new Set<BasaltErrorCode>(['invalid_input', 'not_found', 'denied', 'rate_limited', 'unavailable', 'conflict']);
 
 // A page cursor remembers the sort field, that field's value on the last row and its id.
 export function encodeCursor(row: Row, sortField = 'created_at'): string {

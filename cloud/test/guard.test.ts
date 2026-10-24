@@ -30,6 +30,7 @@ const RULES = {
         staff_id: { type: 'user' },
       },
       shareWith: 'staff_id',
+      unique: [['starts_at']],
     },
     photos: { fields: { picture: { type: 'file', required: true }, caption: { type: 'text', format: 'slug' } } },
     visits: { fields: { count: { type: 'integer', min: 1, max: 5, required: true } } },

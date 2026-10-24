@@ -40,6 +40,7 @@ const STATUS: Record<BasaltErrorCode, number> = {
   denied: 401,
   not_found: 404,
   rate_limited: 429,
+  conflict: 409,
   unavailable: 503,
   contract: 500,
 };
@@ -155,7 +156,9 @@ function fromSessionCookie(req: IncomingMessage): string {
   const host = (req.headers['x-forwarded-host'] as string | undefined)?.split(',')[0]?.trim() ?? req.headers.host;
   let sameOrigin = false;
   try {
-    sameOrigin = typeof origin === 'string' && Boolean(host) && new URL(origin).host === host;
+    // Compared without the port: cookies don't separate sites by port, and the edge forwards the
+    // site's name without one (a local demo serves on :8080).
+    sameOrigin = typeof origin === 'string' && Boolean(host) && new URL(origin).hostname === host!.replace(/:\d+$/, '');
   } catch {
     sameOrigin = false;
   }

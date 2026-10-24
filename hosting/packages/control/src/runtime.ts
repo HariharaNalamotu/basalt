@@ -10,7 +10,7 @@ export interface DeploymentRow {
   status: string;
   image: string | null;
   static_dir: string | null;
-  manifest: { backend?: { entry: string } | null; frontend?: { output: string } | null; migrations?: boolean; e2e?: boolean } | null;
+  manifest: { backend?: { entry: string } | null; frontend?: { output: string } | null; migrations?: boolean; e2e?: boolean; dataRules?: Record<string, unknown> | null } | null;
   steps: Array<{ name: string; status: string; output?: string; ms?: number }>;
   error: string | null;
   message: string | null;

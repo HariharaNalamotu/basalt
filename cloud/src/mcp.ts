@@ -64,6 +64,7 @@ Add "required": true for fields that must always be filled in.
 Every row automatically gets id, owner_id (who added it), created_at and updated_at. Don't add those.
 Each person only ever sees and changes the rows they added. To let one other person read a row (like the staff member assigned to a booking), add a "user" field and set "shareWith" to its name. They can read it but never change it.
 Example: { "tables": { "bookings": { "fields": { "service": { "type": "text", "maxLength": 100, "required": true }, "starts_at": { "type": "timestamp", "required": true }, "phone": { "type": "text", "format": "phone" }, "staff_id": { "type": "user" } }, "shareWith": "staff_id" } } }
+To stop two entries sharing a value across everyone (like two bookings at the same time), add "unique": [["starts_at"]] to the table (required fields only; archived entries don't count). A clash fails with err.code "conflict" and never says whose entry it is.
 Later you can add new optional fields or new tables. Removing a field, making one required or changing its rules isn't allowed.`;
 
 function clientCode(dataUrl: string): string {
@@ -88,7 +89,7 @@ export function basalt(getToken) {
     const json = await res.json();
     if (!json.ok) {
       const err = new Error(json.error.message);
-      err.code = json.error.code; // invalid_input, not_found, denied, rate_limited or unavailable
+      err.code = json.error.code; // invalid_input, not_found, denied, conflict (already taken), rate_limited or unavailable
       throw err;
     }
     return json.data;

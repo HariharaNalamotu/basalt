@@ -5,7 +5,8 @@ import { randomBytes } from 'node:crypto';
 import * as tar from 'tar';
 import { describe, expect, it } from 'vitest';
 import { SecretBox } from '../src/crypto.js';
-import { hostFor, RESERVED_APP_NAMES } from '../src/naming.js';
+import { loadConfig } from '../src/config.js';
+import { emailsReadable, hostFor, RESERVED_APP_NAMES } from '../src/naming.js';
 import { detectManifest } from '../src/pipeline.js';
 import { scanSource } from '../src/scanner.js';
 import { CspPatch, ProtectionPatch } from '../src/service.js';
@@ -85,6 +86,19 @@ describe('manifest detection', () => {
     await writeFile(path.join(dir, 'basalt.json'), JSON.stringify({ frontend: { output: '../etc' } }));
     await expect(detectManifest(dir)).rejects.toThrow(/inside the project/);
   });
+
+  it('reads the data rules from basalt.data.json, and refuses a broken one with a plain reason', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'man-'));
+    await writeFile(path.join(dir, 'package.json'), '{}');
+    expect((await detectManifest(dir)).dataRules).toBeNull();
+    const rules = { tables: { bookings: { fields: { service: { type: 'text', required: true } } } } };
+    await writeFile(path.join(dir, 'basalt.data.json'), JSON.stringify(rules));
+    expect((await detectManifest(dir)).dataRules).toEqual(rules);
+    await writeFile(path.join(dir, 'basalt.data.json'), '{ not json');
+    await expect(detectManifest(dir)).rejects.toThrow(/basalt\.data\.json/);
+    await writeFile(path.join(dir, 'basalt.data.json'), '[1,2]');
+    await expect(detectManifest(dir)).rejects.toThrow(/basalt\.data\.json/);
+  });
 });
 
 describe('bounded settings', () => {
@@ -103,6 +117,19 @@ describe('bounded settings', () => {
     expect(hostFor('todo', 'production', 'prod', 'apps.dev')).toBe('todo.apps.dev');
     expect(hostFor('todo', 'staging', 'staging', 'apps.dev')).toBe('todo--staging.apps.dev');
     expect(hostFor('todo', 'preview', 'pabc123', 'apps.dev')).toBe('todo--pabc123.apps.dev');
+  });
+
+  it('app links are https behind Cloudflare, or the plain http demo address on a one-laptop demo', () => {
+    const env = { ROOT_DOMAIN: 'apps.dev', DATABASE_URL: 'postgres://x', PG_ADMIN_URL: 'postgres://x', REDIS_ADMIN_URL: 'redis://x', AUTH_PUBLIC_URL: 'https://auth.apps.dev', AUTH_PLATFORM_KEY: 'k'.repeat(32), MASTER_KEY: Buffer.alloc(32, 1).toString('base64'), INTERNAL_TOKEN: 't'.repeat(32), MAIL_WEBHOOK_SECRET: 'm'.repeat(32) };
+    expect(loadConfig(env).appUrl('todo.apps.dev')).toBe('https://todo.apps.dev');
+    expect(loadConfig({ ...env, PUBLIC_SCHEME: 'http', PUBLIC_PORT: '8080' }).appUrl('todo.basalt.localhost')).toBe('http://todo.basalt.localhost:8080');
+  });
+
+  it("production email stays private, except on a one-laptop demo that can't send email at all", () => {
+    expect(emailsReadable('staging', { localDemo: false })).toBe(true);
+    expect(emailsReadable('production', { localDemo: false })).toBe(false);
+    expect(emailsReadable('production', { localDemo: true, resendKey: 're_x' })).toBe(false);
+    expect(emailsReadable('production', { localDemo: true })).toBe(true);
   });
 
   it('platform service names (including cloud, where Basalt Cloud lives) are never app names', () => {

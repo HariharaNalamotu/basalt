@@ -904,6 +904,12 @@ describe('browser cookie logins on the app\'s own origin', () => {
     assert.ok(r.body.data.rows.some((row: { id: unknown }) => row.id === aliceBooking.id));
   });
 
+  test("works when the site runs on a port the edge doesn't forward (a local demo on :8080)", async () => {
+    const r = await list({ origin: 'http://app.test:8080', 'x-forwarded-host': 'app.test', cookie: accessCookie(aliceToken) });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal((await list({ origin: 'http://evil.test:8080', 'x-forwarded-host': 'app.test', cookie: accessCookie(aliceToken) })).status, 401);
+  });
+
   test('is refused from another site (CSRF) or without an Origin', async () => {
     assert.equal((await list({ origin: 'https://evil.test', cookie: accessCookie(aliceToken) })).status, 401);
     assert.equal((await list({ cookie: accessCookie(aliceToken) })).status, 401);
