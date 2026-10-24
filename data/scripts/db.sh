@@ -15,7 +15,7 @@ up() {
   else
     docker run -d --name "$NAME" \
       -e POSTGRES_USER=postgres -e POSTGRES_DB=postgres \
-      -e POSTGRES_PASSWORD -e BASALT_DATA_PASSWORD -e BASALT_JWT_SECRET \
+      -e POSTGRES_PASSWORD -e BASALT_DATA_PASSWORD -e BASALT_JWT_SECRET -e BASALT_JWT_ISSUER \
       -p 127.0.0.1:54329:5432 \
       -v "$PWD/initdb:/docker-entrypoint-initdb.d:ro" \
       -v "$PWD/sql:/basalt/sql:ro" \

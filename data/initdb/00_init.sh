@@ -8,5 +8,6 @@ for f in /basalt/sql/*.sql; do
   psql -v ON_ERROR_STOP=1 \
     -v data_pw="$BASALT_DATA_PASSWORD" \
     -v jwt_secret="$BASALT_JWT_SECRET" \
+    -v jwt_issuer="${BASALT_JWT_ISSUER:-}" \
     --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" -f "$f"
 done

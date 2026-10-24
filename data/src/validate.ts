@@ -1,4 +1,4 @@
-import type { FieldSpec, TableSpec } from './contract.ts';
+import { FORMATS, type FieldSpec, type TableSpec, type TextFormat } from './contract.ts';
 import { BasaltError } from './errors.ts';
 
 // Checks every value against the contract before anything reaches the database.
@@ -6,7 +6,10 @@ import { BasaltError } from './errors.ts';
 // let bad data through on its own.
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
+const FORMAT_REGEX = Object.fromEntries(
+  Object.entries(FORMATS).map(([k, v]) => [k, new RegExp(v, 'u')]),
+) as Record<TextFormat, RegExp>;
+export const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
 
 function bad(message: string): never {
   throw new BasaltError('invalid_input', message);
@@ -31,7 +34,7 @@ function checkValue(table: string, name: string, spec: FieldSpec, value: unknown
       // Count characters, not bytes, to match the database check.
       if ([...value].length > spec.maxLength) bad(`${where} can be at most ${spec.maxLength} characters.`);
       if (value.includes('\u0000')) bad(`${where} contains a character that isn't allowed.`);
-      if (spec.pattern && !new RegExp(spec.pattern, 'u').test(value)) bad(`${where} is not in the right format.`);
+      if (spec.format && !FORMAT_REGEX[spec.format].test(value)) bad(`${where} must be a valid ${spec.format.replace('_', ' ')}.`);
       return value;
     }
     case 'integer': {

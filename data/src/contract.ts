@@ -6,14 +6,26 @@ import { BasaltError } from './errors.ts';
 
 export type FieldType = 'text' | 'integer' | 'number' | 'boolean' | 'timestamp';
 
+// Free-form regexes from the contract could be crafted to hang the server, so
+// text fields pick from a fixed set of formats instead. Each pattern runs in
+// linear time and uses syntax that means the same thing in JavaScript and Postgres.
+// Postgres caps repeat counts at 255, so longer limits come from maxLength.
+export const FORMATS = {
+  email: '^[^@\\s]{1,64}@[^@\\s]{1,255}$',
+  phone: '^\\+?[0-9 ()-]{7,20}$',
+  url: '^https?://[^\\s]+$',
+  postal_code: '^[A-Za-z0-9 -]{3,10}$',
+  slug: '^[a-z0-9]{1,80}(-[a-z0-9]{1,80}){0,20}$',
+} as const;
+export type TextFormat = keyof typeof FORMATS;
+
 export interface FieldSpec {
   type: FieldType;
   required: boolean;
   maxLength: number;
-  pattern?: string;
+  format?: TextFormat;
   min?: number;
   max?: number;
-  private: boolean;
 }
 
 export interface TableSpec {
@@ -33,7 +45,6 @@ const MAX_TABLES = 50;
 const MAX_FIELDS = 60;
 const DEFAULT_MAX_LENGTH = 1000;
 const MAX_TEXT_LENGTH = 10000;
-const MAX_PATTERN_LENGTH = 200;
 const INT_MIN = -2147483648;
 const INT_MAX = 2147483647;
 const RESERVED = new Set<string>([...SYSTEM_COLUMNS, 'select', 'from', 'where', 'table', 'user', 'order', 'group']);
@@ -55,7 +66,7 @@ function parseField(table: string, name: string, raw: unknown): FieldSpec {
   checkName('Field', name);
   if (!isPlainObject(raw)) fail(`Field ${table}.${name} must be an object.`);
 
-  const allowed = new Set(['type', 'required', 'maxLength', 'pattern', 'min', 'max', 'private']);
+  const allowed = new Set(['type', 'required', 'maxLength', 'format', 'min', 'max']);
   for (const key of Object.keys(raw)) {
     if (!allowed.has(key)) fail(`Field ${table}.${name} has an unknown setting "${key}".`);
   }
@@ -69,8 +80,6 @@ function parseField(table: string, name: string, raw: unknown): FieldSpec {
     type: type as FieldType,
     required: raw.required === true,
     maxLength: DEFAULT_MAX_LENGTH,
-    // Private by default. Only an explicit false makes a field non-private.
-    private: raw.private !== false,
   };
 
   if (raw.maxLength !== undefined) {
@@ -81,24 +90,12 @@ function parseField(table: string, name: string, raw: unknown): FieldSpec {
     spec.maxLength = raw.maxLength as number;
   }
 
-  if (raw.pattern !== undefined) {
-    if (spec.type !== 'text') fail(`Field ${table}.${name}: pattern only applies to text.`);
-    if (typeof raw.pattern !== 'string' || raw.pattern.length === 0 || raw.pattern.length > MAX_PATTERN_LENGTH) {
-      fail(`Field ${table}.${name}: pattern must be a string up to ${MAX_PATTERN_LENGTH} characters.`);
+  if (raw.format !== undefined) {
+    if (spec.type !== 'text') fail(`Field ${table}.${name}: format only applies to text.`);
+    if (typeof raw.format !== 'string' || !Object.hasOwn(FORMATS, raw.format)) {
+      fail(`Field ${table}.${name}: format must be one of ${Object.keys(FORMATS).join(', ')}.`);
     }
-    if (!raw.pattern.startsWith('^') || !raw.pattern.endsWith('$')) {
-      fail(`Field ${table}.${name}: pattern must start with ^ and end with $ so it checks the whole value.`);
-    }
-    try {
-      new RegExp(raw.pattern, 'u');
-    } catch {
-      fail(`Field ${table}.${name}: pattern is not a valid regular expression.`);
-    }
-    // Block nested repeats like (a+)+ that can hang the server on crafted input.
-    if (/\([^)]*[+*}][^)]*\)\s*[+*{]/.test(raw.pattern) || /\\[1-9]/.test(raw.pattern)) {
-      fail(`Field ${table}.${name}: pattern has nested repeats or backreferences, which can be abused to slow the server down.`);
-    }
-    spec.pattern = raw.pattern;
+    spec.format = raw.format as TextFormat;
   }
 
   for (const bound of ['min', 'max'] as const) {

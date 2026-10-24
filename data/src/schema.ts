@@ -1,4 +1,5 @@
-import type { Contract, FieldSpec, TableSpec } from './contract.ts';
+import { createHash } from 'node:crypto';
+import { FORMATS, type Contract, type FieldSpec, type TableSpec } from './contract.ts';
 
 // Turns the contract into SQL with plain code. No AI is involved, so the same
 // contract always gives the same database. Names are already checked by
@@ -23,7 +24,7 @@ function columnSql(name: string, spec: FieldSpec): string {
     case 'text':
       type = 'text';
       checks.push(`char_length(${col}) <= ${spec.maxLength}`);
-      if (spec.pattern) checks.push(`${col} ~ ${quoteLiteral(spec.pattern)}`);
+      if (spec.format) checks.push(`${col} ~ ${quoteLiteral(FORMATS[spec.format])}`);
       break;
     case 'integer':
       type = 'integer';
@@ -37,6 +38,7 @@ function columnSql(name: string, spec: FieldSpec): string {
       break;
     case 'timestamp':
       type = 'timestamptz';
+      checks.push(`isfinite(${col})`);
       break;
   }
 
@@ -49,33 +51,49 @@ function columnSql(name: string, spec: FieldSpec): string {
   return parts.join(' ');
 }
 
+function createTableSql(table: TableSpec): string {
+  return `create table if not exists app.${quoteIdent(table.name)} (
+  "id" uuid primary key default gen_random_uuid(),
+  "owner_id" uuid not null default basalt.uid(),
+  ${[...table.fields].map(([n, s]) => columnSql(n, s)).join(',\n  ')},
+  "created_at" timestamptz not null default now(),
+  "updated_at" timestamptz not null default now()
+)`;
+}
+
+// A fingerprint of everything about a table's columns: names, types, required
+// flags, lengths, formats and bounds. Stored on the table so migrate can tell
+// when a contract would change a table that already exists.
+export function tableFingerprint(table: TableSpec): string {
+  return `basalt:${createHash('sha256').update(createTableSql(table)).digest('hex')}`;
+}
+
 export function tableSql(table: TableSpec): string[] {
   const t = `app.${quoteIdent(table.name)}`;
   const writable = [...table.fields.keys()].map(quoteIdent).join(', ');
   const owner = '(select basalt.uid())';
 
   return [
-    `create table if not exists ${t} (
-  "id" uuid primary key default gen_random_uuid(),
-  "owner_id" uuid not null default basalt.uid(),
-  ${[...table.fields].map(([n, s]) => columnSql(n, s)).join(',\n  ')},
-  "created_at" timestamptz not null default now(),
-  "updated_at" timestamptz not null default now()
-)`,
+    createTableSql(table),
+    `comment on table ${t} is ${quoteLiteral(tableFingerprint(table))}`,
     `alter table ${t} owner to basalt_owner`,
     `alter table ${t} enable row level security`,
     `alter table ${t} force row level security`,
     `revoke all on ${t} from public`,
+    // Start from nothing on every run so a stale grant or policy can't survive.
+    `revoke all on ${t} from basalt_data`,
+    `do $basalt$ declare p record; begin
+  for p in select policyname from pg_policies where schemaname = 'app' and tablename = ${quoteLiteral(table.name)} loop
+    execute format('drop policy %I on app.%I', p.policyname, ${quoteLiteral(table.name)});
+  end loop;
+end $basalt$`,
 
     // Keeps "my rows, newest first" fast at any table size.
     `create index if not exists ${quoteIdent(`${table.name}_owner_recent`)} on ${t} ("owner_id", "created_at" desc, "id" desc)`,
 
     // Each user only ever sees and changes their own rows.
-    `drop policy if exists basalt_select on ${t}`,
     `create policy basalt_select on ${t} for select to basalt_data using ("owner_id" = ${owner})`,
-    `drop policy if exists basalt_insert on ${t}`,
     `create policy basalt_insert on ${t} for insert to basalt_data with check ("owner_id" = ${owner})`,
-    `drop policy if exists basalt_update on ${t}`,
     `create policy basalt_update on ${t} for update to basalt_data using ("owner_id" = ${owner}) with check ("owner_id" = ${owner})`,
 
     // The Data block can read rows and write only the contract's fields.
@@ -84,10 +102,14 @@ export function tableSql(table: TableSpec): string[] {
     `grant insert (${writable}) on ${t} to basalt_data`,
     `grant update (${writable}) on ${t} to basalt_data`,
 
+    // Updates that change nothing don't bump updated_at or write to the audit log.
     `drop trigger if exists basalt_touch on ${t}`,
-    `create trigger basalt_touch before update on ${t} for each row execute function basalt.touch_updated_at()`,
+    `create trigger basalt_touch before update on ${t} for each row when (old.* is distinct from new.*) execute function basalt.touch_updated_at()`,
     `drop trigger if exists basalt_audit on ${t}`,
-    `create trigger basalt_audit after insert or update on ${t} for each row execute function basalt.audit_row()`,
+    `drop trigger if exists basalt_audit_insert on ${t}`,
+    `create trigger basalt_audit_insert after insert on ${t} for each row execute function basalt.audit_row()`,
+    `drop trigger if exists basalt_audit_update on ${t}`,
+    `create trigger basalt_audit_update after update on ${t} for each row when (old.* is distinct from new.*) execute function basalt.audit_row()`,
   ];
 }
 
