@@ -145,10 +145,10 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
   }, { readOnlyHint: true });
   tool(
     'host_data_admin',
-    'Asks the owner to make one person an admin of an environment\'s data (they see and change every row, e.g. a business owner viewing all bookings). Always returns an approval link: show it to the human. who = a test person\'s name (test environments), or userId = a real signed-in user\'s id.',
-    { app, env, who: z.string().regex(/^[A-Za-z0-9 _-]{1,40}$/).optional(), userId: z.string().uuid().optional(), label: z.string().max(60).optional() },
+    'Asks the owner to make one person an admin of an environment\'s data (they see and change every row, e.g. a business owner viewing all bookings). Always returns an approval link: show it to the human. email = the email a real person signed up in the app with (ask the human for theirs; they must sign up first), who = a test person\'s name (test environments), or userId = a signed-in user\'s id.',
+    { app, env, email: z.string().max(254).optional(), who: z.string().regex(/^[A-Za-z0-9 _-]{1,40}$/).optional(), userId: z.string().uuid().optional(), label: z.string().max(60).optional() },
     async ({ app: ap, env: e, ...who }) => {
-      if (!who.who && !who.userId) throw new UserError('Say who: a test person\'s name (who) or a user id (userId).');
+      if (!who.email && !who.who && !who.userId) throw new UserError('Say who: the email they signed up with (email), a test person\'s name (who) or a user id (userId).');
       const r = await host.dataAdmin(ws, ap, e, who);
       return text(`The owner needs to approve this. Show them this link and ask them to open it and approve:\n${r.approveUrl}\n\nUser id: ${r.userId}`);
     },

@@ -12,6 +12,13 @@ describe('the agent guide', () => {
     expect(data).toMatch(/host_data_check/);
   });
 
+  it("has the agent give a business owner a screen of everyone's entries, made an admin by their email", () => {
+    const data = hostGuide('data', 'apps.dev');
+    expect(data).toMatch(/owner.{0,80}(all|every)/i);
+    expect(data).toMatch(/host_data_admin[^.]*email/);
+    expect(data).toMatch(/sign up/i);
+  });
+
   it('sends the agent to the data topic from the workflow', () => {
     expect(hostGuide('workflow', 'apps.dev')).toMatch(/topic "data"|\*\*data\*\* topic/);
   });
