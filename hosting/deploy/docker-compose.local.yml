@@ -17,3 +17,8 @@ services:
     environment:
       # Owner pages (approvals, data map, safety receipt) through the local edge.
       PUBLIC_URL: http://cloud.${ROOT_DOMAIN}:8080
+  browser:
+    environment:
+      # Local demo only: Chrome sends *.localhost app names to the proxy despite the bypass list,
+      # so the browser worker opens platform apps directly. Production keeps the egress proxy.
+      EGRESS_PROXY: ""

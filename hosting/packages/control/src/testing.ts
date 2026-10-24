@@ -151,6 +151,12 @@ export default defineConfig({
     extraHTTPHeaders: { ...(base.use?.extraHTTPHeaders ?? {}), 'x-basalt-access': process.env.BASALT_ACCESS ?? '' },
     trace: 'off',
     screenshot: 'only-on-failure',
+    // Chrome ignores /etc/hosts for names under .localhost (local demos), so the app's host is
+    // also mapped to the edge inside the browser itself.
+    launchOptions: {
+      ...(base.use?.launchOptions ?? {}),
+      args: [...(base.use?.launchOptions?.args ?? []), ...(process.env.BASALT_HOST_RULES ? ['--host-resolver-rules=' + process.env.BASALT_HOST_RULES] : [])],
+    },
   },
 });
 `,
@@ -177,6 +183,7 @@ export default defineConfig({
         Cmd: ['npx', 'playwright', 'test', '-c', '/out/basalt.config.ts'],
         Env: [
           `BASE_URL=https://${env.host}`,
+          `BASALT_HOST_RULES=MAP ${env.host} ${edgeIp}`,
           `BASALT_ACCESS=${this.accessToken(env, 1800) ?? ''}`,
           `TEST_USER_EMAIL=${user.email}`,
           `TEST_USER_PASSWORD=${user.password}`,
