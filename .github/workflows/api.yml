@@ -33,7 +33,8 @@ jobs:
         working-directory: api
       - run: npm audit --omit=dev --audit-level=high
         working-directory: api
-      - run: npm run typecheck && npm test && npm run build
+      # Build first: @basalt/api-mcp typechecks against the built @basalt/api types.
+      - run: npm run build && npm run typecheck && npm test
         working-directory: api
 
   plug-and-play:
