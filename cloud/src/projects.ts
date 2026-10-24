@@ -89,6 +89,7 @@ export class Projects {
           created_at timestamptz not null default now(),
           decided_at timestamptz
         );
+        alter table cloud.projects add column if not exists owner_view_key text;
         alter table cloud.approvals add column if not exists kind text not null default 'rules' check (kind in ('rules', 'admin'));
         alter table cloud.approvals add column if not exists admin_uid uuid;
         alter table cloud.approvals add column if not exists admin_label text;
@@ -161,6 +162,52 @@ export class Projects {
     const hash: string | undefined = (await this.#pool.query('select admin_key_hash from cloud.projects where id = $1', [m[1]])).rows[0]?.admin_key_hash;
     if (!hash || !sameHash(adminKey, hash)) return null;
     return this.get(m[1]);
+  }
+
+  // The key in the owner's data map link. Made once, kept encrypted so the
+  // same link keeps working.
+  async ownerViewKey(p: Project): Promise<string> {
+    const row = (await this.#pool.query('select owner_view_key from cloud.projects where id = $1', [p.id])).rows[0];
+    if (row?.owner_view_key) return decrypt(this.#cfg.masterKey, row.owner_view_key);
+    const key = randomSecret();
+    await this.#pool.query('update cloud.projects set owner_view_key = $2 where id = $1 and owner_view_key is null', [p.id, encrypt(this.#cfg.masterKey, key)]);
+    const again = (await this.#pool.query('select owner_view_key from cloud.projects where id = $1', [p.id])).rows[0];
+    return decrypt(this.#cfg.masterKey, again.owner_view_key);
+  }
+
+  async checkOwnerViewKey(id: string, key: unknown): Promise<Project | null> {
+    if (typeof key !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(key)) return null;
+    const p = await this.get(id);
+    if (!p) return null;
+    const row = (await this.#pool.query('select owner_view_key from cloud.projects where id = $1', [id])).rows[0];
+    if (!row?.owner_view_key) return null;
+    return sameHash(key, sha256(decrypt(this.#cfg.masterKey, row.owner_view_key))) ? p : null;
+  }
+
+  // Live numbers for the owner's map. Read with the admin login, never shown
+  // to app code, and only counts and column names, never anyone's data.
+  async stats(p: Project): Promise<{
+    tables: Record<string, { active: number; archived: number }>;
+    files: { count: number; bytes: number };
+    admins: number;
+    recent: { at: string; table: string; op: string; columns: string[] }[];
+  }> {
+    const c = await connect(withDb(this.#cfg.adminUrl, p.dbName));
+    try {
+      const tables: Record<string, { active: number; archived: number }> = {};
+      const names = (await c.query('select table_name from basalt.registry order by table_name')).rows.map((r) => r.table_name as string);
+      for (const t of names) {
+        if (!/^[a-z][a-z0-9_]{0,40}$/.test(t)) continue;
+        const r = (await c.query(`select count(*) filter (where archived_at is null)::int as active, count(*) filter (where archived_at is not null)::int as archived from app."${t}"`)).rows[0];
+        tables[t] = r;
+      }
+      const files = (await c.query('select count(*)::int as count, coalesce(sum(size), 0)::bigint as bytes from basalt.files')).rows[0];
+      const admins = (await c.query('select count(*)::int as n from basalt.admins')).rows[0].n;
+      const recent = (await c.query(`select at, table_name as "table", op, coalesce(columns, '{}') as columns from basalt.audit order by at desc limit 8`)).rows;
+      return { tables, files: { count: files.count, bytes: Number(files.bytes) }, admins, recent };
+    } finally {
+      await c.end();
+    }
   }
 
   dataUrl(p: Project): string {

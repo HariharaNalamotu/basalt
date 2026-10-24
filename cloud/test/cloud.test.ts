@@ -223,6 +223,33 @@ describe('the owner as admin', () => {
   });
 });
 
+describe("the owner's data map", () => {
+  test('shows where data lives, who can reach it and marks personal info, with live counts', async () => {
+    const app = await liveApp();
+    const maria = await login(app.key, 'maria');
+    await data(app.dataUrl, maria.token, 'create', { table: 'bookings', input: { service: 'Color', starts_at: '2026-10-25T15:00:00Z', phone: '+1 413 555 0100' } });
+    const status = (await call('GET', '/api/projects/me', undefined, app.key)).body.project;
+    const res = await fetch(status.mapUrl);
+    const html = await res.text();
+    assert.equal(res.status, 200);
+    assert.match(html, /Where Test salon/);
+    assert.match(html, /The AI that built it/);
+    assert.match(html, /no key/);
+    assert.match(html, /class="pii">phone/);
+    assert.match(html, /1 saved/);
+    assert.match(html, /a new booking was added/);
+    assert.ok(!html.includes('+1 413 555 0100'), 'the map must never show anyone\'s data');
+    // The same link keeps working.
+    assert.equal((await call('GET', '/api/projects/me', undefined, app.key)).body.project.mapUrl, status.mapUrl);
+  });
+
+  test('a wrong key shows nothing', async () => {
+    const app = await liveApp();
+    const res = await fetch(`${base}/owner/${app.id}?k=${'x'.repeat(43)}`);
+    assert.equal(res.status, 404);
+  });
+});
+
 describe('apps are walled off from each other', () => {
   test("one app's key can't manage another, and its database login can't open another's database", async () => {
     const a = await liveApp();

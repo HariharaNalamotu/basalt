@@ -181,7 +181,7 @@ async function callTool(name: string, args: Record<string, any>): Promise<string
       const s = need();
       const out = await api('GET', '/api/projects/me', undefined, s.adminKey);
       const p = out.project;
-      if (p.status === 'live') return `Live. Rules in plain English:\n${p.rules}${p.waitingForOwner ? '\n\nA newer change is still waiting for the person to approve it.' : ''}`;
+      if (p.status === 'live') return `Live. Rules in plain English:\n${p.rules}${p.waitingForOwner ? '\n\nA newer change is still waiting for the person to approve it.' : ''}\n\nThe owner can see where everything lives and who can reach it on their data map (share this link only with them):\n${p.mapUrl}`;
       if (p.status === 'waiting_for_owner') return 'Waiting for the person to open the approval link and tap "Yes". If they lost it, call basalt_set_rules again for a fresh link.';
       return 'No rules yet. Ask the person the plain questions, then call basalt_set_rules.';
     }

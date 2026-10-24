@@ -7,6 +7,7 @@
 //   POST /api/projects/me/test-login   { who }       -> a login token for a test person
 //   POST /api/projects/me/admins       { who | userId } -> asks the owner to make someone an admin
 //   GET  /approve/<id>?t=<token>                     -> the owner's approval page
+//   GET  /owner/<project id>?k=<key>                  -> the owner's data map
 //   POST /p/<project id>/v1/data/<op>                -> that app's data API
 //
 //   node --env-file=.env src/server.ts
@@ -15,6 +16,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { BasaltData, BasaltError, createDataHandler, parseContract, setServerLimits, type Contract, type DataHandler } from '../../data/src/index.ts';
 import { Projects, type Project } from './projects.ts';
 import { signToken, testUserId } from './secrets.ts';
+import { esc, page } from './html.ts';
+import { renderMap } from './map.ts';
 import { loosens, summarize } from './summary.ts';
 
 export interface CloudServerOptions {
@@ -50,7 +53,7 @@ function sendHtml(res: ServerResponse, status: number, html: string): void {
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
     'referrer-policy': 'no-referrer',
-    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'",
   });
   res.end(html);
 }
@@ -76,22 +79,6 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   }
   if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new HttpError(400, 'Send a JSON object.');
   return body as Record<string, unknown>;
-}
-
-function esc(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-}
-
-function page(title: string, body: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)}</title><style>
-body{font:16px/1.5 -apple-system,system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 16px;color:#1a1a1a;background:#fff}
-h1{font-size:24px}h2{font-size:18px;margin:24px 0 4px}.card{border:1px solid #e3e3e3;border-radius:10px;padding:16px 20px;margin:16px 0}
-li{margin:4px 0}.muted{color:#666;font-size:14px}.warn{background:#fff8e6;border-left:4px solid #e67700;padding:10px 14px;border-radius:6px}
-button{font:inherit;padding:10px 20px;border-radius:8px;border:1px solid #1a1a1a;cursor:pointer;margin-right:8px}
-.yes{background:#1a1a1a;color:#fff}.no{background:#fff}
-@media (prefers-color-scheme:dark){body{background:#111;color:#eee}.card{border-color:#333}.muted{color:#aaa}.warn{background:#2a2110}button{border-color:#eee}.yes{background:#eee;color:#111}.no{background:#111;color:#eee}}
-</style></head><body>${body}</body></html>`;
 }
 
 function summaryHtml(contract: Contract): string {
@@ -153,6 +140,7 @@ export function createCloudServer(options: CloudServerOptions) {
       status: approved ? 'live' : pending ? 'waiting_for_owner' : 'no_rules_yet',
       rules: approved ? summarize(approved).text : null,
       waitingForOwner: Boolean(pending),
+      mapUrl: `${base}/owner/${p.id}?k=${await projects.ownerViewKey(p)}`,
     };
   }
 
@@ -320,6 +308,14 @@ ${summaryHtml(contract)}
           return sendJson(res, 503, { ok: false, error: { code: 'unavailable', message: "This app's data rules haven't been approved yet." } });
         }
         return await handler(req, res, appMatch[2]);
+      }
+
+      const mapMatch = /^\/owner\/([a-z0-9]{10})$/.exec(path);
+      if (mapMatch && req.method === 'GET') {
+        const p = await projects.checkOwnerViewKey(mapMatch[1], url.searchParams.get('k'));
+        if (!p) return sendHtml(res, 404, page('Link not found', "<h1>This link doesn't work</h1><p>Ask Claude for your data map link again.</p>"));
+        if (!p.approvedContract) return sendHtml(res, 200, page(p.name, `<h1>${esc(p.name)} has no rules yet</h1><p>Once you approve them, this page shows where everything lives.</p>`));
+        return sendHtml(res, 200, renderMap(p.name, parseContract(p.approvedContract), await projects.stats(p)));
       }
 
       const approveMatch = /^\/approve\/([a-z0-9]{16})$/.exec(path);
