@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/coverage
+**/.e2e
+**/.e2e-app
+.git

@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import pg from 'pg';
@@ -197,6 +198,24 @@ describe('who can open a file', () => {
       await c.connect();
       await assert.rejects(c.query(sql), (e: { code?: string }) => e.code === '42501');
       await c.end();
+    }
+  });
+});
+
+describe('uploads in a browser signed in with Basalt Auth', () => {
+  test('with no token, no login header is sent, so the session cookie is used', async () => {
+    let seen: string | undefined = 'not called';
+    const spy = createServer((req, res) => {
+      seen = req.headers.authorization;
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{"ok":true,"data":{"id":"x"}}');
+    });
+    await new Promise<void>((r) => spy.listen(0, '127.0.0.1', () => r()));
+    try {
+      const basalt = createBasalt({ url: `http://127.0.0.1:${(spy.address() as AddressInfo).port}` });
+      await basalt.files.upload(new Blob(['hi'], { type: 'text/plain' }), 'a.txt');
+      assert.equal(seen, undefined);
+    } finally {
+      spy.close();
     }
   });
 });

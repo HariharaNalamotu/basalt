@@ -11,33 +11,60 @@ const FEED_HORIZON_MS = 2 * 3600_000;
 const FEED_PAGE = 1000;
 
 /**
- * Data grants: short-lived proofs, bound to one live session, that the app's own database
- * verifies before returning a user's rows. Format:
+ * Data tokens: short-lived proofs, bound to one live session, that the app's own database
+ * verifies before reading or writing a user's rows. One format for every Basalt data path —
+ * the Data block's basalt.api() and @basalt/api's row-level security both verify it in Postgres:
  *
- *   bdg1.<keyVersion>.<projectId>.<userId>.<sessionId>.<expEpoch>.<hex HMAC-SHA256(dataKey, everything before)>
+ *   HS256 JWT  header { alg: "HS256", typ: "JWT", kid: "v<keyVersion>" }
+ *              payload { sub, sid, iat, exp, aud: "authenticated", role: "authenticated", iss }
  *
- * The data key exists only here (encrypted at rest) and inside the app database's locked-down
- * basalt_auth schema — never in the app server — so the app can present grants but never mint them.
+ * Signed with the project's data secret (base64url of 32 random bytes, used as a text key, as
+ * pgcrypto's hmac(text, text) does). The secret exists only here (encrypted at rest) and inside
+ * each app database's locked-down schema — never in app servers or the Data service — so they
+ * can present tokens but never mint them. Lifetime always equals the access token's (≤ 1 hour).
  */
 export class DataGrantService {
   private readonly keys = new Map<string, { version: number; key: Buffer; at: number }>();
 
   constructor(private readonly ctx: ServiceContext) {}
 
+  issuer(projectId: string) {
+    return `${this.ctx.publicUrl}/v1/projects/${projectId}`;
+  }
+
   async mint(projectId: string, userId: string, sessionId: string, expSec: number, db: Db = this.ctx.db): Promise<string> {
     const { version, key } = await this.key(projectId, db);
-    const body = `bdg1.${version}.${projectId}.${userId}.${sessionId}.${expSec}`;
-    return `${body}.${hmacSha256(key, body).toString('hex')}`;
+    const iat = Math.min(Math.floor(this.ctx.now().getTime() / 1000), expSec - 1);
+    const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const unsigned = `${enc({ alg: 'HS256', typ: 'JWT', kid: `v${version}` })}.${enc({
+      sub: userId,
+      sid: sessionId,
+      iat,
+      exp: expSec,
+      aud: 'authenticated',
+      role: 'authenticated',
+      iss: this.issuer(projectId),
+    })}`;
+    return `${unsigned}.${hmacSha256(textKey(key), unsigned).toString('base64url')}`;
+  }
+
+  /**
+   * What a database needs to verify this project's data tokens. Contains the secret: only for
+   * the platform provisioning databases (owner-scoped control plane), never for apps.
+   */
+  async signing(projectId: string) {
+    const { version, key } = await this.key(projectId, this.ctx.db);
+    return { algorithm: 'HS256' as const, keyVersion: version, secret: textKey(key).toString('utf8'), issuer: this.issuer(projectId), maxTokenSeconds: 3600 };
   }
 
   /** SQL that installs the verifier + this project's key into the app's database. Contains the key: treat as secret. */
   async installSql(projectId: string): Promise<string> {
     const { version, key } = await this.key(projectId, this.ctx.db);
     const block = Buffer.alloc(64);
-    key.copy(block);
+    textKey(key).copy(block);
     const kIpad = Buffer.from(block.map((b) => b ^ 0x36));
     const kOpad = Buffer.from(block.map((b) => b ^ 0x5c));
-    return renderDataProtectionSql({ projectId, version, kIpad, kOpad });
+    return renderDataProtectionSql({ projectId, version, kIpad, kOpad, issuer: this.issuer(projectId) });
   }
 
   /**
@@ -110,4 +137,9 @@ function decodeCursor(cursor: string): { at: Date; id: bigint } {
     throw new AuthError('invalid_request', 'Invalid cursor.');
   }
   return { at, id: BigInt(id!) };
+}
+
+/** The secret as text (base64url, 43 chars): the exact bytes every verifier uses as the HMAC key. */
+function textKey(key: Buffer): Buffer {
+  return Buffer.from(key.toString('base64url'), 'utf8');
 }

@@ -1,0 +1,174 @@
+# Basalt Host — the whole platform on one machine.
+#   ./setup.sh <root-domain>     (generates .env, builds images, starts everything)
+# Ingress is ONLY via Cloudflare Tunnel (profile "tunnel"): no ports are published.
+name: basalt
+
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  logging: { driver: json-file, options: { max-size: "20m", max-file: "5" } }
+
+services:
+  postgres:
+    <<: *hardening
+    image: postgres:17-alpine
+    container_name: basalt-postgres
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    command: ["postgres", "-c", "max_connections=400", "-c", "shared_buffers=512MB", "-c", "password_encryption=scram-sha-256"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    networks: [core]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 5s, retries: 20 }
+
+  redis:
+    <<: *hardening
+    image: redis:7-alpine
+    container_name: basalt-redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    # ACL users (one per app environment) are saved to disk so they survive restarts.
+    command: ["sh", "-c", "test -f /data/users.acl || echo \"user default on >$$REDIS_PASSWORD ~* &* +@all\" > /data/users.acl; exec redis-server --aclfile /data/users.acl --appendonly yes --maxmemory 512mb --maxmemory-policy volatile-lru"]
+    volumes: [redisdata:/data]
+    networks: [core]
+    healthcheck: { test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD --no-auth-warning ping"], interval: 5s, retries: 20 }
+
+  verdaccio:
+    <<: *hardening
+    image: verdaccio/verdaccio:6
+    container_name: basalt-verdaccio
+    volumes:
+      - ./verdaccio/config.yaml:/verdaccio/conf/config.yaml:ro
+      - verdaccio:/verdaccio/storage
+    networks:
+      core: {}
+      build: { aliases: [verdaccio] }
+      outbound: {}
+
+  auth:
+    <<: *hardening
+    build: { context: ../../auth }
+    image: basalt/auth:local
+    container_name: basalt-auth
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
+    environment:
+      NODE_ENV: production
+      PUBLIC_URL: https://auth.${ROOT_DOMAIN}
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/basalt_auth
+      REDIS_URL: redis://default:${REDIS_PASSWORD}@redis:6379
+      BASALT_AUTH_MASTER_KEY: ${AUTH_MASTER_KEY}
+      BASALT_AUTH_PLATFORM_KEY: ${AUTH_PLATFORM_KEY}
+      TRUST_PROXY_HOPS: "1"
+      COOKIE_SECURE: "true"
+      MAILER: webhook
+      MAIL_WEBHOOK_URL: http://control:4001/internal/mail
+      MAIL_WEBHOOK_SECRET: ${MAIL_WEBHOOK_SECRET}
+    networks: [core]
+
+  control:
+    <<: *hardening
+    build: { context: ../.., dockerfile: hosting/Dockerfile, target: control }
+    image: basalt/control:local
+    container_name: basalt-control
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy }, auth: { condition: service_started } }
+    environment:
+      ROOT_DOMAIN: ${ROOT_DOMAIN}
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/basalt_host
+      PG_ADMIN_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      REDIS_ADMIN_URL: redis://default:${REDIS_PASSWORD}@redis:6379
+      AUTH_PUBLIC_URL: https://auth.${ROOT_DOMAIN}
+      AUTH_PLATFORM_KEY: ${AUTH_PLATFORM_KEY}
+      MASTER_KEY: ${HOST_MASTER_KEY}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      MAIL_WEBHOOK_SECRET: ${MAIL_WEBHOOK_SECRET}
+      REGISTRY_PUBLISH_PASSWORD: ${REGISTRY_PUBLISH_PASSWORD}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-no-reply@${ROOT_DOMAIN}}
+      DATA_VOLUME: basalt-data
+      BUILD_NETWORK: basalt_build
+    volumes:
+      - basalt-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      core: { aliases: [control] }
+      outbound: {}
+
+  edge:
+    <<: *hardening
+    build: { context: ../.., dockerfile: hosting/Dockerfile, target: edge }
+    image: basalt/edge:local
+    container_name: basalt-edge
+    depends_on: [control]
+    environment:
+      CONTROL_URL: http://control:4001
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      EDGE_KEY: ${EDGE_KEY}
+      AUTH_INTERNAL_URL: http://auth:8787
+      TRUSTED_PROXIES: 10.200.0.250
+      INTERNAL_TLS_PORT: "443"
+      TLS_DIR: /tls
+    sysctls: { net.ipv4.ip_unprivileged_port_start: "0" }
+    read_only: true
+    cap_drop: [ALL]
+    volumes:
+      - basalt-data:/data:ro
+      - edge-tls:/tls
+    networks:
+      core: { aliases: [edge] }
+
+  egress:
+    <<: *hardening
+    build: { context: ../.., dockerfile: hosting/Dockerfile, target: egress }
+    image: basalt/egress:local
+    container_name: basalt-egress
+    read_only: true
+    cap_drop: [ALL]
+    networks:
+      core: { aliases: [egress] }
+      outbound: {}
+
+  browser:
+    <<: *hardening
+    build: { context: ../.., dockerfile: hosting/Dockerfile, target: browser }
+    image: basalt/browser:local
+    container_name: basalt-browser
+    environment:
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      ROOT_DOMAIN: ${ROOT_DOMAIN}
+      EDGE_HOST: edge
+      EGRESS_PROXY: http://egress:3128
+    shm_size: "512m"
+    mem_limit: 2g
+    networks:
+      core: { aliases: [browser] }
+
+  cloudflared:
+    <<: *hardening
+    image: cloudflare/cloudflared:2025.10.0
+    container_name: basalt-cloudflared
+    profiles: [tunnel]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN}
+    networks:
+      core: { ipv4_address: 10.200.0.250 }
+      outbound: {}
+
+networks:
+  core:
+    internal: true
+    ipam: { config: [{ subnet: 10.200.0.0/24 }] }
+  build:
+    name: basalt_build
+    internal: true
+    ipam: { config: [{ subnet: 10.200.1.0/24 }] }
+  outbound: {}
+
+volumes:
+  pgdata:
+  redisdata:
+  verdaccio:
+  edge-tls:
+  basalt-data:
+    name: basalt-data

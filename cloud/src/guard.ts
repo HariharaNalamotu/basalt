@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import type { Contract, FieldSpec, TableSpec } from '../../data/src/index.ts';
 
 // Guard: before an app goes live, act like two different people (and a
@@ -34,6 +35,15 @@ interface Reply {
 }
 
 const MAX_TABLES = 20;
+
+// Re-signs an HS256 token with another key, optionally changing claims. Used to
+// make the forged and expired logins from a real one.
+export function resign(token: string, secret: string, claims: Record<string, unknown> = {}): string {
+  const [h, p] = token.split('.');
+  const payload = { ...JSON.parse(Buffer.from(p ?? '', 'base64url').toString('utf8')), ...claims };
+  const unsigned = `${h}.${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
+  return `${unsigned}.${createHmac('sha256', secret).update(unsigned).digest('base64url')}`;
+}
 
 async function send(url: string, path: string, init: RequestInit): Promise<Reply> {
   try {

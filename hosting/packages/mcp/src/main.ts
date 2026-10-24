@@ -1,0 +1,85 @@
+#!/usr/bin/env node
+/**
+ * Basalt Host MCP server for coding agents. Runs next to the project:
+ * - host_deploy / host_init act on local files (pack + upload, project setup)
+ * - every other tool is forwarded to the Basalt Host control plane
+ */
+import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import { initProject } from './init.js';
+import { packProject } from './pack.js';
+
+const baseUrl = (process.env.BASALT_HOST_URL ?? '').replace(/\/+$/, '');
+const token = process.env.BASALT_HOST_TOKEN ?? '';
+if (!baseUrl || !token) {
+  console.error('Set BASALT_HOST_URL and BASALT_HOST_TOKEN (from your Basalt workspace).');
+  process.exit(1);
+}
+const rootDomain = process.env.BASALT_ROOT_DOMAIN ?? new URL(baseUrl).hostname.replace(/^host\./, '');
+const projectRoot = (dir?: string) => path.resolve(process.env.BASALT_PROJECT_DIR ?? process.cwd(), dir ?? '.');
+
+const remote = new Client({ name: 'basalt-host-mcp', version: '0.1.0' });
+await remote.connect(new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+
+const LOCAL: Tool[] = [
+  {
+    name: 'host_deploy',
+    description:
+      'Deploys the local project: packs it (honoring .gitignore; never node_modules, .git, .env or build output), uploads it, builds it in CI (security scan, audit, typecheck, lint, unit tests, build), deploys a private preview and runs smoke + e2e tests. ship=true continues through staging to production when every gate passes. Returns status; continue with host_wait.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        app: { type: 'string', description: 'App name (host_create_app first).' },
+        dir: { type: 'string', description: 'Project directory (default: current directory).' },
+        message: { type: 'string', description: 'What changed (shown in history).' },
+        ship: { type: 'boolean', description: 'Continue to staging and production if all tests pass.' },
+      },
+      required: ['app'],
+    },
+  },
+  {
+    name: 'host_init',
+    description: 'Prepares the local project for Basalt Host: .npmrc for @basalt packages, basalt.json, playwright.config.ts and an example e2e test (never overwrites existing files). Run once, then npm install.',
+    inputSchema: { type: 'object', properties: { dir: { type: 'string' } } },
+  },
+];
+
+const server = new Server({ name: 'basalt', version: '0.1.0' }, { capabilities: { tools: {} }, instructions: 'Basalt Host: call host_guide { topic: "workflow" } first. You build, test, stage and ship the app yourself with these tools.' });
+
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const { tools } = await remote.listTools();
+  return { tools: [...LOCAL, ...tools.filter((t) => !LOCAL.some((l) => l.name === t.name))] };
+});
+
+server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+  try {
+    if (req.params.name === 'host_init') {
+      const r = await initProject(projectRoot(args.dir as string | undefined), rootDomain);
+      return { content: [{ type: 'text', text: `Written: ${r.written.join(', ') || '(nothing)'}\nKept existing: ${r.kept.join(', ') || '(none)'}\n\nNext: npm install @basalt/api @basalt/auth && npm install -D @playwright/test@~1.64.0, then host_guide { topic: "project" }.` }] };
+    }
+    if (req.params.name === 'host_deploy') {
+      const app = String(args.app ?? '');
+      const { tgz, files } = await packProject(projectRoot(args.dir as string | undefined));
+      const up = await fetch(`${baseUrl}/v1/apps/${encodeURIComponent(app)}/sources`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/gzip' },
+        body: new Uint8Array(tgz),
+      });
+      const body = (await up.json()) as { sourceId?: string; error?: string };
+      if (!up.ok || !body.sourceId) throw new Error(body.error ?? `upload failed (${up.status})`);
+      const r = await remote.callTool({ name: 'host_deploy_source', arguments: { app, sourceId: body.sourceId, message: args.message, ship: args.ship } }, undefined, { timeout: 120_000 });
+      (r.content as Array<{ type: string; text?: string }>).unshift({ type: 'text', text: `Uploaded ${files} files (${Math.round(tgz.length / 1024)} KB).` });
+      return r;
+    }
+    return await remote.callTool({ name: req.params.name, arguments: args }, undefined, { timeout: 120_000 });
+  } catch (err) {
+    return { isError: true, content: [{ type: 'text', text: `Error: ${(err as Error).message}` }] };
+  }
+});
+
+await server.connect(new StdioServerTransport());

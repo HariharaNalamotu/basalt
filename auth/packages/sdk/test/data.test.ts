@@ -112,8 +112,8 @@ describe('withUserDb', () => {
   it('never exposes the grant through the user object', async () => {
     const a = await signedUp();
     const user = await server.requireUser(request(a.jar));
-    expect(JSON.stringify(user)).not.toContain('bdg1');
-    expect(server.dataGrant(user)).toMatch(/^bdg1\./);
+    expect(JSON.stringify(user)).not.toContain(server.dataGrant(user));
+    expect(server.dataGrant(user)).toMatch(/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
     expect(() => server.dataGrant({ ...user })).toThrow(/no data grant/);
   });
 

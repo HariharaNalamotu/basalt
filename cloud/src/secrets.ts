@@ -44,19 +44,3 @@ export function decrypt(masterHex: string, sealed: string): string {
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(body), decipher.final()]).toString('utf8');
 }
-
-// A stable user id for a named test person, so "maria" is the same user every time.
-export function testUserId(projectSecret: string, label: string): string {
-  const h = createHmac('sha256', projectSecret).update(`test-user|${label}`).digest();
-  h[6] = (h[6] & 0x0f) | 0x40;
-  h[8] = (h[8] & 0x3f) | 0x80;
-  const hex = h.subarray(0, 16).toString('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-// Signs a login token in the shape basalt.uid() checks.
-export function signToken(projectSecret: string, sub: string, seconds = 3600, now = Math.floor(Date.now() / 1000)): string {
-  const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
-  const unsigned = `${enc({ alg: 'HS256', typ: 'JWT' })}.${enc({ sub, aud: 'authenticated', role: 'authenticated', iat: now, exp: now + seconds })}`;
-  return `${unsigned}.${createHmac('sha256', projectSecret).update(unsigned).digest('base64url')}`;
-}

@@ -8,10 +8,14 @@ import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import { parseContract } from '../../data/src/index.ts';
 import { runChecks } from '../src/guard.ts';
+import { AuthLink } from '../src/auth.ts';
 import { Projects } from '../src/projects.ts';
 import { createCloudServer } from '../src/server.ts';
+import { startAuth } from './auth-server.ts';
 
-const projects = new Projects({ adminUrl: process.env.CLOUD_ADMIN_URL!, dbHost: process.env.CLOUD_DB_HOST!, masterKey: process.env.CLOUD_MASTER_KEY! });
+let authServer: Awaited<ReturnType<typeof startAuth>>;
+let auth: AuthLink;
+let projects: Projects;
 let base: string;
 let cloud: ReturnType<typeof createCloudServer>;
 
@@ -55,12 +59,15 @@ async function liveApp() {
 }
 
 before(async () => {
+  authServer = await startAuth(process.env.CLOUD_ADMIN_URL!);
+  auth = new AuthLink({ url: authServer.url, platformKey: authServer.platformKey, masterKey: process.env.CLOUD_MASTER_KEY! });
+  projects = new Projects({ adminUrl: process.env.CLOUD_ADMIN_URL!, dbHost: process.env.CLOUD_DB_HOST!, masterKey: process.env.CLOUD_MASTER_KEY! }, auth);
   await projects.init();
-  cloud = createCloudServer({ projects, publicUrl: 'http://placeholder', projectsPerIpPerHour: 1000 });
+  cloud = createCloudServer({ projects, auth, publicUrl: 'http://placeholder', projectsPerIpPerHour: 1000 });
   await new Promise<void>((r) => cloud.server.listen(0, '127.0.0.1', () => r()));
   base = `http://127.0.0.1:${(cloud.server.address() as AddressInfo).port}`;
   cloud.server.close();
-  cloud = createCloudServer({ projects, publicUrl: base, projectsPerIpPerHour: 1000 });
+  cloud = createCloudServer({ projects, auth, publicUrl: base, projectsPerIpPerHour: 1000 });
   await new Promise<void>((r) => cloud.server.listen(Number(new URL(base).port), '127.0.0.1', () => r()));
 });
 
@@ -68,6 +75,7 @@ after(async () => {
   await cloud.close();
   await new Promise((r) => cloud.server.close(r));
   await projects.close();
+  await authServer.close();
 });
 
 describe('Guard on a Basalt app', () => {
@@ -146,6 +154,21 @@ describe('Guard keeps its receipt honest', () => {
     more.tables.visits.fields.note = { type: 'text' };
     assert.equal((await call('PUT', '/api/projects/me/rules', { contract: more }, app.key)).body.status, 'live');
     assert.match(await (await fetch(r.body.receiptUrl)).text(), /rules changed after this check/);
+  });
+
+  test("a test person named like Guard's own doesn't break the check", async () => {
+    const app = await liveApp();
+    assert.equal((await call('POST', '/api/projects/me/test-login', { who: 'basalt-check-a' }, app.key)).status, 200);
+    const r = await call('POST', '/api/projects/me/check', {}, app.key);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.failed, 0);
+  });
+
+  test('an app that was checked can still be removed completely', async () => {
+    const app = await liveApp();
+    await call('POST', '/api/projects/me/check', {}, app.key);
+    await projects.delete((await projects.get(app.id))!);
+    assert.equal(await projects.get(app.id), null);
   });
 
   test('one check at a time per app', async () => {
