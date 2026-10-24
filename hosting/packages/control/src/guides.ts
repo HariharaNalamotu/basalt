@@ -5,7 +5,7 @@ const workflow = (root: string) => `# Basalt Host — the workflow (you do all o
 
 1. **Create the app** (once): \`host_create_app { app: "todo-app" }\`. Production will be https://todo-app.${root}.
 2. **Set up the project** (once): \`host_init { app }\` (local tool) writes basalt.json, .npmrc for @basalt packages, a Playwright config and example e2e test. Follow the **project** topic for layout.
-3. **Decide what the app saves** before writing data code: read the **data** topic. Ask the human a few short plain questions (what it keeps track of, what each thing needs, who else should see an entry), write \`basalt.data.json\` and save data from the page through \`/_basalt/data\`. Most apps (bookings, orders, sign-ups, notes) need no backend at all.
+3. **Decide what the app saves** before writing data code: read the **data** topic. Ask the human a few short plain questions (what it keeps track of, what each thing needs, who else should see an entry), write \`basalt.data.json\` and save data from the page through \`/_basalt/data\`. Most apps (bookings, orders, sign-ups, notes, including "no double bookings") need no backend at all. Use the Data block unless the app truly needs code on a server.
    **Write the app** with @basalt/auth (sign-in) and, only for logic that must run on a server, @basalt/api (backend). Read \`api_integration_guide\` (topics routes, database, frontend) and \`auth_integration_guide\`.
    On Basalt Host provisioning is automatic: ignore api_setup, .basalt/*.env files, basalt-dev-edge and api_status instructions from those guides.
 4. **Check your code**: \`api_review_code\` / \`auth_review_code\` on what you wrote. The build blocks critical/high findings anyway.
@@ -35,11 +35,12 @@ Ask the human in plain words, one question at a time: what the app keeps track o
       "phone":     { "type": "text", "format": "phone" },
       "staff_id":  { "type": "user" }
     },
-    "shareWith": "staff_id"
+    "shareWith": "staff_id",
+    "unique": [["starts_at", "staff_id"]]
 } } }
 \`\`\`
 
-Names: lowercase letters, numbers and underscores. Types: "text" (maxLength up to 10000, default 1000; optional "format": "email" | "phone" | "url" | "postal_code" | "slug"), "integer" and "number" (optional "min", "max"), "boolean", "timestamp" (ISO), "user" (another person's user id) and "file" (an uploaded file's id). Every row gets id, owner_id, created_at and updated_at automatically. "shareWith" names a "user" field whose person can read (never change) that row.
+Names: lowercase letters, numbers and underscores. Types: "text" (maxLength up to 10000, default 1000; optional "format": "email" | "phone" | "url" | "postal_code" | "slug"), "integer" and "number" (optional "min", "max"), "boolean", "timestamp" (ISO), "user" (another person's user id) and "file" (an uploaded file's id). Every row gets id, owner_id, created_at and updated_at automatically. "shareWith" names a "user" field whose person can read (never change) that row. "unique" lists groups of required fields no two active entries may share across everyone, like \`"unique": [["starts_at"]]\` so two customers can't book the same time (archived entries don't count, so cancelling frees the slot). This needs no backend: the database refuses a clash with err.code "conflict" without revealing whose entry it is.
 
 Later changes may only add optional fields or tables. Removing a field, making one required or changing its rules is refused.
 
@@ -79,7 +80,7 @@ export function basalt() {
 }
 \`\`\`
 
-Use it like \`const db = basalt(); await db.create('bookings', { service: 'Haircut', starts_at: new Date().toISOString() });\`. Sign people in first (see auth_integration_guide: POST /_basalt/auth/signin sets the cookie). err.code is invalid_input, not_found, denied, rate_limited or unavailable, and err.message says what's wrong in plain words.
+Use it like \`const db = basalt(); await db.create('bookings', { service: 'Haircut', starts_at: new Date().toISOString() });\`. Sign people in first (see auth_integration_guide: POST /_basalt/auth/signin sets the cookie). err.code is invalid_input, not_found, denied, conflict (a unique value is already taken: show err.message and let them pick another), rate_limited or unavailable, and err.message says what's wrong in plain words.
 
 On a backend (@basalt/api), the same operations are \`ctx.data\` as the signed-in user.
 

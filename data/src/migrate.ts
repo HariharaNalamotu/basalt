@@ -13,7 +13,7 @@ import pg from 'pg';
 import { parseContract, type TableSpec } from './contract.ts';
 import { addColumnSql, tableSpecJson, tableSql, type Roles } from './schema.ts';
 
-type StoredSpec = { fields: Record<string, unknown>; shareWith?: string };
+type StoredSpec = { fields: Record<string, unknown>; shareWith?: string; unique?: string[][] };
 
 // Returns the fields to add, or throws if the change isn't allowed.
 function plan(table: TableSpec, before: StoredSpec): string[] {
@@ -23,6 +23,7 @@ function plan(table: TableSpec, before: StoredSpec): string[] {
   };
 
   if (before.shareWith !== after.shareWith) refuse('who it is shared with changed');
+  if (!isDeepStrictEqual(before.unique ?? [], after.unique ?? [])) refuse('which fields must be unique changed');
   for (const [name, spec] of Object.entries(before.fields)) {
     if (!Object.hasOwn(after.fields, name)) refuse(`field ${name} was removed`);
     if (!isDeepStrictEqual(spec, after.fields[name])) refuse(`the rules for field ${name} changed`);

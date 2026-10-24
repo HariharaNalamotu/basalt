@@ -40,6 +40,7 @@ const STATUS: Record<BasaltErrorCode, number> = {
   denied: 401,
   not_found: 404,
   rate_limited: 429,
+  conflict: 409,
   unavailable: 503,
   contract: 500,
 };

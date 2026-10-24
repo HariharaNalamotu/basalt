@@ -63,10 +63,11 @@ export function columnSql(name: string, spec: FieldSpec): string {
 
 // The table's rules as stored in basalt.registry, so migrate can tell exactly
 // what a new contract would change.
-export function tableSpecJson(table: TableSpec): { fields: Record<string, unknown>; shareWith?: string } {
+export function tableSpecJson(table: TableSpec): { fields: Record<string, unknown>; shareWith?: string; unique?: string[][] } {
   return {
     fields: Object.fromEntries([...table.fields].map(([n, s]) => [n, { ...s }])),
     ...(table.shareWith ? { shareWith: table.shareWith } : {}),
+    ...(table.unique?.length ? { unique: table.unique } : {}),
   };
 }
 
@@ -128,6 +129,11 @@ end $basalt$`,
     ...(share
       ? [`create index if not exists ${quoteIdent(`${table.name}_shared_recent`)} on ${t} (${share}, "created_at" desc, "id" desc)`]
       : []),
+    // No two active rows share these values, across everyone (basalt.api reports a clash as
+    // "conflict" without saying whose row it is). Archived rows don't count.
+    ...(table.unique ?? []).map(
+      (group, i) => `create unique index if not exists ${quoteIdent(`${table.name}_unique_${i + 1}`)} on ${t} (${group.map(quoteIdent).join(', ')}) where "archived_at" is null`,
+    ),
 
     // Each user sees their own rows, plus rows shared with them. Only the
     // row's owner or an admin can change it. Only the exec role (inside

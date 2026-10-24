@@ -50,6 +50,9 @@ export function tableSummary(table: TableSpec): string[] {
   if (table.shareWith) {
     lines.push(`The person picked in "${words(table.shareWith)}" can also see that one, but can't change it.`);
   }
+  for (const group of table.unique ?? []) {
+    lines.push(`No two ${things} can have the same ${group.map(words).join(' and ')}, whoever made them. Archived ones don't count.`);
+  }
   lines.push(`Admins you approve can see and change all of them. Nobody else can see them.`);
   lines.push(`Nothing is ever permanently deleted: things can be archived and brought back.`);
   return lines;

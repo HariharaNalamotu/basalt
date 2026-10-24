@@ -4,6 +4,7 @@ export type BasaltErrorCode =
   | 'denied'
   | 'rate_limited'
   | 'unavailable'
+  | 'conflict'
   | 'contract';
 
 // Every error the Data block throws. Messages are plain English and never
