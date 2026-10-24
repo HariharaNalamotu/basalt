@@ -1,0 +1,40 @@
+{
+  "tables": {
+    "bookings": {
+      "fields": {
+        "service": {
+          "type": "text",
+          "required": true,
+          "maxLength": 100
+        },
+        "starts_at": {
+          "type": "timestamp",
+          "required": true
+        },
+        "phone": {
+          "type": "text",
+          "maxLength": 20,
+          "format": "phone"
+        },
+        "note": {
+          "type": "text",
+          "maxLength": 1000
+        },
+        "party_size": {
+          "type": "integer",
+          "min": 1,
+          "max": 20
+        },
+        "email": {
+          "type": "text",
+          "maxLength": 320,
+          "format": "email"
+        },
+        "staff_id": {
+          "type": "user"
+        }
+      },
+      "shareWith": "staff_id"
+    }
+  }
+}

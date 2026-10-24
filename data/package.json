@@ -1,0 +1,27 @@
+{
+  "name": "@basalt/data",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Basalt Data block: the only way an app reads or writes its database",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts"
+  },
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d --wait",
+    "migrate": "node --env-file=.env src/migrate.ts contract.example.json",
+    "test": "node --env-file=.env --test test/*.test.ts",
+    "serve": "node --env-file=.env src/server.ts contract.example.json",
+    "db:upgrade": "docker compose exec -T db sh /docker-entrypoint-initdb.d/00_init.sh",
+    "pretest": "npm run db:reset"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
+  }
+}
