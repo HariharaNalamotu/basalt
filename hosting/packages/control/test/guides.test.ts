@@ -15,4 +15,8 @@ describe('the agent guide', () => {
   it('sends the agent to the data topic from the workflow', () => {
     expect(hostGuide('workflow', 'apps.dev')).toMatch(/topic "data"|\*\*data\*\* topic/);
   });
+
+  it("tells the agent not to install packages on the human's computer", () => {
+    expect(hostGuide('workflow', 'apps.dev')).toMatch(/No local install is needed/);
+  });
 });

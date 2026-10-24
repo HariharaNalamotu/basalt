@@ -9,6 +9,7 @@ const workflow = (root: string) => `# Basalt Host — the workflow (you do all o
    **Write the app** with @basalt/auth (sign-in) and, only for logic that must run on a server, @basalt/api (backend). Read \`api_integration_guide\` (topics routes, database, frontend) and \`auth_integration_guide\`.
    On Basalt Host provisioning is automatic: ignore api_setup, .basalt/*.env files, basalt-dev-edge and api_status instructions from those guides.
 4. **Check your code**: \`api_review_code\` / \`auth_review_code\` on what you wrote. The build blocks critical/high findings anyway.
+   **No local install is needed**: don't run npm install on the human's computer. \`host_deploy\` installs dependencies and builds on the platform (a missing package-lock.json is only a warning).
 5. **Deploy**: \`host_deploy { app }\` (local tool) packs the project, builds it (install, security scan, audit, typecheck, lint, unit tests, build), deploys a **private preview**, and runs smoke + your e2e tests. Poll \`host_wait\` until done.
 6. **If anything fails**: \`host_deployment\` (failed step output), \`host_build_logs\`, \`host_logs\` (backend), \`host_metrics\`. Reproduce UI problems with \`browser_open\` → \`browser_snapshot\`/\`browser_click\`/\`browser_fill\`/\`browser_screenshot\`/\`browser_console\`/\`browser_network\`. Fix, deploy again.
 7. **Verify by hand** on the preview: \`host_test_user\` for credentials, \`host_test_emails\` for verification codes, browser_* tools to click through the main flows. Screenshot key pages and look at them.
