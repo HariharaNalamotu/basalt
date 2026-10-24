@@ -16,6 +16,24 @@ describe('the agent guide', () => {
     expect(hostGuide('workflow', 'apps.dev')).toMatch(/topic "data"|\*\*data\*\* topic/);
   });
 
+  it('has a design topic with a palette from the business, the CSS starter and a phone and dark mode check before shipping', () => {
+    expect(GUIDE_TOPICS).toContain('design');
+    const design = hostGuide('design', 'apps.dev');
+    expect(design).toMatch(/Brand from the business/);
+    expect(design).toMatch(/--brand:/);
+    expect(design).toMatch(/prefers-color-scheme:dark/);
+    expect(design).toMatch(/\.slot\[aria-pressed="true"\]/);
+    expect(design).toMatch(/viewport: "phone"/);
+    expect(design).toMatch(/colorScheme: "dark"/);
+    expect(design).not.toMatch(/\u2014/); // no em dashes in anything shown to people
+  });
+
+  it('sends the agent to the design topic before pages and its visual check before reporting', () => {
+    const w = hostGuide('workflow', 'apps.dev');
+    expect(w).toMatch(/\*\*design\*\* topic/);
+    expect(w).toMatch(/viewport: "phone"/);
+  });
+
   it("tells the agent not to install packages on the human's computer", () => {
     expect(hostGuide('workflow', 'apps.dev')).toMatch(/No local install is needed/);
   });

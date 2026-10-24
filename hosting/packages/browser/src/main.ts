@@ -37,7 +37,17 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname === '/sessions' && req.method === 'POST') {
       const b = await readJson(req);
-      return send(200, await worker.open({ host: String(b.host), accessToken: b.accessToken, owner, path: b.path }));
+      return send(
+        200,
+        await worker.open({
+          host: String(b.host),
+          accessToken: b.accessToken,
+          owner,
+          path: b.path,
+          viewport: b.viewport === 'phone' ? 'phone' : 'desktop',
+          colorScheme: b.colorScheme === 'dark' ? 'dark' : 'light',
+        }),
+      );
     }
     if (url.pathname === '/sessions' && req.method === 'GET') return send(200, { sessions: worker.list(owner) });
     const m = /^\/sessions\/([0-9a-f-]{36})(\/act)?$/.exec(url.pathname);

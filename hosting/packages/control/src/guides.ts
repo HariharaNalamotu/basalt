@@ -1,4 +1,5 @@
-export const GUIDE_TOPICS = ['workflow', 'project', 'data', 'testing', 'operations', 'security'] as const;
+import { design } from './design-guide.js';
+export const GUIDE_TOPICS = ['workflow', 'project', 'data', 'design', 'testing', 'operations', 'security'] as const;
 export type GuideTopic = (typeof GUIDE_TOPICS)[number];
 
 const workflow = (root: string) => `# Basalt Host — the workflow (you do all of it; the human only describes what they want)
@@ -6,13 +7,14 @@ const workflow = (root: string) => `# Basalt Host — the workflow (you do all o
 1. **Create the app** (once): \`host_create_app { app: "todo-app" }\`. Production will be https://todo-app.${root}.
 2. **Set up the project** (once): \`host_init { app }\` (local tool) writes basalt.json, .npmrc for @basalt packages, a Playwright config and example e2e test. Follow the **project** topic for layout.
 3. **Decide what the app saves** before writing data code: read the **data** topic. Ask the human a few short plain questions (what it keeps track of, what each thing needs, who else should see an entry), write \`basalt.data.json\` and save data from the page through \`/_basalt/data\`. Most apps (bookings, orders, sign-ups, notes, including "no double bookings") need no backend at all. Use the Data block unless the app truly needs code on a server.
+   **Design it** before writing any page: read the **design** topic (a palette and type from the business, a local CSS starter, tappable time slots, every save outcome designed).
    **Write the app** with @basalt/auth (sign-in) and, only for logic that must run on a server, @basalt/api (backend). Read \`api_integration_guide\` (topics routes, database, frontend) and \`auth_integration_guide\`.
    On Basalt Host provisioning is automatic: ignore api_setup, .basalt/*.env files, basalt-dev-edge and api_status instructions from those guides.
 4. **Check your code**: \`api_review_code\` / \`auth_review_code\` on what you wrote. The build blocks critical/high findings anyway.
    **No local install is needed**: don't run npm install on the human's computer. \`host_deploy\` installs dependencies and builds on the platform (a missing package-lock.json is only a warning).
 5. **Deploy**: \`host_deploy { app }\` (local tool) packs the project, builds it (install, security scan, audit, typecheck, lint, unit tests, build), deploys a **private preview**, and runs smoke + your e2e tests. Poll \`host_wait\` until done.
 6. **If anything fails**: \`host_deployment\` (failed step output), \`host_build_logs\`, \`host_logs\` (backend), \`host_metrics\`. Reproduce UI problems with \`browser_open\` → \`browser_snapshot\`/\`browser_click\`/\`browser_fill\`/\`browser_screenshot\`/\`browser_console\`/\`browser_network\`. Fix, deploy again.
-7. **Verify by hand** on the preview: \`host_test_user\` for credentials, \`host_test_emails\` for verification codes, browser_* tools to click through the main flows. Screenshot key pages and look at them.
+7. **Verify by hand** on the preview: \`host_test_user\` for credentials, \`host_test_emails\` for verification codes, browser_* tools to click through the main flows. Screenshot key pages and look at them on a phone and on a desktop, light and dark: \`browser_open { app, env, viewport: "phone", colorScheme: "dark" }\`, then again with \`viewport: "desktop"\`. Run the design topic's pre-ship checklist and fix what you see before telling the human it's done.
 8. **Check the data** (if the app saves data): \`host_data_check { app, env }\` (local tool) on the preview or staging. Fix anything it finds and give the owner the receipt link.
 9. **Stage**: \`host_promote { app, deploymentId, to: "staging" }\` — tests run again against staging. \`host_wait\`.
 10. **Ship**: \`host_promote { app, deploymentId, to: "production" }\` — only allowed after the same deployment passed in staging. Zero-downtime; smoke-tested; automatic rollback if production errors spike in the next 3 minutes. Shortcut for everything after step 4: \`host_deploy { app, ship: true }\`.
@@ -179,6 +181,8 @@ export function hostGuide(topic: GuideTopic, root: string, registry = `https://r
       return workflow(root);
     case 'data':
       return data(root);
+    case 'design':
+      return design;
     case 'project':
       return project(registry);
     case 'testing':

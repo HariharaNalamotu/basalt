@@ -71,6 +71,16 @@ describe('browser worker', () => {
     expect(cookies).toEqual([expect.objectContaining({ name: 'basalt_access', value: 'tok123', domain: 'todo--staging.apps.test', httpOnly: true, secure: true })]);
   });
 
+  it('opens at phone size and in dark mode when asked, so agents can check the layout people actually see', async () => {
+    const s = await worker.open({ host: 'todo--staging.apps.test', owner: 'ws_view', viewport: 'phone', colorScheme: 'dark' });
+    const size = await worker.act(s.sessionId, 'ws_view', { type: 'evaluate', expression: 'innerWidth + "x" + innerHeight' });
+    expect(size.value).toBe('390x844');
+    const dark = await worker.act(s.sessionId, 'ws_view', { type: 'evaluate', expression: 'matchMedia("(prefers-color-scheme: dark)").matches' });
+    expect(dark.value).toBe('true');
+    const d = await worker.open({ host: 'todo--staging.apps.test', owner: 'ws_view' });
+    expect((await worker.act(d.sessionId, 'ws_view', { type: 'evaluate', expression: 'innerWidth' })).value).toBe('1280');
+  });
+
   it('isolates sessions between owners and refuses non-platform hosts', async () => {
     const s = await worker.open({ host: 'todo--staging.apps.test', owner: 'ws_a' });
     await expect(worker.act(s.sessionId, 'ws_b', { type: 'snapshot' })).rejects.toThrow(/Unknown or expired/);
