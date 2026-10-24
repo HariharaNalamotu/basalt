@@ -183,6 +183,46 @@ describe('changing the rules later', () => {
   });
 });
 
+describe('the owner as admin', () => {
+  test('making someone an admin needs the owner, then they see everything and can archive', async () => {
+    const app = await liveApp();
+    const customer = await login(app.key, 'customer');
+    const owner = await login(app.key, 'maria');
+    const made = await data(app.dataUrl, customer.token, 'create', { table: 'bookings', input: { service: 'Color', starts_at: '2026-10-25T15:00:00Z' } });
+    const id = made.body.data.id;
+    assert.equal((await data(app.dataUrl, owner.token, 'get', { table: 'bookings', id })).status, 404);
+
+    const req = await call('POST', '/api/projects/me/admins', { who: 'maria' }, app.key);
+    assert.equal(req.body.status, 'waiting_for_owner');
+    const html = await (await fetch(req.body.approveUrl)).text();
+    assert.match(html, /can see and change everything/);
+    assert.equal((await data(app.dataUrl, owner.token, 'get', { table: 'bookings', id })).status, 404);
+
+    await approve(req.body.approveUrl);
+    assert.equal((await data(app.dataUrl, owner.token, 'get', { table: 'bookings', id })).body.data.service, 'Color');
+    const stylist = await login(app.key, 'stylist');
+    const assigned = await data(app.dataUrl, owner.token, 'update', { table: 'bookings', id, input: { staff_id: stylist.userId } });
+    assert.equal(assigned.body.data.staff_id, stylist.userId);
+    assert.equal((await data(app.dataUrl, stylist.token, 'get', { table: 'bookings', id })).status, 200);
+
+    const archived = await data(app.dataUrl, owner.token, 'archive', { table: 'bookings', id });
+    assert.ok(archived.body.data.archived_at);
+    assert.equal((await data(app.dataUrl, customer.token, 'list', { table: 'bookings' })).body.data.rows.length, 0);
+    await data(app.dataUrl, customer.token, 'restore', { table: 'bookings', id });
+    assert.equal((await data(app.dataUrl, customer.token, 'list', { table: 'bookings' })).body.data.rows.length, 1);
+  });
+
+  test('turning down an admin request changes nothing', async () => {
+    const app = await liveApp();
+    const req = await call('POST', '/api/projects/me/admins', { who: 'stranger' }, app.key);
+    await approve(req.body.approveUrl, 'reject');
+    const stranger = await login(app.key, 'stranger');
+    const customer = await login(app.key, 'customer');
+    const made = await data(app.dataUrl, customer.token, 'create', { table: 'bookings', input: { service: 'X', starts_at: '2026-10-25T15:00:00Z' } });
+    assert.equal((await data(app.dataUrl, stranger.token, 'get', { table: 'bookings', id: made.body.data.id })).status, 404);
+  });
+});
+
 describe('apps are walled off from each other', () => {
   test("one app's key can't manage another, and its database login can't open another's database", async () => {
     const a = await liveApp();
@@ -271,7 +311,7 @@ describe('the MCP server Claude Code uses', () => {
       assert.equal(init.result.serverInfo.name, 'basalt');
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
       const names = (await rpc('tools/list')).result.tools.map((t: any) => t.name);
-      assert.deepEqual(names, ['basalt_start', 'basalt_set_rules', 'basalt_status', 'basalt_connect_app', 'basalt_test_login']);
+      assert.deepEqual(names, ['basalt_start', 'basalt_set_rules', 'basalt_status', 'basalt_connect_app', 'basalt_make_admin', 'basalt_test_login']);
 
       assert.match((await tool('basalt_status')).text, /call basalt_start first/i);
       assert.match((await tool('basalt_start', { app_name: "Maria's Salon" })).text, /locked down database/);

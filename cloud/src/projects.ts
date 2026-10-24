@@ -29,7 +29,9 @@ export interface Project {
 export interface Approval {
   id: string;
   projectId: string;
+  kind: 'rules' | 'admin';
   contract: unknown;
+  admin?: { uid: string; label: string };
   status: 'pending' | 'approved' | 'rejected' | 'replaced';
 }
 
@@ -86,7 +88,11 @@ export class Projects {
           status text not null default 'pending' check (status in ('pending', 'approved', 'rejected', 'replaced')),
           created_at timestamptz not null default now(),
           decided_at timestamptz
-        );`);
+        );
+        alter table cloud.approvals add column if not exists kind text not null default 'rules' check (kind in ('rules', 'admin'));
+        alter table cloud.approvals add column if not exists admin_uid uuid;
+        alter table cloud.approvals add column if not exists admin_label text;
+        alter table cloud.approvals alter column contract drop not null;`);
     } finally {
       c.release();
     }
@@ -177,7 +183,7 @@ export class Projects {
     const c = await this.#pool.connect();
     try {
       await c.query('begin');
-      await c.query(`update cloud.approvals set status = 'replaced', decided_at = now() where project_id = $1 and status = 'pending'`, [p.id]);
+      await c.query(`update cloud.approvals set status = 'replaced', decided_at = now() where project_id = $1 and status = 'pending' and kind = 'rules'`, [p.id]);
       await c.query('insert into cloud.approvals (id, project_id, token_hash, contract) values ($1, $2, $3, $4)', [id, p.id, sha256(token), JSON.stringify(contract)]);
       await c.query('commit');
     } catch (err) {
@@ -189,15 +195,42 @@ export class Projects {
     return { id, token };
   }
 
+  // Asks the owner to make someone an admin who can see and change every row.
+  async requestAdmin(p: Project, uid: string, label: string): Promise<{ id: string; token: string }> {
+    const id = randomId(16);
+    const token = randomSecret();
+    await this.#pool.query(
+      `insert into cloud.approvals (id, project_id, token_hash, kind, admin_uid, admin_label) values ($1, $2, $3, 'admin', $4, $5)`,
+      [id, p.id, sha256(token), uid, label],
+    );
+    return { id, token };
+  }
+
+  async addAdmin(p: Project, uid: string): Promise<void> {
+    const c = await connect(withDb(this.#cfg.adminUrl, p.dbName));
+    try {
+      await c.query('select basalt.add_admin($1)', [uid]);
+    } finally {
+      await c.end();
+    }
+  }
+
   async getApproval(id: string, token: unknown): Promise<Approval | null> {
     if (!/^[a-z0-9]{16}$/.test(id) || typeof token !== 'string') return null;
     const r = (await this.#pool.query('select * from cloud.approvals where id = $1', [id])).rows[0];
     if (!r || !sameHash(token, r.token_hash)) return null;
-    return { id: r.id, projectId: r.project_id, contract: r.contract, status: r.status };
+    return {
+      id: r.id,
+      projectId: r.project_id,
+      kind: r.kind,
+      contract: r.contract,
+      admin: r.admin_uid ? { uid: r.admin_uid, label: r.admin_label } : undefined,
+      status: r.status,
+    };
   }
 
   async pendingApproval(projectId: string): Promise<{ id: string } | null> {
-    const r = (await this.#pool.query(`select id from cloud.approvals where project_id = $1 and status = 'pending' order by created_at desc limit 1`, [projectId])).rows[0];
+    const r = (await this.#pool.query(`select id from cloud.approvals where project_id = $1 and status = 'pending' and kind = 'rules' order by created_at desc limit 1`, [projectId])).rows[0];
     return r ? { id: r.id } : null;
   }
 

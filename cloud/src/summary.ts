@@ -50,7 +50,8 @@ export function tableSummary(table: TableSpec): string[] {
   if (table.shareWith) {
     lines.push(`The person picked in "${words(table.shareWith)}" can also see that one, but can't change it.`);
   }
-  lines.push(`Nobody else can see them, and nothing can be deleted.`);
+  lines.push(`Admins you approve can see and change all of them. Nobody else can see them.`);
+  lines.push(`Nothing is ever permanently deleted: things can be archived and brought back.`);
   return lines;
 }
 

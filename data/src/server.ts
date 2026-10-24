@@ -1,10 +1,12 @@
 // The Data service. App code talks to this over HTTP and never gets a database
-// login, so whatever the AI writes in the app can only use these four calls.
+// login, so whatever the AI writes in the app can only use these calls.
 //
 //   POST /v1/data/get     { table, id }
-//   POST /v1/data/list    { table, limit?, after? }
+//   POST /v1/data/list    { table, limit?, after?, archived? }
 //   POST /v1/data/create  { table, input, key? }
 //   POST /v1/data/update  { table, id, input }
+//   POST /v1/data/archive { table, id }
+//   POST /v1/data/restore { table, id }
 //   GET  /healthz         (never touches the database)
 //
 // Every request needs  Authorization: Bearer <user login token>.
@@ -35,7 +37,7 @@ const STATUS: Record<BasaltErrorCode, number> = {
   contract: 500,
 };
 
-const OPS = new Set(['get', 'list', 'create', 'update']);
+const OPS = new Set(['get', 'list', 'create', 'update', 'archive', 'restore']);
 
 // Most vibe coded apps call this straight from the browser. Logins travel in
 // the Authorization header, never in cookies, so any site may call it: a page
@@ -160,13 +162,23 @@ export function createDataHandler(options: DataServerOptions): DataHandler {
           result = await data.get(token, table, body.id as string);
           break;
         case 'list':
-          result = await data.list(token, table, { limit: body.limit as number | undefined, after: body.after as string | undefined });
+          result = await data.list(token, table, {
+            limit: body.limit as number | undefined,
+            after: body.after as string | undefined,
+            archived: body.archived as boolean | undefined,
+          });
           break;
         case 'create':
           result = await data.create(token, table, body.input, body.key === undefined ? {} : { key: body.key as string });
           break;
         case 'update':
           result = await data.update(token, table, body.id as string, body.input);
+          break;
+        case 'archive':
+          result = await data.archive(token, table, body.id as string);
+          break;
+        case 'restore':
+          result = await data.restore(token, table, body.id as string);
           break;
       }
       let json = JSON.stringify({ ok: true, data: result });

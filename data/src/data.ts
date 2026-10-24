@@ -4,7 +4,8 @@ import { BasaltError, type BasaltErrorCode } from './errors.ts';
 import { checkId, checkWrite } from './validate.ts';
 
 // The Data block core. This is the only way to touch an app's database:
-// get, list, create and update. There is no raw SQL method and no delete.
+// get, list, create, update, archive and restore. There is no raw SQL method
+// and no permanent delete.
 //
 // It runs inside the Data service (server.ts), never inside app code, so the
 // app never holds a database login. Each call is one round trip to
@@ -21,6 +22,8 @@ export interface BasaltDataOptions {
 export interface ListOptions {
   limit?: number;
   after?: string;
+  // true lists only archived rows. By default they're left out.
+  archived?: boolean;
 }
 
 export interface CreateOptions {
@@ -91,6 +94,10 @@ export class BasaltData {
       throw new BasaltError('invalid_input', `limit must be a whole number from 1 to ${MAX_PAGE}.`);
     }
     const args: Record<string, unknown> = { limit };
+    if (options.archived !== undefined) {
+      if (typeof options.archived !== 'boolean') throw new BasaltError('invalid_input', 'archived must be true or false.');
+      args.archived = options.archived;
+    }
     if (options.after !== undefined && options.after !== null) {
       const [at, id] = decodeCursor(options.after);
       args.after_ts = at;
@@ -120,6 +127,17 @@ export class BasaltData {
     const rowId = checkId(id);
     const { columns, values } = checkWrite(spec, input, 'update');
     return (await this.#call(token, 'update', spec.name, { id: rowId, input: Object.fromEntries(columns.map((c, i) => [c, values[i]])) })) as Row;
+  }
+
+  // Hides a row from lists without losing it. restore() brings it back.
+  async archive(token: string, table: string, id: string): Promise<Row> {
+    const spec = getTable(this.#contract, table);
+    return (await this.#call(token, 'archive', spec.name, { id: checkId(id) })) as Row;
+  }
+
+  async restore(token: string, table: string, id: string): Promise<Row> {
+    const spec = getTable(this.#contract, table);
+    return (await this.#call(token, 'restore', spec.name, { id: checkId(id) })) as Row;
   }
 
   async close(): Promise<void> {

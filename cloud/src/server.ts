@@ -5,6 +5,7 @@
 //   GET  /api/projects/me              (admin key)   -> status, rules summary, approval link
 //   PUT  /api/projects/me/rules        { contract }  -> live now, or waiting for the owner's yes
 //   POST /api/projects/me/test-login   { who }       -> a login token for a test person
+//   POST /api/projects/me/admins       { who | userId } -> asks the owner to make someone an admin
 //   GET  /approve/<id>?t=<token>                     -> the owner's approval page
 //   POST /p/<project id>/v1/data/<op>                -> that app's data API
 //
@@ -213,6 +214,25 @@ export function createCloudServer(options: CloudServerOptions) {
       return sendJson(res, 200, { ok: true, who, userId, token: signToken(p.jwtSecret, userId), expiresInSeconds: 3600 });
     }
 
+    if (req.method === 'POST' && path === '/api/projects/me/admins') {
+      const p = await adminProject(req);
+      if (!p.approvedContract) throw new HttpError(409, "Set the app's rules first (and get them approved), then add an admin.");
+      const body = await readJson(req);
+      let uid: string;
+      let label: string;
+      if (typeof body.userId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.userId)) {
+        uid = body.userId;
+        label = typeof body.label === 'string' ? body.label.slice(0, 60) : 'this person';
+      } else if (typeof body.who === 'string' && /^[A-Za-z0-9 _-]{1,40}$/.test(body.who)) {
+        uid = testUserId(p.jwtSecret, body.who);
+        label = body.who;
+      } else {
+        throw new HttpError(400, 'Say who should be an admin: a test person\'s name (who) or a user id (userId).');
+      }
+      const { id, token } = await projects.requestAdmin(p, uid, label);
+      return sendJson(res, 202, { ok: true, status: 'waiting_for_owner', approveUrl: `${base}/approve/${id}?t=${token}`, userId: uid });
+    }
+
     throw new HttpError(404, 'Unknown route.');
   }
 
@@ -222,9 +242,39 @@ export function createCloudServer(options: CloudServerOptions) {
     const approval = await projects.getApproval(id, token);
     if (!approval) return sendHtml(res, 404, page('Link not found', '<h1>This link doesn\'t work</h1><p>It may be mistyped or expired. Ask Claude for a new one.</p>'));
     const p = (await projects.get(approval.projectId))!;
-    const contract = parseContract(approval.contract);
 
-    if (form && approval.status === 'pending') {
+    if (approval.status !== 'pending') {
+      const word = { approved: 'already approved', rejected: 'already turned down', replaced: 'replaced by a newer request', pending: '' }[approval.status];
+      return sendHtml(res, 410, page('Already decided', `<h1>This request was ${word}</h1><p>Ask Claude for the latest link if you need one.</p>`));
+    }
+
+    if (approval.kind === 'admin') {
+      const who = esc(approval.admin!.label);
+      if (form) {
+        if (form.get('decision') === 'approve') {
+          await projects.addAdmin(p, approval.admin!.uid);
+          await projects.decide(approval, 'approved');
+          return sendHtml(res, 200, page('Admin added', `<h1>Done. ${who} is now an admin of ${esc(p.name)}.</h1><p class="muted">You can close this page and go back to Claude.</p>`));
+        }
+        await projects.decide(approval, 'rejected');
+        return sendHtml(res, 200, page('Not approved', '<h1>Nothing changed</h1><p>Nobody new can see everything. Tell Claude what you\'d like instead.</p>'));
+      }
+      return sendHtml(
+        res,
+        200,
+        page(
+          `Make ${approval.admin!.label} an admin`,
+          `<h1>Make ${who} an admin of ${esc(p.name)}?</h1>
+<div class="warn">An admin can see and change everything everyone has saved in this app. Only say yes for yourself or someone you fully trust.</div>
+<form method="post"><input type="hidden" name="t" value="${esc(token!)}">
+<button class="yes" name="decision" value="approve">Yes, make ${who} an admin</button>
+<button class="no" name="decision" value="reject">No</button></form>`,
+        ),
+      );
+    }
+
+    const contract = parseContract(approval.contract);
+    if (form) {
       if (form.get('decision') === 'approve') {
         try {
           await projects.apply(p, approval.contract);
@@ -237,11 +287,6 @@ export function createCloudServer(options: CloudServerOptions) {
       }
       await projects.decide(approval, 'rejected');
       return sendHtml(res, 200, page('Not approved', `<h1>Nothing changed</h1><p>Your app keeps its current rules. Tell Claude what you'd like instead.</p>`));
-    }
-
-    if (approval.status !== 'pending') {
-      const word = { approved: 'already approved', rejected: 'already turned down', replaced: 'replaced by a newer request' }[approval.status as 'approved' | 'rejected' | 'replaced'];
-      return sendHtml(res, 410, page('Already decided', `<h1>This request was ${word}</h1><p>Ask Claude for the latest link if you need one.</p>`));
     }
 
     const why = loosens(p.approvedContract ? parseContract(p.approvedContract) : null, contract);

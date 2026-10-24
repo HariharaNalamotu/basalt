@@ -43,6 +43,7 @@ declare
   after_ts timestamptz;
   after_id uuid;
   result jsonb;
+  cond text;
   st text;
   col text;
 begin
@@ -55,7 +56,7 @@ begin
   perform set_config('basalt.verified', '', true);
   perform set_config('basalt.jwt', coalesce(token, ''), true);
 
-  if op is null or op not in ('get', 'list', 'create', 'update') then
+  if op is null or op not in ('get', 'list', 'create', 'update', 'archive', 'restore') then
     return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'Unknown operation.');
   end if;
   if args is null or jsonb_typeof(args) <> 'object' then
@@ -79,6 +80,7 @@ begin
   elsif op = 'get' then
     cost_r := 1;
   else
+    -- create, update, archive and restore are all writes.
     cost_w := 1;
   end if;
 
@@ -114,30 +116,55 @@ begin
       end if;
 
     elsif op = 'list' then
+      if args ? 'archived' and jsonb_typeof(args->'archived') <> 'boolean' then
+        return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'archived must be true or false.');
+      end if;
+      -- Archived rows only show up when asked for.
+      cond := case when (args->>'archived')::boolean then '"archived_at" is not null' else '"archived_at" is null' end;
       if args ? 'after_ts' or args ? 'after_id' then
         after_ts := (args->>'after_ts')::timestamptz;
         after_id := (args->>'after_id')::uuid;
         if after_ts is null or after_id is null or not isfinite(after_ts) then
           return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'That page cursor is not valid.');
         end if;
+        cond := cond || ' and ("created_at", "id") < ($2, $3)';
       end if;
-      -- Without a share field: one scan on the owner index. With one: a scan on
-      -- each index, merged, so both stay fast however many rows a user can see.
-      -- Row rules still apply to both.
+
+      if is_admin() then
+        -- Admins see every row: one scan on the newest-first index.
+        execute format(
+          'select coalesce(jsonb_agg(to_jsonb(r) order by r."created_at" desc, r."id" desc), ''[]''::jsonb) from (
+             select %s from app.%I where %s order by "created_at" desc, "id" desc limit $1) r',
+          cols, tbl, cond)
+          into result using lim + 1, after_ts, after_id;
+      else
+        -- Without a share field: one scan on the owner index. With one: a scan
+        -- on each index, merged, so both stay fast however many rows a user
+        -- can see. Row rules still apply to both.
+        execute format(
+          'select coalesce(jsonb_agg(to_jsonb(r) order by r."created_at" desc, r."id" desc), ''[]''::jsonb) from (
+             select %1$s from (
+               (select %1$s from app.%2$I where "owner_id" = $4 and %3$s order by "created_at" desc, "id" desc limit $1)
+               %4$s
+             ) both_sides order by "created_at" desc, "id" desc limit $1
+           ) r',
+          cols, tbl, cond,
+          case when reg.share_field is null then '' else format(
+            'union (select %1$s from app.%2$I where %3$I = $4 and %4$s order by "created_at" desc, "id" desc limit $1)',
+            cols, tbl, reg.share_field, cond) end)
+          into result using lim + 1, after_ts, after_id, u;
+      end if;
+
+    elsif op in ('archive', 'restore') then
+      rid := (args->>'id')::uuid;
       execute format(
-        'select coalesce(jsonb_agg(to_jsonb(r) order by r."created_at" desc, r."id" desc), ''[]''::jsonb) from (
-           select %1$s from (
-             (select %1$s from app.%2$I where "owner_id" = $4 and ($2::timestamptz is null or ("created_at", "id") < ($2, $3))
-              order by "created_at" desc, "id" desc limit $1)
-             %3$s
-           ) both_sides order by "created_at" desc, "id" desc limit $1
-         ) r',
-        cols, tbl,
-        case when reg.share_field is null then '' else format(
-          'union
-           (select %1$s from app.%2$I where %3$I = $4 and ($2::timestamptz is null or ("created_at", "id") < ($2, $3))
-            order by "created_at" desc, "id" desc limit $1)', cols, tbl, reg.share_field) end)
-        into result using lim + 1, after_ts, after_id, u;
+        'with upd as (update app.%I t set "archived_at" = %s where t."id" = $1 returning t.*)
+         select to_jsonb(r) from (select %s from upd) r',
+        tbl, case when op = 'archive' then 'coalesce(t."archived_at", now())' else 'null' end, cols)
+        into result using rid;
+      if result is null then
+        return jsonb_build_object('ok', false, 'code', 'not_found', 'message', 'No ' || tbl || ' with that id.');
+      end if;
 
     else
       input := args->'input';

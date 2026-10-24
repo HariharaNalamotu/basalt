@@ -439,6 +439,58 @@ describe('sharing and paging together', () => {
   });
 });
 
+describe('archive instead of delete', () => {
+  test('archiving hides a row from lists, and restoring brings it back', async () => {
+    const t = userToken(randomUUID());
+    const row = await db.create(t, 'bookings', { service: 'Cancel me', starts_at: START });
+    const archived = await db.archive(t, 'bookings', row.id as string);
+    assert.ok(archived.archived_at);
+    assert.equal((await db.list(t, 'bookings')).rows.length, 0);
+    assert.equal((await db.list(t, 'bookings', { archived: true })).rows.length, 1);
+    assert.ok((await db.get(t, 'bookings', row.id as string)).archived_at);
+    const back = await db.restore(t, 'bookings', row.id as string);
+    assert.equal(back.archived_at, null);
+    assert.equal((await db.list(t, 'bookings')).rows.length, 1);
+  });
+
+  test("nobody can archive someone else's row", async () => {
+    await rejects(db.archive(bobToken, 'bookings', aliceBooking.id as string), 'not_found');
+  });
+
+  test('archived_at cannot be set through a normal update', async () => {
+    await rejects(db.update(aliceToken, 'bookings', aliceBooking.id as string, { archived_at: START }), 'invalid_input');
+  });
+});
+
+describe('the app owner as admin', () => {
+  test('an admin sees and changes every row, including who it is assigned to', async () => {
+    const boss = randomUUID();
+    const bossToken = userToken(boss);
+    const stylist = randomUUID();
+    const customer = userToken(randomUUID());
+    const row = await db.create(customer, 'bookings', { service: 'Color', starts_at: START });
+
+    await rejects(db.get(bossToken, 'bookings', row.id as string), 'not_found');
+    await admin((c) => c.query('select basalt.add_admin($1)', [boss]));
+
+    assert.equal((await db.get(bossToken, 'bookings', row.id as string)).service, 'Color');
+    assert.ok((await db.list(bossToken, 'bookings', { limit: 100 })).rows.some((r) => r.id === row.id));
+    const assigned = await db.update(bossToken, 'bookings', row.id as string, { staff_id: stylist });
+    assert.equal(assigned.staff_id, stylist);
+    assert.equal(assigned.owner_id, (await db.get(customer, 'bookings', row.id as string)).owner_id);
+    assert.equal((await db.get(userToken(stylist), 'bookings', row.id as string)).service, 'Color');
+    await db.archive(bossToken, 'bookings', row.id as string);
+
+    await admin((c) => c.query('select basalt.remove_admin($1)', [boss]));
+    await rejects(db.get(bossToken, 'bookings', row.id as string), 'not_found');
+  });
+
+  test("the Data service's login cannot make anyone an admin", async () => {
+    await refusedByDb((c) => c.query('select basalt.add_admin(gen_random_uuid())'));
+    await refusedByDb((c) => c.query('insert into basalt.admins (uid) values (gen_random_uuid())'));
+  });
+});
+
 describe('audit log', () => {
   test('a month that was missed gets its own partition, and its rows move out of the default one', async () => {
     const res = await admin(async (c) => {
@@ -548,7 +600,7 @@ describe('even with the Data service fully taken over', () => {
   });
 
   test('cannot read the settings, usage counters, audit log, revocations or registry', async () => {
-    for (const t of ['settings', 'usage', 'audit', 'revocations', 'registry']) {
+    for (const t of ['settings', 'usage', 'audit', 'revocations', 'registry', 'admins']) {
       await refusedByDb((c) => c.query(`select * from basalt.${t}`));
     }
     await refusedByDb((c) => c.query('delete from basalt.audit'));

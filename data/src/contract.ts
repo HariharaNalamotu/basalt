@@ -40,7 +40,7 @@ export interface Contract {
   tables: Map<string, TableSpec>;
 }
 
-export const SYSTEM_COLUMNS = ['id', 'owner_id', 'created_at', 'updated_at'] as const;
+export const SYSTEM_COLUMNS = ['id', 'owner_id', 'created_at', 'updated_at', 'archived_at'] as const;
 // Set by the API for idempotent creates. Never returned or writable.
 export const HIDDEN_COLUMNS = ['request_key'] as const;
 

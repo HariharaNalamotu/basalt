@@ -1,5 +1,5 @@
 // What app code imports. It holds a URL and the user's login token, never a
-// database login, so the only things it can do are these four calls.
+// database login, so the only things it can do are these calls.
 //
 //   const basalt = createBasalt({ url: 'http://127.0.0.1:8787', token: () => session.token });
 //   const booking = await basalt.data.get('bookings', id);
@@ -45,6 +45,8 @@ export function createBasalt(options: BasaltClientOptions) {
       list: (table: string, opts: ListOptions = {}) => call<{ rows: Row[]; next: string | null }>('list', { table, ...opts }),
       create: (table: string, input: Record<string, unknown>, opts: CreateOptions = {}) => call<Row>('create', { table, input, ...opts }),
       update: (table: string, id: string, input: Record<string, unknown>) => call<Row>('update', { table, id, input }),
+      archive: (table: string, id: string) => call<Row>('archive', { table, id }),
+      restore: (table: string, id: string) => call<Row>('restore', { table, id }),
     },
   };
 }

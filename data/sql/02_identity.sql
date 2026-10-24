@@ -173,6 +173,43 @@ alter function basalt.uid() owner to :"owner_role";
 revoke execute on function basalt.uid() from public;
 grant execute on function basalt.uid() to :"exec_role";
 
+-- People the app's owner made admins: they can see and change every row.
+-- Only the superuser (Basalt Cloud, after the owner approves) can add one.
+create table if not exists basalt.admins (
+  uid uuid primary key,
+  added_at timestamptz not null default now()
+);
+alter table basalt.admins owner to :"owner_role";
+revoke all on basalt.admins from public;
+
+create or replace function basalt.is_admin() returns boolean
+language sql stable security definer
+set search_path = pg_catalog, basalt, pg_temp
+as $$
+  select exists (select 1 from admins a where a.uid = uid())
+$$;
+alter function basalt.is_admin() owner to :"owner_role";
+revoke execute on function basalt.is_admin() from public;
+grant execute on function basalt.is_admin() to :"exec_role";
+
+create or replace function basalt.add_admin(target uuid) returns void
+language sql volatile security definer
+set search_path = pg_catalog, basalt, pg_temp
+as $$
+  insert into admins (uid) values (target) on conflict do nothing
+$$;
+alter function basalt.add_admin(uuid) owner to :"owner_role";
+revoke execute on function basalt.add_admin(uuid) from public;
+
+create or replace function basalt.remove_admin(target uuid) returns void
+language sql volatile security definer
+set search_path = pg_catalog, basalt, pg_temp
+as $$
+  delete from admins where uid = target
+$$;
+alter function basalt.remove_admin(uuid) owner to :"owner_role";
+revoke execute on function basalt.remove_admin(uuid) from public;
+
 -- For the auth service or an admin: log a user out of every session.
 create or replace function basalt.revoke_user(target uuid) returns void
 language sql volatile security definer

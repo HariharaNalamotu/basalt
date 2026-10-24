@@ -92,6 +92,10 @@ export function basalt(getToken) {
     // Pass { key } (for example an order number) so a retry never saves twice.
     create: (table, input, options = {}) => call('create', { table, input, ...options }),
     update: (table, id, input) => call('update', { table, id, input }),
+    // Nothing is ever deleted. Archive hides a row (for example a cancelled
+    // booking) and restore brings it back. list(table, { archived: true }) shows archived ones.
+    archive: (table, id) => call('archive', { table, id }),
+    restore: (table, id) => call('restore', { table, id }),
   };
 }
 `;
@@ -123,6 +127,12 @@ const TOOLS = [
     description:
       "Returns the code the app uses to read and save data (a small basalt.js file), plus how to use it. Use it for every read and save. Never store app data in localStorage, files, another database or anywhere else, and never write SQL. Every call needs the signed in person's login token. Until the app has real sign in, use basalt_test_login tokens to try it.",
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'basalt_make_admin',
+    description:
+      "Lets one person (usually the app's owner) see and change everything everyone has saved, for example every booking, and assign them to staff. Use it when the owner needs a view of all the data. The owner gets a link to approve it: show it to them. Until the app has real sign in, pass the same name you use with basalt_test_login.",
+    inputSchema: { type: 'object', properties: { who: { type: 'string', description: 'The test person\'s name, like "maria".' } }, required: ['who'] },
   },
   {
     name: 'basalt_test_login',
@@ -160,7 +170,12 @@ async function callTool(name: string, args: Record<string, any>): Promise<string
       const s = need();
       const out = await api('GET', '/api/projects/me', undefined, s.adminKey);
       if (out.project.status !== 'live') return 'The rules aren\'t live yet. Finish basalt_set_rules (and the person\'s approval) first.';
-      return `Save this as basalt.js in the app and use it for all data:\n\n${clientCode(s.dataUrl)}\nUse it like:\n  import { basalt } from './basalt.js';\n  const db = basalt(() => currentUserToken);\n  const booking = await db.create('bookings', { service: 'Haircut', starts_at: '2026-10-25T15:00:00Z' });\n  const page = await db.list('bookings', { limit: 20 });\n\nThe rules in plain English:\n${out.project.rules}\n\nIf a call fails, err.message says why in plain words and err.code says what kind of problem it is.`;
+      return `Save this as basalt.js in the app and use it for all data:\n\n${clientCode(s.dataUrl)}\nUse it like:\n  import { basalt } from './basalt.js';\n  const db = basalt(() => currentUserToken);\n  const booking = await db.create('bookings', { service: 'Haircut', starts_at: '2026-10-25T15:00:00Z' });\n  const page = await db.list('bookings', { limit: 20 });\n  await db.archive('bookings', booking.id); // cancel, can be restored\n\nAdmins (see basalt_make_admin) get every row from list, not just their own.\n\nThe rules in plain English:\n${out.project.rules}\n\nIf a call fails, err.message says why in plain words and err.code says what kind of problem it is.`;
+    }
+    case 'basalt_make_admin': {
+      const s = need();
+      const out = await api('POST', '/api/projects/me/admins', { who: String(args.who ?? '') }, s.adminKey);
+      return `The person needs to approve this. Show them this link and ask them to open it and tap "Yes":\n${out.approveUrl}\n\nOnce they do, "${args.who}" can see and change everything in the app. Sign in as them with basalt_test_login to check.`;
     }
     case 'basalt_test_login': {
       const s = need();

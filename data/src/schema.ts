@@ -88,6 +88,7 @@ export function tableSql(table: TableSpec, roles: Roles = DEFAULT_ROLES): string
   const writable = [...table.fields.keys()];
   const writableSql = writable.map(quoteIdent).join(', ');
   const me = '(select basalt.uid())';
+  const admin = '(select basalt.is_admin())';
   const share = table.shareWith ? quoteIdent(table.shareWith) : null;
 
   return [
@@ -97,8 +98,12 @@ export function tableSql(table: TableSpec, roles: Roles = DEFAULT_ROLES): string
   ${[...table.fields].map(([n, s]) => columnSql(n, s)).join(',\n  ')},
   "request_key" text check (char_length("request_key") <= 200),
   "created_at" timestamptz not null default now(),
-  "updated_at" timestamptz not null default now()
+  "updated_at" timestamptz not null default now(),
+  "archived_at" timestamptz
 )`,
+    // Tables made by earlier versions get the newer system columns too.
+    `alter table ${t} add column if not exists "request_key" text check (char_length("request_key") <= 200)`,
+    `alter table ${t} add column if not exists "archived_at" timestamptz`,
     `alter table ${t} owner to ${owner}`,
     `alter table ${t} enable row level security`,
     `alter table ${t} force row level security`,
@@ -113,6 +118,8 @@ end $basalt$`,
 
     // Keeps "my rows, newest first" fast at any table size.
     `create index if not exists ${quoteIdent(`${table.name}_owner_recent`)} on ${t} ("owner_id", "created_at" desc, "id" desc)`,
+    // Lets an admin page through every row, newest first.
+    `create index if not exists ${quoteIdent(`${table.name}_recent`)} on ${t} ("created_at" desc, "id" desc)`,
     // One row per user per idempotency key.
     `create unique index if not exists ${quoteIdent(`${table.name}_request_key`)} on ${t} ("owner_id", "request_key") where "request_key" is not null`,
     ...(share
@@ -120,18 +127,17 @@ end $basalt$`,
       : []),
 
     // Each user sees their own rows, plus rows shared with them. Only the
-    // owner can change a row. Only the exec role (inside basalt.api) gets these.
-    share
-      ? `create policy basalt_select on ${t} for select to ${exec} using ("owner_id" = ${me} or ${share} = ${me})`
-      : `create policy basalt_select on ${t} for select to ${exec} using ("owner_id" = ${me})`,
+    // row's owner or an admin can change it. Only the exec role (inside
+    // basalt.api) gets these.
+    `create policy basalt_select on ${t} for select to ${exec} using ("owner_id" = ${me}${share ? ` or ${share} = ${me}` : ''} or ${admin})`,
     `create policy basalt_insert on ${t} for insert to ${exec} with check ("owner_id" = ${me})`,
-    `create policy basalt_update on ${t} for update to ${exec} using ("owner_id" = ${me}) with check ("owner_id" = ${me})`,
+    `create policy basalt_update on ${t} for update to ${exec} using ("owner_id" = ${me} or ${admin}) with check ("owner_id" = ${me} or ${admin})`,
 
     // Read rows, write only the contract's fields. id, owner_id and the
     // timestamps are set by the database. No delete at all.
     `grant select on ${t} to ${exec}`,
     `grant insert (${writableSql}, "request_key") on ${t} to ${exec}`,
-    `grant update (${writableSql}) on ${t} to ${exec}`,
+    `grant update (${writableSql}, "archived_at") on ${t} to ${exec}`,
 
     // Updates that change nothing don't bump updated_at or write to the audit log.
     `drop trigger if exists basalt_touch on ${t}`,
