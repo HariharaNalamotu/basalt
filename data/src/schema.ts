@@ -138,6 +138,8 @@ end $basalt$`,
     // Each user sees their own rows, plus rows shared with them. Only the
     // row's owner or an admin can change it. Only the exec role (inside
     // basalt.api) gets these.
+    // Only basalt.taken_values (owned by the owner role, which can't log in) reads through this.
+    `create policy basalt_owner_read on ${t} for select to ${owner} using (true)`,
     `create policy basalt_select on ${t} for select to ${exec} using ("owner_id" = ${me}${share ? ` or ${share} = ${me}` : ''} or ${admin})`,
     `create policy basalt_insert on ${t} for insert to ${exec} with check ("owner_id" = ${me})`,
     `create policy basalt_update on ${t} for update to ${exec} using ("owner_id" = ${me} or ${admin}) with check ("owner_id" = ${me} or ${admin})`,

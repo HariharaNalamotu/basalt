@@ -78,6 +78,9 @@ export function basalt() {
     // Nothing is deleted: archive hides an entry (a cancelled booking), restore brings it back.
     archive: (table, id) => op('archive', { table, id }),
     restore: (table, id) => op('restore', { table, id }),
+    // Which values of a unique field are taken (booked slots), and nothing else about those entries.
+    // field is the first field of a "unique" group; gte/lt narrow it, e.g. to one day. Returns { taken: [{ starts_at, ... }] }.
+    taken: (table, options) => op('taken', { table, ...options }),
     // PNG, JPEG, GIF, WebP, PDF, text and CSV up to 5 MB. Save the returned id in a "file" field.
     upload: (file) => call('/v1/files', file, { headers: { 'content-type': file.type, 'x-file-name': encodeURIComponent(file.name) } }),
     // A link for <img src> or downloads, good for 5 minutes.

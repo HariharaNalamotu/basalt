@@ -6,9 +6,9 @@ export const design = `# Small Business Web App Design Guidelines
 
 ## 1. Principles
 
-1. **Identify the business before requesting an account.** Public pages show the business name, offering, location or service area, hours, and one primary action. Require authentication when a customer needs to save or manage something.
+1. **Identify the business and let visitors look before asking for an account.** Let visitors see services and availability first, with a task-led public action such as "Book an appointment". Ask them to sign in only when saving or managing the booking needs it, and keep their selections through sign-in.
 2. **Make one next action obvious.** Each page or task section has one primary button. Secondary actions use outlined buttons or text links.
-3. **Show the decision before collecting details.** Display service descriptions, prices, durations, availability, and relevant policies before confirmation. Never invent missing business facts.
+3. **Show the decision before collecting details.** Display service descriptions, prices, durations, availability, and relevant policies before confirmation. Never invent missing business facts. When business information is missing, build the public page from supplied facts and existing service data, leave out unsupported details and tell the owner what's missing (not on the customer pages). Never invent prices, durations, descriptions, hours, addresses, policies, testimonials or business imagery.
 4. **Design every save outcome.** Pending, successful, invalid, unavailable, and failed states receive deliberate layouts, useful language, and a clear next action.
 5. **Ship a business identity, not a component showcase.** Repeat a restrained palette, distinctive heading treatment, consistent spacing, and business-specific copy across public, authentication, and account pages.
 
@@ -45,7 +45,11 @@ The following are complete brand overrides for the starter. Columns map to \`--b
 - Public hero: 32px vertical padding on phones, 64px on desktop. Include a specific heading, one supporting sentence, primary CTA, and verified practical details. Use a two-column desktop hero only when useful local imagery exists.
 - Booking sequence: **service → date and time → customer details → review and confirm**. Show progress only when these are genuinely separate steps.
 - Service choices show name, price, and duration when known. Date navigation sits above visible time chips, grouped by morning/afternoon when helpful.
-- Keep the selected service, date, time, and price visible in a summary. On phones, place it before confirmation; desktop may use a sticky sidebar.
+- For short, name-only service choices, use a two-column phone layout when labels fit without clipping, keeping targets at least 44 x 44px with 8px gaps. Use full-width cards when supplied descriptions, prices or durations need comparing.
+- Remove times that have already passed, using the business's timezone. Put available times first and optionally reveal future unavailable times behind "Show unavailable times". For a day with nothing free, say so and offer a direct way to pick another date. On Basalt, \`taken\` (see the data topic) lists the booked values without revealing whose they are.
+- On short pages, use a full-viewport-height page shell so the footer sits at the bottom. Don't stretch the hero or add filler content to fill space.
+- Leave 24px between a page title and its first content group. Render fieldset legends inside the card, aligned and padded like the other labels.
+- Keep the selected service, date (with the year), time, and price visible in a summary (price and duration only when supplied). On phones, place it before confirmation; desktop may use a sticky sidebar.
 - After booking, replace the active form with confirmation and appointment details. Provide "View my bookings" and "Book another appointment."
 - Account pages lead with the next booking. Separate upcoming and past bookings. Keep cancellation controls secondary and explain any applicable policy before confirmation.
 
@@ -109,7 +113,7 @@ Copy the exact component CSS in section 8. Extend it with business-specific cont
 
 ## 8. Complete CSS starter
 
-Copy into a local \`styles.css\`. Default palette: Shear Joy. Replace the eight brand tokens with the chosen example in both theme blocks. The file below is under 120 lines.
+Use this CSS as a foundation in a local \`styles.css\`. Default palette: Shear Joy. Replace the eight brand tokens with the chosen example in both theme blocks. Then add the layout and navigation section 3 asks for, including the phone menu and the footer on short pages: copying the starter alone doesn't meet these guidelines.
 
 \`\`\`css
 :root {
@@ -152,6 +156,7 @@ small,.hint,.muted{font-size:14px;line-height:1.5;color:var(--muted)}
 .account{max-width:960px}.auth{max-width:440px;margin:32px auto}
 .stack{display:grid;gap:16px}.section{padding-block:48px}
 .site-header{border-bottom:1px solid var(--line);background:var(--surface)}
+.page{min-height:100vh;display:flex;flex-direction:column}.page>main{flex:1}
 .header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding-block:12px}
 .wordmark{font-size:22px;font-weight:750;text-decoration:none}
 .site-footer{margin-top:48px;padding-block:32px;border-top:1px solid var(--line);color:var(--muted)}

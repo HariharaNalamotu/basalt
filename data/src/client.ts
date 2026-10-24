@@ -53,6 +53,8 @@ export function createBasalt(options: BasaltClientOptions = {}) {
       create: (table: string, input: Record<string, unknown>, opts: CreateOptions = {}) => call<Row>('create', { table, input, ...opts }),
       update: (table: string, id: string, input: Record<string, unknown>) => call<Row>('update', { table, id, input }),
       archive: (table: string, id: string) => call<Row>('archive', { table, id }),
+      // Which values of a unique field are taken in a range (booked slots), nothing else about them.
+      taken: (table: string, opts: { field: string; gte?: unknown; lt?: unknown }) => call<{ taken: Row[] }>('taken', { table, ...opts }),
       restore: (table: string, id: string) => call<Row>('restore', { table, id }),
     },
     files: {

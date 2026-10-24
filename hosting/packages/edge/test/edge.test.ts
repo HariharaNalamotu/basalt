@@ -360,6 +360,12 @@ describe('/_basalt/data: the Data block on the app\'s own site', () => {
     expect(lastData!.headers.origin).toBe('https://todo.example.com');
   });
 
+  it('passes the "which values are taken" read, so apps can grey out booked slots', async () => {
+    lastData = undefined;
+    expect((await post('/_basalt/data/v1/data/taken', '{"table":"bookings","field":"starts_at"}')).status).toBe(200);
+    expect(lastData!.url).toBe('/p/abcde12345/v1/data/taken');
+  });
+
   it('passes uploads, file links and downloads, and keeps the download safety headers', async () => {
     expect((await post('/_basalt/data/v1/files', 'x'.repeat(1000), { 'content-type': 'text/plain', 'x-file-name': 'a.txt' })).status).toBe(200);
     expect(lastData!.url).toBe('/p/abcde12345/v1/files');

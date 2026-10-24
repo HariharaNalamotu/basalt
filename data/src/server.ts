@@ -45,7 +45,7 @@ const STATUS: Record<BasaltErrorCode, number> = {
   contract: 500,
 };
 
-const OPS = new Set(['get', 'list', 'create', 'update', 'archive', 'restore']);
+const OPS = new Set(['get', 'list', 'create', 'update', 'archive', 'restore', 'taken']);
 
 // Bearer logins travel in the Authorization header, so any site may call with
 // one: a page can only act as a user whose token it already holds. Cookie logins
@@ -310,6 +310,9 @@ export function createDataHandler(options: DataServerOptions): DataHandler {
           break;
         case 'restore':
           result = await data.restore(token, table, body.id as string);
+          break;
+        case 'taken':
+          result = await data.taken(token, table, { field: body.field as string, gte: body.gte, lt: body.lt });
           break;
       }
       let json = JSON.stringify({ ok: true, data: result });

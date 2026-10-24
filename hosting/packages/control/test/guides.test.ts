@@ -43,7 +43,7 @@ describe('the agent guide', () => {
 
   it('only uses Data routes the edge lets through (it 404s anything else under /_basalt/data)', () => {
     // Same allow-list as hosting/packages/edge/src/server.ts (DATA_POST).
-    const allowed = /^\/v1\/(data\/(get|list|create|update|archive|restore)|files|files\/link)$/;
+    const allowed = /^\/v1\/(data\/(get|list|create|update|archive|restore|taken)|files|files\/link)$/;
     const data = hostGuide('data', 'apps.dev');
     const ops = [...data.matchAll(/op\('([a-z/]+)'/g)].map((m) => `/v1/data/${m[1]}`);
     const calls = [...data.matchAll(/call\('(\/v1\/[a-z/]*[a-z])'/g)].map((m) => m[1]);

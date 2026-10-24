@@ -107,6 +107,9 @@ export function basalt(getToken) {
     // booking) and restore brings it back. list(table, { archived: true }) shows archived ones.
     archive: (table, id) => call('archive', { table, id }),
     restore: (table, id) => call('restore', { table, id }),
+    // Which values of a unique field are taken (booked slots), and nothing else about them:
+    // taken('bookings', { field: 'starts_at', gte: dayStart, lt: dayEnd }) -> { taken: [{ starts_at }] }
+    taken: (table, options) => call('taken', { table, ...options }),
     // Uploads a File from an <input type="file">. PNG, JPEG, GIF, WebP, PDF,
     // plain text and CSV, up to 5 MB. Save the returned id in a "file" field.
     async upload(file) {

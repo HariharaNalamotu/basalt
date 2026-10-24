@@ -55,6 +55,9 @@ declare
   col text;
   con text;
   taken text;
+  grp text[];
+  lo jsonb;
+  hi jsonb;
 begin
   -- An older snapshot could miss a fresh revocation or secret change.
   if current_setting('transaction_isolation') <> 'read committed' then
@@ -65,7 +68,7 @@ begin
   perform set_config('basalt.verified', '', true);
   perform set_config('basalt.jwt', coalesce(token, ''), true);
 
-  if op is null or op not in ('get', 'list', 'create', 'update', 'archive', 'restore') then
+  if op is null or op not in ('get', 'list', 'create', 'update', 'archive', 'restore', 'taken') then
     return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message', 'Unknown operation.');
   end if;
   if args is null or jsonb_typeof(args) <> 'object' then
@@ -88,6 +91,9 @@ begin
     cost_r := lim;
   elsif op = 'get' then
     cost_r := 1;
+  elsif op = 'taken' then
+    -- Up to 1000 values in one read, so it costs like a long list.
+    cost_r := 10;
   else
     -- create, update, archive and restore are all writes.
     cost_w := 1;
@@ -116,7 +122,21 @@ begin
   -- The operation runs in its own sub-step. If it fails, only it is undone:
   -- the charge above still counts.
   begin
-    if op = 'get' then
+    if op = 'taken' then
+      -- The unique group the field leads (see 06_taken.sql). Nothing else can be checked.
+      select array(select jsonb_array_elements_text(g)) into grp
+      from jsonb_array_elements(coalesce(reg.spec->'unique', '[]'::jsonb)) g
+      where jsonb_typeof(args->'field') = 'string' and g->>0 = args->>'field'
+      limit 1;
+      if grp is null or cardinality(grp) = 0 then
+        return jsonb_build_object('ok', false, 'code', 'invalid_input', 'message',
+          'Only a field the rules keep unique (the first one in its group) can be checked for taken values.');
+      end if;
+      lo := case when args ? 'gte' then jsonb_build_object(grp[1], args->'gte') end;
+      hi := case when args ? 'lt' then jsonb_build_object(grp[1], args->'lt') end;
+      result := jsonb_build_object('taken', taken_values(tbl, grp, lo, hi));
+
+    elsif op = 'get' then
       rid := (args->>'id')::uuid;
       execute format('select to_jsonb(r) from (select %s from app.%I where "id" = $1) r', cols, tbl)
         into result using rid;

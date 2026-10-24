@@ -20,7 +20,7 @@ const STRIP_REQUEST = [
 ];
 const STRIP_RESPONSE = ['connection', 'keep-alive', 'transfer-encoding', 'server', 'x-powered-by'];
 // The only Data block routes a browser may reach through /_basalt/data.
-const DATA_POST = /^\/v1\/(data\/(get|list|create|update|archive|restore)|files|files\/link)$/;
+const DATA_POST = /^\/v1\/(data\/(get|list|create|update|archive|restore|taken)|files|files\/link)$/;
 const DATA_GET = /^\/v1\/files\/download\/[0-9a-f]{64}$/;
 const DATA_MAX_BODY = 256 * 1024;
 const DATA_MAX_UPLOAD = 6 * 1024 * 1024; // the Data block takes files up to 5 MB

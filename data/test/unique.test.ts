@@ -88,3 +88,37 @@ describe('the database keeps them unique', () => {
     await assert.rejects(migrate(ADMIN_URL, changed), /unique/);
   });
 });
+
+describe("which values are taken (so the app can grey out booked slots)", () => {
+  test('anyone signed in sees the taken values in a range, and nothing else about those entries', async () => {
+    const carol = userToken(randomUUID());
+    const dave = userToken(randomUUID());
+    await db.create(carol, 'slots', { starts_at: '2026-12-01T09:00:00.000Z', chair: 1, note: 'Carol private note' });
+    await db.create(carol, 'slots', { starts_at: '2026-12-01T11:00:00.000Z', chair: 2 });
+    await db.create(carol, 'slots', { starts_at: '2026-12-02T09:00:00.000Z', chair: 1 });
+    const gone = await db.create(carol, 'slots', { starts_at: '2026-12-01T13:00:00.000Z', chair: 1 });
+    await db.archive(carol, 'slots', gone.id as string);
+
+    // Each taken combination of the unique group (time and chair), so chair 2 at 09:00 still shows as free.
+    const r = await db.taken(dave, 'slots', { field: 'starts_at', gte: '2026-12-01T00:00:00.000Z', lt: '2026-12-02T00:00:00.000Z' });
+    assert.deepEqual(
+      r.taken.map((v) => ({ ...v, starts_at: new Date(v.starts_at as string).toISOString() })),
+      [
+        { starts_at: '2026-12-01T09:00:00.000Z', chair: 1 },
+        { starts_at: '2026-12-01T11:00:00.000Z', chair: 2 },
+      ],
+    );
+    assert.deepEqual(Object.keys(r), ['taken']);
+    assert.doesNotMatch(JSON.stringify(r), /Carol|private|owner|note|"id"/i);
+    // A single-field rule works the same way.
+    await db.create(carol, 'handles', { handle: 'carols-cuts' });
+    const h = await db.taken(dave, 'handles', { field: 'handle' });
+    assert.ok(h.taken.some((v) => v.handle === 'carols-cuts'));
+  });
+
+  test("only for fields the rules keep unique, and only when signed in", async () => {
+    await refused(db.taken(alice, 'slots', { field: 'note' }), 'invalid_input', /unique/);
+    await refused(db.taken(alice, 'slots', { field: 'nope' }), 'invalid_input');
+    await refused(db.taken('not.a.token', 'slots', { field: 'starts_at' }), 'denied');
+  });
+});

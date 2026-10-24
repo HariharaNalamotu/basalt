@@ -134,6 +134,26 @@ export class BasaltData {
     return (await this.#call(token, 'get', spec.name, { id: checkId(id) })) as Row;
   }
 
+  /**
+   * Which combinations of a unique group active rows hold (like booked start times and chairs),
+   * and nothing else about those rows, so an app can grey out taken slots. Any signed-in person
+   * can ask. field is the first field of one of the table's unique groups; gte and lt narrow it
+   * to a range (like one day). See sql/06_taken.sql.
+   */
+  async taken(token: string, table: string, options: { field: string; gte?: unknown; lt?: unknown }): Promise<{ taken: Row[] }> {
+    const spec = getTable(this.#contract, table);
+    const group = (spec.unique ?? []).find((g) => g[0] === options?.field);
+    if (!group) {
+      throw new BasaltError('invalid_input', 'Only a field the rules keep unique (the first one in its group) can be checked for taken values.');
+    }
+    const fieldSpec = spec.fields.get(group[0])!;
+    const args: Record<string, unknown> = { field: group[0] };
+    for (const k of ['gte', 'lt'] as const) {
+      if (options[k] !== undefined) args[k] = checkValue(spec.name, group[0], fieldSpec, options[k]);
+    }
+    return (await this.#call(token, 'taken', spec.name, args)) as { taken: Row[] };
+  }
+
   async list(token: string, table: string, options: ListOptions = {}): Promise<{ rows: Row[]; next: string | null }> {
     const spec = getTable(this.#contract, table);
     const limit = options.limit ?? DEFAULT_PAGE;
