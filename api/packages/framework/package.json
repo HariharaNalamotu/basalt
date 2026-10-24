@@ -1,0 +1,44 @@
+{
+  "name": "@basalt/api",
+  "version": "0.1.0",
+  "description": "Backend API framework for Basalt apps: auth enforced on every route, validated input and output, database-enforced ownership, correct HTTP semantics.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./serve": {
+      "types": "./dist/serve.d.ts",
+      "default": "./dist/serve.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@basalt/auth": "file:../../../auth/packages/sdk",
+    "@hono/node-server": "^2.1.5",
+    "hono": "^4.13.13",
+    "ioredis": "^6.0.0",
+    "pg": "^8.23.1",
+    "undici": "^8.12.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.12"
+  }
+}

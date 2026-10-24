@@ -58,6 +58,15 @@ export interface PgClientLike {
   query(sql: string, params?: unknown[]): Promise<{ rows: any[]; rowCount?: number | null }>;
 }
 
+export interface DbTransaction {
+  client: PgClientLike;
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
+}
+
+const isGrantError = (err: unknown) => (err as { code?: string } | null)?.code === '28000';
+const sessionInvalid = () => new BasaltAuthError('unauthenticated', 'Session is no longer valid. Please sign in again.', 401);
+
 export interface GetUserOptions {
   /** Also confirm with the auth service that the session is still live (one network call). */
   strict?: boolean;
@@ -110,6 +119,8 @@ export interface AuthServer {
    * Never log it or send it to the browser: it is a credential.
    */
   dataGrant(user: AuthUser): string;
+  /** Lower-level form of withUserDb for frameworks that open the transaction lazily. */
+  beginTransaction(pool: PgPoolLike, user: AuthUser | null, opts?: { statementTimeoutMs?: number }): Promise<DbTransaction>;
   /** Pulls revoked sessions into the app database once. Needs the secret key. */
   syncRevocations(pool: PgPoolLike): Promise<{ synced: number }>;
   /** Keeps revocations in sync in the background (default every 10s). Returns a stop function. */
@@ -306,16 +317,24 @@ export function createAuthServer(options: AuthServerOptions = {}): AuthServer {
     console.warn(`${message} (allowed outside production)`);
   }
 
-  async function withUserDb<T>(
+  /**
+   * Opens a transaction on a pooled connection. With a user, Postgres verifies their data grant
+   * first, so protected tables only show their rows; with `null` (public requests) no grant is
+   * set and protected tables show nothing. Always finish with exactly one of commit()/rollback().
+   */
+  async function beginTransaction(
     pool: PgPoolLike,
-    who: RequestLike | AuthUser,
-    fn: (db: PgClientLike, user: AuthUser) => Promise<T>,
-    opts: RequireUserOptions = {},
-  ): Promise<T> {
-    const user = grants.has(who as AuthUser) ? (who as AuthUser) : await requireUser(who as RequestLike, opts);
-    const grant = dataGrant(user);
+    user: AuthUser | null,
+    opts: { statementTimeoutMs?: number } = {},
+  ): Promise<DbTransaction> {
+    const grant = user ? dataGrant(user) : null;
     const client = await pool.connect();
-    let failed: Error | undefined;
+    let done = false;
+    const release = (err?: Error) => {
+      if (done) return;
+      done = true;
+      client.release(err);
+    };
     try {
       if (!checkedPools.has(pool)) {
         const check = assertSafeRole(client);
@@ -324,24 +343,52 @@ export function createAuthServer(options: AuthServerOptions = {}): AuthServer {
       }
       await checkedPools.get(pool);
       await client.query('BEGIN');
-      try {
-        await client.query('SELECT basalt_auth.authenticate($1)', [grant]);
-        const result = await fn(client, user);
-        await client.query('COMMIT');
-        return result;
-      } catch (err) {
-        await client.query('ROLLBACK').catch(() => {});
-        if ((err as { code?: string }).code === '28000') {
-          throw new BasaltAuthError('unauthenticated', 'Session is no longer valid. Please sign in again.', 401);
-        }
-        throw err;
+      if (opts.statementTimeoutMs) {
+        // SET LOCAL can't take bind parameters; the value is a validated integer.
+        await client.query(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(opts.statementTimeoutMs))}`);
       }
+      if (grant) await client.query('SELECT basalt_auth.authenticate($1)', [grant]);
     } catch (err) {
-      failed = err instanceof Error ? err : undefined;
-      throw err;
-    } finally {
-      // A connection that failed mid-protocol is discarded rather than returned to the pool.
-      client.release(failed && !(failed instanceof BasaltAuthError) ? failed : undefined);
+      await client.query('ROLLBACK').catch(() => {});
+      release(err instanceof Error && !isGrantError(err) ? err : undefined);
+      throw isGrantError(err) ? sessionInvalid() : err;
+    }
+    return {
+      client,
+      async commit() {
+        try {
+          await client.query('COMMIT');
+          release();
+        } catch (err) {
+          release(err instanceof Error ? err : undefined);
+          throw err;
+        }
+      },
+      async rollback() {
+        if (done) return;
+        await client.query('ROLLBACK').then(
+          () => release(),
+          (err: Error) => release(err), // broken connection: discard instead of reusing
+        );
+      },
+    };
+  }
+
+  async function withUserDb<T>(
+    pool: PgPoolLike,
+    who: RequestLike | AuthUser,
+    fn: (db: PgClientLike, user: AuthUser) => Promise<T>,
+    opts: RequireUserOptions = {},
+  ): Promise<T> {
+    const user = grants.has(who as AuthUser) ? (who as AuthUser) : await requireUser(who as RequestLike, opts);
+    const tx = await beginTransaction(pool, user);
+    try {
+      const result = await fn(tx.client, user);
+      await tx.commit();
+      return result;
+    } catch (err) {
+      await tx.rollback();
+      throw isGrantError(err) ? sessionInvalid() : err;
     }
   }
 
@@ -423,6 +470,7 @@ export function createAuthServer(options: AuthServerOptions = {}): AuthServer {
     verifyAccessToken,
     admin,
     withUserDb,
+    beginTransaction,
     dataGrant,
     syncRevocations,
     startRevocationSync(pool, opts = {}) {

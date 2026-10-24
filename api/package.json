@@ -1,0 +1,12 @@
+{
+  "name": "basalt-api",
+  "private": true,
+  "description": "Basalt API: the backend framework apps on Basalt build their endpoints with. Secure, auth-enforced and horizontally scalable by default.",
+  "workspaces": ["packages/framework", "packages/mcp"],
+  "engines": { "node": ">=24.7.0" },
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspaces"
+  }
+}
