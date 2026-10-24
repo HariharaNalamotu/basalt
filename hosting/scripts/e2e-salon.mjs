@@ -248,7 +248,7 @@ try {
 
   // Preview: private, so sign in carries the share-link cookie too.
   const preview = s1.liveIn.find((e) => e.env.startsWith('p'));
-  const previewHost = new URL(preview.url).host;
+  const previewHost = new URL(preview.url).hostname;
   const share = (await must('host_share_link', { app: APP, env: preview.env, ttlMinutes: 30 })).trim();
   const access = cookiesFrom(await edge(previewHost, new URL(share).pathname + new URL(share).search));
   const userA = JSON.parse(await must('host_test_user', { app: APP, env: preview.env }));

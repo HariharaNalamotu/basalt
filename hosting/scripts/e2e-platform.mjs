@@ -217,7 +217,7 @@ try {
   if (s1.pipelines[0].status !== 'passed') console.log(JSON.stringify(s1, null, 2).slice(0, 8000));
   ok(s1.status === 'built' && s1.pipelines[0].status === 'passed', `CI + preview pipeline passed in ${elapsed()} (${stepNames})`);
   ok(s1.tests.some((t) => t.kind === 'e2e' && t.status === 'passed' && t.summary.passed === 2), 'app e2e tests passed against the preview (2/2)');
-  const previewHost = new URL(preview.url).host;
+  const previewHost = new URL(preview.url).hostname;
 
   // Private preview: closed to the public, open to the agent's tools.
   const anon = await edge(previewHost, '/', { headers: { accept: 'text/html' } });
@@ -287,7 +287,7 @@ try {
 
   console.log('  shipping to production…');
   const prod = JSON.parse((await tool('host_promote', { app: APP, deploymentId: depId, to: 'production' })).text);
-  ok(prod.url === `https://${APP}.${ROOT}`, `live in production at ${prod.url}`);
+  ok(new URL(prod.url).hostname === `${APP}.${ROOT}`, `live in production at ${prod.url}`);
   const prodHost = `${APP}.${ROOT}`;
   const home = await edge(prodHost, '/', { headers: { accept: 'text/html', 'accept-encoding': 'br' } });
   ok(home.status === 200 && /default-src 'self'/.test(home.headers['content-security-policy']) && /max-age/.test(home.headers['strict-transport-security']), 'production serves the app publicly with CSP and HSTS');

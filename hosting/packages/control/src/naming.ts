@@ -34,3 +34,8 @@ export function appOrigins(host: string, localHttpPort?: number): string[] {
 export function emailsReadable(kind: 'preview' | 'staging' | 'production', o: { localHttpPort?: number; resendKey?: string }): boolean {
   return kind !== 'production' || (Boolean(o.localHttpPort) && !o.resendKey);
 }
+
+/** The address people open an app at: https, or plain http on the demo port of a one-laptop demo. */
+export function appUrl(host: string, localHttpPort?: number): string {
+  return localHttpPort ? `http://${host}:${localHttpPort}` : `https://${host}`;
+}

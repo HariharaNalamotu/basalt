@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import * as tar from 'tar';
 import { describe, expect, it } from 'vitest';
 import { SecretBox } from '../src/crypto.js';
-import { appOrigins, emailsReadable, hostFor, RESERVED_APP_NAMES } from '../src/naming.js';
+import { appOrigins, appUrl, emailsReadable, hostFor, RESERVED_APP_NAMES } from '../src/naming.js';
 import { detectManifest } from '../src/pipeline.js';
 import { scanSource } from '../src/scanner.js';
 import { CspPatch, ProtectionPatch } from '../src/service.js';
@@ -121,6 +121,11 @@ describe('bounded settings', () => {
   it('apps sign in from https only, plus plain http on the local demo port when one is set', () => {
     expect(appOrigins('todo.apps.dev')).toEqual(['https://todo.apps.dev']);
     expect(appOrigins('todo.basalt.localhost', 8080)).toEqual(['https://todo.basalt.localhost', 'http://todo.basalt.localhost:8080']);
+  });
+
+  it('app links are https, or the plain http demo address on a one-laptop demo', () => {
+    expect(appUrl('todo.apps.dev')).toBe('https://todo.apps.dev');
+    expect(appUrl('todo.basalt.localhost', 8080)).toBe('http://todo.basalt.localhost:8080');
   });
 
   it("production email stays private, except on a one-laptop demo that can't send email at all", () => {

@@ -6,7 +6,7 @@ import { DEFAULT_PROTECTION, EMPTY_CSP, type AppRoute, type CspSettings, type Pr
 import type { Ctx } from './ctx.js';
 import { id, sha256 } from './crypto.js';
 import { Environments, type AppRow, type EnvRow } from './environments.js';
-import { APP_NAME_RE, envKey, RESERVED_APP_NAMES } from './naming.js';
+import { APP_NAME_RE, RESERVED_APP_NAMES, appUrl, envKey } from './naming.js';
 import { Pipeline } from './pipeline.js';
 import { Runtime, type DeploymentRow } from './runtime.js';
 import { storeSource } from './sources.js';
@@ -122,7 +122,7 @@ export class Host {
     return Promise.all(
       apps.map(async (a) => ({
         name: a.name,
-        environments: (await this.envs.list(a.id)).map((e) => ({ name: e.kind === 'preview' ? e.slug : e.kind, kind: e.kind, url: `https://${e.host}`, status: e.status, sleeping: e.sleeping, release: e.current_release_id, expiresAt: e.expires_at })),
+        environments: (await this.envs.list(a.id)).map((e) => ({ name: e.kind === 'preview' ? e.slug : e.kind, kind: e.kind, url: appUrl(e.host, this.ctx.cfg.LOCAL_HTTP_PORT), status: e.status, sleeping: e.sleeping, release: e.current_release_id, expiresAt: e.expires_at })),
       })),
     );
   }
@@ -200,7 +200,7 @@ export class Host {
     await this.copyUserSecrets(app, preview);
     const passed = await this.deployAndTest(app, preview, dep, pipelineId);
     if (!passed) return this.log(pipelineId, 'preview', 'preview tests failed', 'failed');
-    if (target === 'preview') return this.log(pipelineId, 'done', `preview ready at https://${preview.host}`, 'passed');
+    if (target === 'preview') return this.log(pipelineId, 'done', `preview ready at ${appUrl(preview.host, this.ctx.cfg.LOCAL_HTTP_PORT)}`, 'passed');
 
     const staging = await this.envs.ensure(app, 'staging', 'staging');
     if (!(await this.deployAndTest(app, staging, dep, pipelineId))) return this.log(pipelineId, 'staging', 'staging tests failed', 'failed');
@@ -208,13 +208,13 @@ export class Host {
     const prodRules = await this.applyDataRules(prod, dep);
     if (!prodRules.ok) return this.log(pipelineId, 'production', prodRules.message, 'failed');
     await this.runtime.release(app, prod, dep, 'ship');
-    await this.log(pipelineId, 'production', `live at https://${prod.host} (watching for errors; automatic rollback is armed)`);
+    await this.log(pipelineId, 'production', `live at ${appUrl(prod.host, this.ctx.cfg.LOCAL_HTTP_PORT)} (watching for errors; automatic rollback is armed)`);
     const smoke = await this.testing.smoke(app, prod, dep);
     if (smoke.status !== 'passed') {
       await this.runtime.rollback(app, (await this.envs.get(prod.id))!, undefined, 'automatic: production smoke test failed').catch(() => {});
       return this.log(pipelineId, 'production', `production smoke test failed; rolled back: ${JSON.stringify(smoke.summary)}`, 'failed');
     }
-    return this.log(pipelineId, 'done', `shipped to https://${prod.host}`, 'passed');
+    return this.log(pipelineId, 'done', `shipped to ${appUrl(prod.host, this.ctx.cfg.LOCAL_HTTP_PORT)}`, 'passed');
   }
 
   /**
@@ -251,7 +251,7 @@ export class Host {
       await this.log(pipelineId, stage, `release failed: ${(err as Error).message}`);
       return false;
     }
-    await this.log(pipelineId, stage, `deployed to https://${env.host}; running smoke tests`);
+    await this.log(pipelineId, stage, `deployed to ${appUrl(env.host, this.ctx.cfg.LOCAL_HTTP_PORT)}; running smoke tests`);
     const fresh = (await this.envs.get(env.id))!;
     const smoke = await this.testing.smoke(app, fresh, dep);
     if (smoke.status !== 'passed') {
@@ -303,7 +303,7 @@ export class Host {
       await this.ctx.db.query('INSERT INTO pipelines (id, app_id, deployment_id, target) VALUES ($1, $2, $3, $4)', [pipelineId, app.id, depId, 'staging']);
       void this.deployAndTest(app, env, dep, pipelineId).then((ok) => this.log(pipelineId, 'done', ok ? 'staging passed' : 'staging failed', ok ? 'passed' : 'failed'));
       await this.audit(ws, 'promote', appName, { depId, to });
-      return { pipelineId, url: `https://${env.host}` };
+      return { pipelineId, url: appUrl(env.host, this.ctx.cfg.LOCAL_HTTP_PORT) };
     }
     const rules = await this.applyDataRules(env, dep);
     if (!rules.ok) throw new UserError(rules.message, 409);
@@ -314,7 +314,7 @@ export class Host {
       throw new UserError(`Released, but the production smoke test failed, so it was rolled back: ${JSON.stringify(smoke.summary)}`, 500);
     }
     await this.audit(ws, 'promote', appName, { depId, to, releaseId: release.id });
-    return { releaseId: release.id, url: `https://${env.host}` };
+    return { releaseId: release.id, url: appUrl(env.host, this.ctx.cfg.LOCAL_HTTP_PORT) };
   }
 
   async deployment(ws: string, depId: string): Promise<DeploymentRow> {
@@ -336,7 +336,7 @@ export class Host {
       manifest: d.manifest,
       pipelines,
       tests,
-      liveIn: envs.map((e) => ({ env: e.kind === 'preview' ? e.slug : e.kind, url: `https://${e.host}` })),
+      liveIn: envs.map((e) => ({ env: e.kind === 'preview' ? e.slug : e.kind, url: appUrl(e.host, this.ctx.cfg.LOCAL_HTTP_PORT) })),
     };
   }
 
@@ -483,7 +483,7 @@ export class Host {
     const rel = await this.runtime.liveRelease(env);
     const container = rel?.container ? await this.ctx.docker.inspectOrNull(rel.container) : null;
     return {
-      url: `https://${env.host}`,
+      url: appUrl(env.host, this.ctx.cfg.LOCAL_HTTP_PORT),
       edge: m?.hosts?.[env.host] ?? { requests: 0 },
       backend: container ? { state: container.State.Status, health: container.State.Health?.Status, restarts: container.RestartCount, startedAt: container.State.StartedAt } : null,
       sleeping: env.sleeping,

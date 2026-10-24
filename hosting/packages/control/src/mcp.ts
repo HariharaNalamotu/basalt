@@ -1,5 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { emailsReadable } from './naming.js';
+import { appUrl, emailsReadable } from './naming.js';
 import { z } from 'zod';
 import { registerApiTools } from '@basalt/api-mcp';
 import { registerAuthTools } from '@basalt/auth-mcp';
@@ -71,7 +71,7 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
   tool('host_status', 'All apps in this workspace with every environment, its URL, state and current release.', {}, async () => json(await host.listApps(ws)), { readOnlyHint: true });
   tool('host_create_app', 'Creates an app (reserves <app>.' + ctx.cfg.ROOT_DOMAIN + '). Idempotent for your own apps.', { app }, async (a) => {
     const r = await host.createApp(ws, a.app);
-    return text(`App "${r.name}" ready. Production URL will be https://${r.name}.${ctx.cfg.ROOT_DOMAIN}. Next: host_deploy.`);
+    return text(`App "${r.name}" ready. Production URL will be ${appUrl(`${r.name}.${ctx.cfg.ROOT_DOMAIN}`, ctx.cfg.LOCAL_HTTP_PORT)}. Next: host_deploy.`);
   });
 
   // ---------------------------------------------------------------- deploy pipeline

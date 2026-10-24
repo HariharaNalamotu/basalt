@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { signToken } from '@basalt/host-shared';
 import type { Ctx } from './ctx.js';
 import { runGuard } from './data-link.js';
+import { appUrl } from './naming.js';
 import { id } from './crypto.js';
 import { hardened } from './docker.js';
 import type { AppRow, EnvRow, Environments } from './environments.js';
@@ -37,7 +38,8 @@ export class Testing {
 
   shareLink(env: EnvRow, ttlMinutes: number): string {
     const token = this.accessToken(env, ttlMinutes * 60);
-    return token ? `https://${env.host}/_basalt/access?t=${token}` : `https://${env.host}/`;
+    const base = appUrl(env.host, this.ctx.cfg.LOCAL_HTTP_PORT);
+    return token ? `${base}/_basalt/access?t=${token}` : `${base}/`;
   }
 
   /** GET through the internal TLS edge with the environment's Host and access token. */
