@@ -1,0 +1,16 @@
+{
+  "name": "@basalt/cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Basalt Cloud: hosts a locked down database for every app, plus the MCP server Claude Code uses to set one up",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "start": "node --env-file=.env src/server.ts",
+    "mcp": "node src/mcp.ts",
+    "pretest": "cd ../data && npm run db:reset",
+    "test": "node --env-file=.env --test test/*.test.ts"
+  }
+}

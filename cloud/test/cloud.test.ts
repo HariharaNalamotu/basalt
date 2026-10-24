@@ -1,0 +1,300 @@
+// End to end tests for Basalt Cloud and its MCP server. Needs the local
+// database (cd ../data && npm run db:up) and .env filled in.
+
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, before, describe, test } from 'node:test';
+import { pg } from '../../data/src/index.ts';
+import { Projects } from '../src/projects.ts';
+import { createCloudServer } from '../src/server.ts';
+
+const projects = new Projects({ adminUrl: process.env.CLOUD_ADMIN_URL!, dbHost: process.env.CLOUD_DB_HOST!, masterKey: process.env.CLOUD_MASTER_KEY! });
+let base: string;
+let cloud: ReturnType<typeof createCloudServer>;
+
+const RULES = {
+  tables: {
+    bookings: {
+      fields: {
+        service: { type: 'text', maxLength: 100, required: true },
+        starts_at: { type: 'timestamp', required: true },
+        phone: { type: 'text', format: 'phone' },
+        staff_id: { type: 'user' },
+      },
+      shareWith: 'staff_id',
+    },
+  },
+};
+
+async function call(method: string, path: string, body?: unknown, key?: string) {
+  const res = await fetch(`${base}${path}`, {
+    method,
+    headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+async function newApp(name = 'Test salon') {
+  const r = await call('POST', '/api/projects', { name });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  return { id: r.body.project.id as string, key: r.body.adminKey as string, dataUrl: r.body.project.dataUrl as string };
+}
+
+async function approve(approveUrl: string, decision = 'approve') {
+  const u = new URL(approveUrl);
+  return fetch(`${base}${u.pathname}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ t: u.searchParams.get('t')!, decision }).toString(),
+  });
+}
+
+async function liveApp() {
+  const app = await newApp();
+  const set = await call('PUT', '/api/projects/me/rules', { contract: RULES }, app.key);
+  await approve(set.body.approveUrl);
+  return app;
+}
+
+async function login(key: string, who: string): Promise<{ token: string; userId: string }> {
+  return (await call('POST', '/api/projects/me/test-login', { who }, key)).body;
+}
+
+async function data(dataUrl: string, token: string, op: string, body: unknown) {
+  const res = await fetch(`${dataUrl}/v1/data/${op}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+before(async () => {
+  await projects.init();
+  cloud = createCloudServer({ projects, publicUrl: 'http://placeholder', projectsPerIpPerHour: 1000 });
+  await new Promise<void>((r) => cloud.server.listen(0, '127.0.0.1', () => r()));
+  base = `http://127.0.0.1:${(cloud.server.address() as AddressInfo).port}`;
+  // Links in replies use the public URL; point it at the test server.
+  cloud.server.close();
+  cloud = createCloudServer({ projects, publicUrl: base, projectsPerIpPerHour: 1000 });
+  await new Promise<void>((r) => cloud.server.listen(Number(new URL(base).port), '127.0.0.1', () => r()));
+});
+
+after(async () => {
+  await cloud.close();
+  await new Promise((r) => cloud.server.close(r));
+  await projects.close();
+});
+
+describe('a new app', () => {
+  test('gets its own database and roles, and nothing works until the owner approves', async () => {
+    const app = await newApp();
+    const admin = new pg.Client({ connectionString: process.env.CLOUD_ADMIN_URL });
+    await admin.connect();
+    try {
+      assert.equal((await admin.query('select 1 from pg_database where datname = $1', [`app_${app.id}`])).rowCount, 1);
+      assert.equal((await admin.query('select 1 from pg_roles where rolname = $1', [`app_${app.id}_data`])).rowCount, 1);
+    } finally {
+      await admin.end();
+    }
+    const before = await data(app.dataUrl, 'x.y.z', 'list', { table: 'bookings' });
+    assert.equal(before.status, 503);
+
+    const set = await call('PUT', '/api/projects/me/rules', { contract: RULES }, app.key);
+    assert.equal(set.body.status, 'waiting_for_owner');
+    assert.match(set.body.summary, /only the bookings they added/);
+    const stillOff = await data(app.dataUrl, 'x.y.z', 'list', { table: 'bookings' });
+    assert.equal(stillOff.status, 503);
+
+    const pageRes = await fetch(set.body.approveUrl);
+    const html = await pageRes.text();
+    assert.equal(pageRes.status, 200);
+    assert.match(html, /Who can see what/);
+    assert.match(html, /can also see that one, but can&#39;t change it/);
+
+    const done = await approve(set.body.approveUrl);
+    assert.match(await done.text(), /These rules are live/);
+    assert.equal((await call('GET', '/api/projects/me', undefined, app.key)).body.project.status, 'live');
+  });
+
+  test('test logins work, and one person never sees another person\'s data', async () => {
+    const app = await liveApp();
+    const maria = await login(app.key, 'maria');
+    const sam = await login(app.key, 'sam');
+    assert.equal((await login(app.key, 'maria')).userId, maria.userId);
+
+    const made = await data(app.dataUrl, maria.token, 'create', { table: 'bookings', input: { service: 'Haircut', starts_at: '2026-10-25T15:00:00Z' } });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    assert.equal((await data(app.dataUrl, sam.token, 'get', { table: 'bookings', id: made.body.data.id })).status, 404);
+    assert.equal((await data(app.dataUrl, maria.token, 'list', { table: 'bookings' })).body.data.rows.length, 1);
+  });
+
+  test('turning the rules down changes nothing', async () => {
+    const app = await newApp();
+    const set = await call('PUT', '/api/projects/me/rules', { contract: RULES }, app.key);
+    const res = await approve(set.body.approveUrl, 'reject');
+    assert.match(await res.text(), /Nothing changed/);
+    assert.equal((await call('GET', '/api/projects/me', undefined, app.key)).body.project.status, 'no_rules_yet');
+    const again = await approve(set.body.approveUrl);
+    assert.equal(again.status, 410);
+  });
+});
+
+describe('changing the rules later', () => {
+  test('adding an optional field goes live right away', async () => {
+    const app = await liveApp();
+    const next = structuredClone(RULES) as any;
+    next.tables.bookings.fields.note = { type: 'text', maxLength: 500 };
+    const r = await call('PUT', '/api/projects/me/rules', { contract: next }, app.key);
+    assert.equal(r.body.status, 'live');
+    const maria = await login(app.key, 'maria');
+    const made = await data(app.dataUrl, maria.token, 'create', { table: 'bookings', input: { service: 'Trim', starts_at: '2026-10-25T15:00:00Z', note: 'hi' } });
+    assert.equal(made.body.data.note, 'hi');
+  });
+
+  test('anything that shows data to more people needs the owner again', async () => {
+    const app = await liveApp();
+    const next = structuredClone(RULES) as any;
+    next.tables.reviews = { fields: { text: { type: 'text' }, about: { type: 'user' } }, shareWith: 'about' };
+    const r = await call('PUT', '/api/projects/me/rules', { contract: next }, app.key);
+    assert.equal(r.body.status, 'waiting_for_owner');
+    assert.match(r.body.why.join(' '), /reviews/);
+  });
+
+  test('an unsafe change is refused with a plain reason Claude can act on', async () => {
+    const app = await liveApp();
+    const next = structuredClone(RULES) as any;
+    delete next.tables.bookings.fields.phone;
+    const r = await call('PUT', '/api/projects/me/rules', { contract: next }, app.key);
+    assert.equal(r.status, 409);
+    assert.match(r.body.error.message, /field phone was removed/);
+  });
+
+  test('broken rules get a message that says what to fix', async () => {
+    const app = await newApp();
+    const r = await call('PUT', '/api/projects/me/rules', { contract: { tables: { Bookings: { fields: {} } } } }, app.key);
+    assert.equal(r.status, 400);
+    assert.match(r.body.error.message, /lowercase letters/);
+  });
+});
+
+describe('apps are walled off from each other', () => {
+  test("one app's key can't manage another, and its database login can't open another's database", async () => {
+    const a = await liveApp();
+    const b = await liveApp();
+    const pa = (await projects.get(a.id))!;
+    const pb = (await projects.get(b.id))!;
+    const crossUrl = projects.dataUrl(pa).replace(`/app_${a.id}`, `/app_${b.id}`);
+    const c = new pg.Client({ connectionString: crossUrl });
+    await assert.rejects(c.connect());
+    assert.notEqual(pa.jwtSecret, pb.jwtSecret);
+
+    // A token from app A means nothing in app B.
+    const maria = await login(a.key, 'maria');
+    assert.equal((await data(b.dataUrl, maria.token, 'list', { table: 'bookings' })).status, 401);
+  });
+
+  test('bad or missing keys are refused', async () => {
+    assert.equal((await call('GET', '/api/projects/me')).status, 401);
+    assert.equal((await call('GET', '/api/projects/me', undefined, 'bsk_aaaaaaaaaa_' + 'x'.repeat(43))).status, 401);
+  });
+
+  test('a mistyped approval link does nothing', async () => {
+    const app = await newApp();
+    const set = await call('PUT', '/api/projects/me/rules', { contract: RULES }, app.key);
+    const u = new URL(set.body.approveUrl);
+    const res = await fetch(`${base}${u.pathname}?t=wrong`);
+    assert.equal(res.status, 404);
+  });
+
+  test("the app's name can't inject anything into the owner's page", async () => {
+    const app = await newApp('<script>alert(1)</script>');
+    const set = await call('PUT', '/api/projects/me/rules', { contract: RULES }, app.key);
+    const html = await (await fetch(set.body.approveUrl)).text();
+    assert.ok(!html.includes('<script>alert(1)</script>'));
+    assert.match(html, /&lt;script&gt;/);
+  });
+
+  test('the database secrets are stored encrypted', async () => {
+    const app = await newApp();
+    const p = (await projects.get(app.id))!;
+    const admin = new pg.Client({ connectionString: process.env.CLOUD_ADMIN_URL });
+    await admin.connect();
+    try {
+      const row = (await admin.query('select data_password, jwt_secret, admin_key_hash from cloud.projects where id = $1', [app.id])).rows[0];
+      assert.ok(!row.data_password.includes(p.dataPassword));
+      assert.ok(!row.jwt_secret.includes(p.jwtSecret));
+      assert.ok(!row.admin_key_hash.includes(app.key));
+    } finally {
+      await admin.end();
+    }
+  });
+});
+
+describe('the MCP server Claude Code uses', () => {
+  test('start, set rules, owner approves, connect, test login: all in plain words', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'basalt-mcp-'));
+    const child = spawn(process.execPath, [new URL('../src/mcp.ts', import.meta.url).pathname], {
+      env: { ...process.env, BASALT_URL: base, BASALT_PROJECT_DIR: dir },
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    let buf = '';
+    const waiting = new Map<number, (v: any) => void>();
+    child.stdout.on('data', (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const msg = JSON.parse(buf.slice(0, i));
+        buf = buf.slice(i + 1);
+        waiting.get(msg.id)?.(msg);
+      }
+    });
+    let next = 1;
+    const rpc = (method: string, params?: unknown) =>
+      new Promise<any>((resolve) => {
+        const id = next++;
+        waiting.set(id, resolve);
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+      });
+    const tool = async (name: string, args = {}) => {
+      const r = await rpc('tools/call', { name, arguments: args });
+      return { text: r.result.content[0].text as string, isError: Boolean(r.result.isError) };
+    };
+
+    try {
+      const init = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
+      assert.equal(init.result.serverInfo.name, 'basalt');
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+      const names = (await rpc('tools/list')).result.tools.map((t: any) => t.name);
+      assert.deepEqual(names, ['basalt_start', 'basalt_set_rules', 'basalt_status', 'basalt_connect_app', 'basalt_test_login']);
+
+      assert.match((await tool('basalt_status')).text, /call basalt_start first/i);
+      assert.match((await tool('basalt_start', { app_name: "Maria's Salon" })).text, /locked down database/);
+      assert.match(readFileSync(join(dir, '.gitignore'), 'utf8'), /^\.basalt\/$/m);
+      assert.equal(statSync(join(dir, '.basalt', 'project.json')).mode & 0o777, 0o600);
+
+      const set = await tool('basalt_set_rules', { rules: RULES });
+      const link = /(http\S+\/approve\/\S+)/.exec(set.text)![1];
+      assert.match((await tool('basalt_status')).text, /Waiting for the person/);
+      assert.match((await tool('basalt_connect_app')).text, /aren't live yet/);
+      await approve(link);
+
+      assert.match((await tool('basalt_status')).text, /^Live/);
+      const connect = await tool('basalt_connect_app');
+      assert.match(connect.text, /export function basalt\(getToken\)/);
+      const login1 = await tool('basalt_test_login', { who: 'maria' });
+      assert.match(login1.text, /good for one hour/);
+
+      const bad = await tool('basalt_set_rules', { rules: { tables: {} } });
+      assert.equal(bad.isError, true);
+      assert.match(bad.text, /no tables/);
+    } finally {
+      child.kill();
+    }
+  });
+});

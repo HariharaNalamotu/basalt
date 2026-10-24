@@ -36,6 +36,16 @@ const STATUS: Record<BasaltErrorCode, number> = {
 };
 
 const OPS = new Set(['get', 'list', 'create', 'update']);
+
+// Most vibe coded apps call this straight from the browser. Logins travel in
+// the Authorization header, never in cookies, so any site may call it: a page
+// can only act as a user whose token it already holds.
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'POST, GET, OPTIONS',
+  'access-control-allow-headers': 'authorization, content-type',
+  'access-control-max-age': '600',
+};
 const TOKEN = /^[A-Za-z0-9_-]{2,1024}\.[A-Za-z0-9_-]{2,3000}\.[A-Za-z0-9_-]{43}$/;
 
 function send(res: ServerResponse, status: number, body: unknown, json = JSON.stringify(body)): void {
@@ -44,6 +54,7 @@ function send(res: ServerResponse, status: number, body: unknown, json = JSON.st
     'content-length': Buffer.byteLength(json),
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
+    ...CORS,
   });
   res.end(json);
 }
@@ -106,7 +117,11 @@ function fitPage(page: { rows: Row[]; next: string | null }, maxBytes: number): 
   return { rows, next: encodeCursor(rows[rows.length - 1]) };
 }
 
-export function createDataServer(options: DataServerOptions): Server {
+export type DataHandler = (req: IncomingMessage, res: ServerResponse, path: string) => Promise<void>;
+
+// Handles one request whose path is already stripped down to /v1/data/<op>.
+// Basalt Cloud mounts one of these per app.
+export function createDataHandler(options: DataServerOptions): DataHandler {
   const { data } = options;
   const maxBodyBytes = options.maxBodyBytes ?? 64 * 1024;
   const maxInFlight = options.maxInFlight ?? 256;
@@ -114,10 +129,14 @@ export function createDataServer(options: DataServerOptions): Server {
   const bodyTimeoutMs = options.bodyTimeoutMs ?? 5000;
   let inFlight = 0;
 
-  const server = createServer(async (req, res) => {
-    if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
+  return async (req, res, path) => {
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, CORS);
+      return void res.end();
+    }
+    if (req.method === 'GET' && path === '/healthz') return send(res, 200, { ok: true });
 
-    const match = /^\/v1\/data\/([a-z]+)$/.exec(req.url ?? '');
+    const match = /^\/v1\/data\/([a-z]+)$/.exec(path);
     if (req.method !== 'POST' || !match || !OPS.has(match[1])) {
       return send(res, 404, { ok: false, error: { code: 'not_found', message: 'Unknown route.' } });
     }
@@ -160,13 +179,20 @@ export function createDataServer(options: DataServerOptions): Server {
       if (res.destroyed) return;
       fail(res, err instanceof BasaltError ? err : new BasaltError('unavailable', 'Something went wrong. Try again.'));
     }
-  });
+  };
+}
 
+export function setServerLimits(server: Server): Server {
   server.requestTimeout = 10_000;
   server.headersTimeout = 5_000;
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = 50;
   return server;
+}
+
+export function createDataServer(options: DataServerOptions): Server {
+  const handle = createDataHandler(options);
+  return setServerLimits(createServer((req, res) => handle(req, res, (req.url ?? '').split('?')[0])));
 }
 
 if (import.meta.main) {

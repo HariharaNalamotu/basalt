@@ -698,6 +698,15 @@ describe('the HTTP service app code talks to', () => {
     }
   });
 
+  test('browsers get CORS headers and preflight works', async () => {
+    const pre = await fetch(`${url}/v1/data/list`, { method: 'OPTIONS' });
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers.get('access-control-allow-origin'), '*');
+    assert.match(pre.headers.get('access-control-allow-headers') ?? '', /authorization/);
+    const res = await fetch(`${url}/v1/data/list`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
+  });
+
   test('sheds load when too many requests are in flight', async () => {
     const tiny = createDataServer({ data: db, maxInFlight: 0 });
     await new Promise<void>((r) => tiny.listen(0, '127.0.0.1', () => r()));

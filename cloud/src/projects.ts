@@ -1,0 +1,207 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { migrate, parseContract, pg, runSql, type Contract } from '../../data/src/index.ts';
+import { decrypt, encrypt, randomId, randomSecret, sameHash, sha256 } from './secrets.ts';
+
+// Basalt Cloud's own records live in the cluster's postgres database, in a
+// schema only the superuser can reach. Each app gets its own database and its
+// own three roles, so no key for one app opens another.
+
+const SQL_DIR = new URL('../../data/sql/', import.meta.url);
+
+export interface CloudConfig {
+  // Superuser connection to the postgres database.
+  adminUrl: string;
+  // Host and port apps' data logins connect to (usually the same server).
+  dbHost: string;
+  masterKey: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  dbName: string;
+  roles: { owner: string; exec: string; data: string };
+  dataPassword: string;
+  jwtSecret: string;
+  approvedContract: unknown | null;
+}
+
+export interface Approval {
+  id: string;
+  projectId: string;
+  contract: unknown;
+  status: 'pending' | 'approved' | 'rejected' | 'replaced';
+}
+
+function withDb(url: string, db: string): string {
+  const u = new URL(url);
+  u.pathname = `/${db}`;
+  return u.toString();
+}
+
+async function connect(url: string): Promise<pg.Client> {
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  return client;
+}
+
+export class Projects {
+  #cfg: CloudConfig;
+  #pool: pg.Pool;
+
+  constructor(cfg: CloudConfig) {
+    this.#cfg = cfg;
+    this.#pool = new pg.Pool({ connectionString: cfg.adminUrl, max: 5, application_name: 'basalt-cloud' });
+    this.#pool.on('error', () => {});
+  }
+
+  async close(): Promise<void> {
+    await this.#pool.end();
+  }
+
+  async init(): Promise<void> {
+    const c = await this.#pool.connect();
+    try {
+      await c.query(`
+        create schema if not exists cloud;
+        revoke all on schema cloud from public;
+        create table if not exists cloud.projects (
+          id text primary key,
+          name text not null,
+          db_name text not null unique,
+          owner_role text not null,
+          exec_role text not null,
+          data_role text not null,
+          data_password text not null,
+          jwt_secret text not null,
+          admin_key_hash text not null,
+          approved_contract jsonb,
+          created_at timestamptz not null default now()
+        );
+        create table if not exists cloud.approvals (
+          id text primary key,
+          project_id text not null references cloud.projects (id),
+          token_hash text not null,
+          contract jsonb not null,
+          status text not null default 'pending' check (status in ('pending', 'approved', 'rejected', 'replaced')),
+          created_at timestamptz not null default now(),
+          decided_at timestamptz
+        );`);
+    } finally {
+      c.release();
+    }
+  }
+
+  // Makes a brand new database for one app and locks it down.
+  async create(name: string): Promise<{ project: Project; adminKey: string }> {
+    const id = randomId();
+    const dbName = `app_${id}`;
+    const roles = { owner: `${dbName}_owner`, exec: `${dbName}_exec`, data: `${dbName}_data` };
+    const dataPassword = randomSecret();
+    const jwtSecret = randomSecret(48);
+    const adminKey = `bsk_${id}_${randomSecret()}`;
+
+    await this.#pool.query(`create database "${dbName}"`);
+
+    const appDb = await connect(withDb(this.#cfg.adminUrl, dbName));
+    try {
+      const vars = {
+        data_pw: dataPassword,
+        jwt_secret: jwtSecret,
+        jwt_issuer: '',
+        owner_role: roles.owner,
+        exec_role: roles.exec,
+        data_role: roles.data,
+      };
+      for (const file of readdirSync(SQL_DIR).filter((f) => f.endsWith('.sql')).sort()) {
+        await runSql(appDb, readFileSync(new URL(file, SQL_DIR), 'utf8'), vars);
+      }
+    } finally {
+      await appDb.end();
+    }
+
+    {
+      await this.#pool.query(
+        `insert into cloud.projects (id, name, db_name, owner_role, exec_role, data_role, data_password, jwt_secret, admin_key_hash)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [id, name, dbName, roles.owner, roles.exec, roles.data, encrypt(this.#cfg.masterKey, dataPassword), encrypt(this.#cfg.masterKey, jwtSecret), sha256(adminKey)],
+      );
+    }
+    return { project: { id, name, dbName, roles, dataPassword, jwtSecret, approvedContract: null }, adminKey };
+  }
+
+  async get(id: string): Promise<Project | null> {
+    if (!/^[a-z0-9]{10}$/.test(id)) return null;
+    {
+      const r = (await this.#pool.query('select * from cloud.projects where id = $1', [id])).rows[0];
+      if (!r) return null;
+      return {
+        id: r.id,
+        name: r.name,
+        dbName: r.db_name,
+        roles: { owner: r.owner_role, exec: r.exec_role, data: r.data_role },
+        dataPassword: decrypt(this.#cfg.masterKey, r.data_password),
+        jwtSecret: decrypt(this.#cfg.masterKey, r.jwt_secret),
+        approvedContract: r.approved_contract,
+      };
+    }
+  }
+
+  // Checks a bsk_ admin key and returns its project.
+  async authorize(adminKey: unknown): Promise<Project | null> {
+    if (typeof adminKey !== 'string') return null;
+    const m = /^bsk_([a-z0-9]{10})_[A-Za-z0-9_-]{43}$/.exec(adminKey);
+    if (!m) return null;
+    const hash: string | undefined = (await this.#pool.query('select admin_key_hash from cloud.projects where id = $1', [m[1]])).rows[0]?.admin_key_hash;
+    if (!hash || !sameHash(adminKey, hash)) return null;
+    return this.get(m[1]);
+  }
+
+  dataUrl(p: Project): string {
+    return `postgres://${p.roles.data}:${encodeURIComponent(p.dataPassword)}@${this.#cfg.dbHost}/${p.dbName}`;
+  }
+
+  // Applies a contract to the app's database. Throws a plain message if the
+  // change isn't allowed (see data/src/migrate.ts).
+  async apply(p: Project, contract: unknown): Promise<Contract> {
+    const parsed = parseContract(contract);
+    await migrate(withDb(this.#cfg.adminUrl, p.dbName), contract);
+    await this.#pool.query('update cloud.projects set approved_contract = $2 where id = $1', [p.id, JSON.stringify(contract)]);
+    return parsed;
+  }
+
+  // Starts an approval. Any older pending one for the same app is replaced.
+  async requestApproval(p: Project, contract: unknown): Promise<{ id: string; token: string }> {
+    const id = randomId(16);
+    const token = randomSecret();
+    const c = await this.#pool.connect();
+    try {
+      await c.query('begin');
+      await c.query(`update cloud.approvals set status = 'replaced', decided_at = now() where project_id = $1 and status = 'pending'`, [p.id]);
+      await c.query('insert into cloud.approvals (id, project_id, token_hash, contract) values ($1, $2, $3, $4)', [id, p.id, sha256(token), JSON.stringify(contract)]);
+      await c.query('commit');
+    } catch (err) {
+      await c.query('rollback').catch(() => {});
+      throw err;
+    } finally {
+      c.release();
+    }
+    return { id, token };
+  }
+
+  async getApproval(id: string, token: unknown): Promise<Approval | null> {
+    if (!/^[a-z0-9]{16}$/.test(id) || typeof token !== 'string') return null;
+    const r = (await this.#pool.query('select * from cloud.approvals where id = $1', [id])).rows[0];
+    if (!r || !sameHash(token, r.token_hash)) return null;
+    return { id: r.id, projectId: r.project_id, contract: r.contract, status: r.status };
+  }
+
+  async pendingApproval(projectId: string): Promise<{ id: string } | null> {
+    const r = (await this.#pool.query(`select id from cloud.approvals where project_id = $1 and status = 'pending' order by created_at desc limit 1`, [projectId])).rows[0];
+    return r ? { id: r.id } : null;
+  }
+
+  async decide(approval: Approval, status: 'approved' | 'rejected'): Promise<void> {
+    await this.#pool.query(`update cloud.approvals set status = $2, decided_at = now() where id = $1 and status = 'pending'`, [approval.id, status]);
+  }
+}
