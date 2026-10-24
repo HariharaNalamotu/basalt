@@ -51,7 +51,7 @@ export interface AppOptions extends HttpOptions {
   ready?: () => Promise<boolean>;
 }
 
-type Env = { Variables: { project: Project; meta: RequestMeta } };
+type Env = { Variables: { project: Project; meta: RequestMeta; owner: string } };
 
 export function createApp(ctx: ServiceContext, services: Services, opts: AppOptions) {
   const { projects, signingKeys, sessions, accounts, admin } = services;
@@ -113,8 +113,16 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
     if (!presented || !timingSafeEqual(hash, platformKeyHash)) {
       throw new AuthError('unauthenticated', 'Invalid platform key.');
     }
+    // The platform names the workspace it is acting for; every project operation is scoped to it.
+    const owner = c.req.header('x-basalt-owner') ?? '';
+    if (!/^[A-Za-z0-9_.:-]{1,200}$/.test(owner)) {
+      throw new AuthError('invalid_request', 'X-Basalt-Owner header is required.');
+    }
+    c.set('owner', owner);
+    c.set('meta', { ip: clientIp(c, opts), userAgent: 'basalt-platform' });
     await next();
   });
+  const owned = (c: Context<Env>) => projects.getOwned(c.get('owner'), c.req.param('id') ?? '');
 
   const CreateProjectSchema = z
     .object({
@@ -128,25 +136,61 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
     .partial()
     .strict();
 
+  platform.get('/projects', async (c) => {
+    const list = await projects.listOwned(c.get('owner'));
+    return c.json({ projects: list.map((p) => publicProject(p, ctx)) });
+  });
   platform.post('/projects', async (c) => {
     const input = CreateProjectSchema.parse(await readJson(c));
-    const { project, secretKey } = await projects.create(input);
+    const { project, secretKey } = await projects.create(c.get('owner'), input);
     return c.json({ project: publicProject(project, ctx), secretKey }, 201);
   });
-  platform.get('/projects/:id', async (c) => c.json({ project: publicProject(await projects.get(c.req.param('id')), ctx) }));
+  platform.get('/projects/:id', async (c) => c.json({ project: publicProject(await owned(c), ctx) }));
   platform.patch('/projects/:id', async (c) => {
     const input = UpdateProjectSchema.parse(await readJson(c));
-    return c.json({ project: publicProject(await projects.update(c.req.param('id'), input), ctx) });
+    const project = await owned(c);
+    return c.json({ project: publicProject(await projects.update(project.id, input), ctx) });
   });
   platform.delete('/projects/:id', async (c) => {
-    await projects.delete(c.req.param('id'));
+    await projects.delete((await owned(c)).id);
     return c.body(null, 204);
   });
-  platform.post('/projects/:id/rotate-secret-key', async (c) => c.json(await projects.rotateSecretKey(c.req.param('id'))));
-  platform.post('/projects/:id/rotate-signing-key', async (c) => {
-    await projects.get(c.req.param('id'));
-    return c.json(await signingKeys.rotate(c.req.param('id')));
+  platform.post('/projects/:id/rotate-secret-key', async (c) => c.json(await projects.rotateSecretKey((await owned(c)).id)));
+  platform.post('/projects/:id/rotate-signing-key', async (c) => c.json(await signingKeys.rotate((await owned(c)).id)));
+
+  // User administration on behalf of the workspace owner (used by the MCP tools / dashboard).
+  platform.get('/projects/:id/users', async (c) =>
+    c.json(
+      await admin.listUsers((await owned(c)).id, {
+        limit: Number(c.req.query('limit') ?? 50) || 50,
+        cursor: c.req.query('cursor'),
+        email: c.req.query('email'),
+      }),
+    ),
+  );
+  platform.get('/projects/:id/users/:userId', async (c) =>
+    c.json({ user: await admin.getUser((await owned(c)).id, c.req.param('userId')) }),
+  );
+  platform.patch('/projects/:id/users/:userId', async (c) => {
+    const patch = UserPatchSchema.parse(await readJson(c));
+    return c.json({ user: await admin.updateUser((await owned(c)).id, c.req.param('userId'), patch, c.get('meta')) });
   });
+  platform.delete('/projects/:id/users/:userId', async (c) => {
+    await admin.deleteUser((await owned(c)).id, c.req.param('userId'), c.get('meta'));
+    return c.body(null, 204);
+  });
+  platform.post('/projects/:id/users/:userId/revoke-sessions', async (c) =>
+    c.json(await admin.revokeSessions((await owned(c)).id, c.req.param('userId'), c.get('meta'))),
+  );
+  platform.get('/projects/:id/events', async (c) =>
+    c.json(
+      await admin.listEvents((await owned(c)).id, {
+        userId: c.req.query('userId'),
+        limit: Number(c.req.query('limit') ?? 50) || 50,
+        before: c.req.query('before') ? Number(c.req.query('before')) : undefined,
+      }),
+    ),
+  );
   app.route('/v1/platform', platform);
 
   // ------------------------------------------------------------ per-project API
@@ -196,21 +240,21 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
         typ: 'at+jwt',
         currentDate: ctx.now(),
       });
-      return payload as { sub: string; sid: string };
+      return payload as { sub: string; sid: string; exp: number };
     } catch {
       return null;
     }
   }
 
   /** Verified JWT *and* a live session row: revocation takes effect immediately on these endpoints. */
-  async function requirePrincipal(c: Context<Env>): Promise<Principal> {
+  async function requirePrincipal(c: Context<Env>): Promise<Principal & { accessTokenExpiresAt: string }> {
     const project = c.get('project');
     const token = readAccessToken(c, project, opts);
     const claims = token ? await verifyAccessToken(project, token) : null;
     if (!claims) throw new AuthError('unauthenticated', 'Sign in required.');
     const session = await sessions.getActive(project.id, claims.sid);
     if (!session || session.user_id !== claims.sub) throw new AuthError('unauthenticated', 'Session expired. Please sign in again.');
-    return { project, userId: claims.sub, sessionId: claims.sid };
+    return { project, userId: claims.sub, sessionId: claims.sid, accessTokenExpiresAt: new Date(claims.exp * 1000).toISOString() };
   }
 
   p.get('/.well-known/jwks.json', async (c) => {
@@ -333,7 +377,10 @@ export function createApp(ctx: ServiceContext, services: Services, opts: AppOpti
 
   p.get('/session', async (c) => {
     const principal = await requirePrincipal(c);
-    return c.json({ user: await accounts.getUser(principal), session: { id: principal.sessionId } });
+    return c.json({
+      user: await accounts.getUser(principal),
+      session: { id: principal.sessionId, accessTokenExpiresAt: principal.accessTokenExpiresAt },
+    });
   });
 
   p.get('/sessions', async (c) => {

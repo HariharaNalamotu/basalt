@@ -6,6 +6,8 @@
 
 CREATE TABLE auth_projects (
   id                 text PRIMARY KEY,
+  -- Platform workspace that owns this project. Every control-plane call is scoped to it.
+  owner_id           text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 200),
   name               text NOT NULL CHECK (length(name) BETWEEN 1 AND 100),
   secret_key_hash    bytea NOT NULL,
   secret_key_hint    text NOT NULL,
@@ -15,6 +17,7 @@ CREATE TABLE auth_projects (
   updated_at         timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX auth_projects_secret_key_hash_idx ON auth_projects (secret_key_hash);
+CREATE INDEX auth_projects_owner_idx ON auth_projects (owner_id, created_at);
 
 -- Per-project Ed25519 signing keys. Private keys are AES-256-GCM encrypted with the master key.
 CREATE TABLE auth_signing_keys (

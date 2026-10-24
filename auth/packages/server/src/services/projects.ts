@@ -6,6 +6,7 @@ import type { SigningKeyStore } from './signing-keys.js';
 
 export interface Project {
   id: string;
+  ownerId: string;
   name: string;
   allowedOrigins: string[];
   settings: ProjectSettings;
@@ -16,6 +17,7 @@ export interface Project {
 
 interface ProjectRow {
   id: string;
+  owner_id: string;
   name: string;
   allowed_origins: string[];
   settings: unknown;
@@ -31,6 +33,7 @@ const CACHE_TTL_MS = 15_000;
 function toProject(r: ProjectRow): Project {
   return {
     id: r.id,
+    ownerId: r.owner_id,
     name: r.name,
     allowedOrigins: r.allowed_origins,
     settings: parseSettings(r.settings),
@@ -54,15 +57,15 @@ export class ProjectService {
     private readonly signingKeys: SigningKeyStore,
   ) {}
 
-  async create(input: { name: string; allowedOrigins: string[]; settings?: Partial<ProjectSettings> }) {
+  async create(ownerId: string, input: { name: string; allowedOrigins: string[]; settings?: Partial<ProjectSettings> }) {
     const settings = ProjectSettingsSchema.parse(input.settings ?? {});
     const id = randomId('prj_');
     const secret = newSecretKey();
     const project = await this.ctx.db.transaction(async (tx) => {
       const { rows } = await tx.query<ProjectRow>(
-        `INSERT INTO auth_projects (id, name, secret_key_hash, secret_key_hint, allowed_origins, settings)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-        [id, input.name, secret.hash, secret.hint, input.allowedOrigins, JSON.stringify(settings)],
+        `INSERT INTO auth_projects (id, owner_id, name, secret_key_hash, secret_key_hint, allowed_origins, settings)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+        [id, ownerId, input.name, secret.hash, secret.hint, input.allowedOrigins, JSON.stringify(settings)],
       );
       await this.signingKeys.createKey(tx, id);
       return toProject(rows[0]!);
@@ -72,6 +75,21 @@ export class ProjectService {
 
   async get(id: string): Promise<Project> {
     return (await this.load(id)).project;
+  }
+
+  /** Control-plane lookup: the project must belong to `ownerId`. Unknown and foreign projects look identical. */
+  async getOwned(ownerId: string, id: string): Promise<Project> {
+    const project = await this.get(id);
+    if (project.ownerId !== ownerId) throw new AuthError('not_found', 'Project not found.');
+    return project;
+  }
+
+  async listOwned(ownerId: string): Promise<Project[]> {
+    const { rows } = await this.ctx.db.query<ProjectRow>(
+      'SELECT * FROM auth_projects WHERE owner_id = $1 ORDER BY created_at LIMIT 500',
+      [ownerId],
+    );
+    return rows.map(toProject);
   }
 
   async find(id: string): Promise<Project | null> {

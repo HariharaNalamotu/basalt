@@ -5,7 +5,7 @@ import type { ServiceContext } from '../src/context.js';
 import type { Db, QueryResult } from '../src/db/db.js';
 import { migrate } from '../src/db/migrate.js';
 import { KeyRing } from '../src/lib/crypto.js';
-import { silentLogger } from '../src/lib/logger.js';
+import { createLogger, silentLogger } from '../src/lib/logger.js';
 import { ConsoleMailer } from '../src/lib/mailer.js';
 import { PasswordHasher } from '../src/lib/password.js';
 import { MemoryRateLimiter } from '../src/lib/ratelimit.js';
@@ -85,6 +85,7 @@ export interface RequestOpts {
   headers?: Record<string, string>;
   ip?: string;
   bearer?: string;
+  owner?: string;
 }
 
 export async function createHarness(): Promise<Harness> {
@@ -102,7 +103,7 @@ export async function createHarness(): Promise<Harness> {
     rateLimiter: new MemoryRateLimiter(() => Date.now() + clock.offsetMs),
     mailer,
     breachChecker: { isBreached: async (p) => breached.has(p) },
-    log: silentLogger,
+    log: process.env.TEST_LOG ? createLogger("debug") : silentLogger,
     publicUrl: 'https://auth.test',
     now: () => new Date(Date.now() + clock.offsetMs),
   };
@@ -122,6 +123,7 @@ export async function createHarness(): Promise<Harness> {
     if (opts.jar && opts.jar.cookies.size) headers.cookie = opts.jar.header();
     if (opts.ip) headers['x-test-ip'] = opts.ip;
     if (opts.bearer) headers.authorization = `Bearer ${opts.bearer}`;
+    if (path.startsWith('/v1/platform')) headers['x-basalt-owner'] ??= opts.owner ?? 'ws_test';
     const res = await app.request(path, {
       method,
       headers,

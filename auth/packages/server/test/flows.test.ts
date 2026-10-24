@@ -62,6 +62,35 @@ describe('platform API', () => {
     }
   });
 
+  it('scopes every control-plane operation to the owning workspace', async () => {
+    const asOther = { bearer: PLATFORM_KEY, owner: 'ws_someone_else' };
+    for (const [method, path] of [
+      ['GET', `/v1/platform/projects/${pid}`],
+      ['PATCH', `/v1/platform/projects/${pid}`],
+      ['DELETE', `/v1/platform/projects/${pid}`],
+      ['POST', `/v1/platform/projects/${pid}/rotate-secret-key`],
+      ['GET', `/v1/platform/projects/${pid}/users`],
+      ['GET', `/v1/platform/projects/${pid}/events`],
+    ] as const) {
+      const res = await h.request(method, path, { ...asOther, body: method === 'GET' || method === 'DELETE' ? undefined : {} });
+      expect(res.status, `${method} ${path}`).toBe(404);
+    }
+    const list = (await (await h.request('GET', '/v1/platform/projects', asOther)).json()) as any;
+    expect(list.projects).toEqual([]);
+    const noOwner = await h.request('GET', `/v1/platform/projects/${pid}`, { bearer: PLATFORM_KEY, headers: { 'x-basalt-owner': '' } });
+    expect(noOwner.status).toBe(400);
+    // The owner can still see it.
+    expect((await h.request('GET', `/v1/platform/projects/${pid}`, { bearer: PLATFORM_KEY })).status).toBe(200);
+  });
+
+  it('manages users through the control plane without a project secret key', async () => {
+    const { body } = await browserSignUp();
+    const users = (await (await h.request('GET', `/v1/platform/projects/${pid}/users`, { bearer: PLATFORM_KEY })).json()) as any;
+    expect(users.users.map((u: any) => u.id)).toContain(body.user.id);
+    const patched = await h.request('PATCH', `/v1/platform/projects/${pid}/users/${body.user.id}`, { bearer: PLATFORM_KEY, body: { metadata: { role: 'admin' } } });
+    expect(((await patched.json()) as any).user.metadata.role).toBe('admin');
+  });
+
   it('never returns the secret key after creation', async () => {
     const res = await h.request('GET', `/v1/platform/projects/${pid}`, { bearer: PLATFORM_KEY });
     const text = await res.text();
