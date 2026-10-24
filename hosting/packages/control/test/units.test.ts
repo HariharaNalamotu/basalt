@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import * as tar from 'tar';
 import { describe, expect, it } from 'vitest';
 import { SecretBox } from '../src/crypto.js';
-import { hostFor, RESERVED_APP_NAMES } from '../src/naming.js';
+import { appOrigins, emailsReadable, hostFor, RESERVED_APP_NAMES } from '../src/naming.js';
 import { detectManifest } from '../src/pipeline.js';
 import { scanSource } from '../src/scanner.js';
 import { CspPatch, ProtectionPatch } from '../src/service.js';
@@ -85,6 +85,19 @@ describe('manifest detection', () => {
     await writeFile(path.join(dir, 'basalt.json'), JSON.stringify({ frontend: { output: '../etc' } }));
     await expect(detectManifest(dir)).rejects.toThrow(/inside the project/);
   });
+
+  it('reads the data rules from basalt.data.json, and refuses a broken one with a plain reason', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'man-'));
+    await writeFile(path.join(dir, 'package.json'), '{}');
+    expect((await detectManifest(dir)).dataRules).toBeNull();
+    const rules = { tables: { bookings: { fields: { service: { type: 'text', required: true } } } } };
+    await writeFile(path.join(dir, 'basalt.data.json'), JSON.stringify(rules));
+    expect((await detectManifest(dir)).dataRules).toEqual(rules);
+    await writeFile(path.join(dir, 'basalt.data.json'), '{ not json');
+    await expect(detectManifest(dir)).rejects.toThrow(/basalt\.data\.json/);
+    await writeFile(path.join(dir, 'basalt.data.json'), '[1,2]');
+    await expect(detectManifest(dir)).rejects.toThrow(/basalt\.data\.json/);
+  });
 });
 
 describe('bounded settings', () => {
@@ -103,6 +116,18 @@ describe('bounded settings', () => {
     expect(hostFor('todo', 'production', 'prod', 'apps.dev')).toBe('todo.apps.dev');
     expect(hostFor('todo', 'staging', 'staging', 'apps.dev')).toBe('todo--staging.apps.dev');
     expect(hostFor('todo', 'preview', 'pabc123', 'apps.dev')).toBe('todo--pabc123.apps.dev');
+  });
+
+  it('apps sign in from https only, plus plain http on the local demo port when one is set', () => {
+    expect(appOrigins('todo.apps.dev')).toEqual(['https://todo.apps.dev']);
+    expect(appOrigins('todo.basalt.localhost', 8080)).toEqual(['https://todo.basalt.localhost', 'http://todo.basalt.localhost:8080']);
+  });
+
+  it("production email stays private, except on a one-laptop demo that can't send email at all", () => {
+    expect(emailsReadable('staging', {})).toBe(true);
+    expect(emailsReadable('production', {})).toBe(false);
+    expect(emailsReadable('production', { localHttpPort: 8080, resendKey: 're_x' })).toBe(false);
+    expect(emailsReadable('production', { localHttpPort: 8080 })).toBe(true);
   });
 
   it('platform service names (including cloud, where Basalt Cloud lives) are never app names', () => {

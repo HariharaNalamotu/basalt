@@ -7,7 +7,7 @@ import { DEFAULT_PROTECTION, EMPTY_CSP, type EnvKind } from '@basalt/host-shared
 import type { Ctx } from './ctx.js';
 import { id, secret } from './crypto.js';
 import { HostedPlatform } from './hosted-platform.js';
-import { envKey, hostFor, networkName, subnetFor } from './naming.js';
+import { appOrigins, envKey, hostFor, networkName, subnetFor } from './naming.js';
 
 export interface AppRow {
   id: string;
@@ -112,7 +112,7 @@ export class Environments {
       await this.ensureNetwork(env);
       const platform = this.platformFor(app, env);
       const auth = this.ctx.authFor(app.workspace_id);
-      const r = await setupApp({ platform, auth }, { app: envKey(app.name, slug), name: app.name, origins: [`https://${env.host}`] });
+      const r = await setupApp({ platform, auth }, { app: envKey(app.name, slug), name: app.name, origins: appOrigins(env.host, this.ctx.cfg.LOCAL_HTTP_PORT) });
       await platform.restrictRedis(r.projectId);
       await platform.writeEnv(envKey(app.name, slug), {
         // Tokens carry the public issuer; the backend fetches keys over the private network.

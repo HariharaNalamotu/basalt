@@ -55,6 +55,8 @@ const Env = z.object({
   CLOUD_INTERNAL_URL: z.string().url().optional(),
   /** Cloud's CLOUD_PLATFORM_KEY. */
   CLOUD_PLATFORM_KEY: z.string().min(32).optional(),
+  /** One-laptop demo only: apps are also served at http://<host>:<port>, so sign-in accepts that origin. */
+  LOCAL_HTTP_PORT: z.coerce.number().int().min(1).max(65535).optional(),
 });
 
 export type Config = ReturnType<typeof loadConfig>;

@@ -205,6 +205,8 @@ export class Host {
     const staging = await this.envs.ensure(app, 'staging', 'staging');
     if (!(await this.deployAndTest(app, staging, dep, pipelineId))) return this.log(pipelineId, 'staging', 'staging tests failed', 'failed');
     const prod = await this.envs.ensure(app, 'production', 'prod');
+    const prodRules = await this.applyDataRules(prod, dep);
+    if (!prodRules.ok) return this.log(pipelineId, 'production', prodRules.message, 'failed');
     await this.runtime.release(app, prod, dep, 'ship');
     await this.log(pipelineId, 'production', `live at https://${prod.host} (watching for errors; automatic rollback is armed)`);
     const smoke = await this.testing.smoke(app, prod, dep);
@@ -215,8 +217,34 @@ export class Host {
     return this.log(pipelineId, 'done', `shipped to https://${prod.host}`, 'passed');
   }
 
+  /**
+   * Applies the deployment's basalt.data.json to an environment's data before the release goes
+   * there. Test environments take it right away. Production waits for the owner when the rules
+   * would show data to more people, and nothing is released until they approve.
+   */
+  private async applyDataRules(env: EnvRow, dep: DeploymentRow): Promise<{ ok: true } | { ok: false; message: string }> {
+    const rules = dep.manifest?.dataRules;
+    if (!rules) return { ok: true };
+    const link = this.ctx.cfg.dataLink;
+    const fresh = (await this.envs.get(env.id))!;
+    const adminKey = this.envs.dataAdminKey(fresh);
+    if (!link || !fresh.data_project_id || !adminKey) return { ok: false, message: 'This app has basalt.data.json but the platform has no Basalt Cloud data store configured.' };
+    try {
+      const r = await setDataRules(link, { projectId: fresh.data_project_id, adminKey, kind: fresh.kind }, rules);
+      if (r.status === 'live') return { ok: true };
+      return { ok: false, message: `The owner needs to approve the app's data rules before this goes live. Show them this link and ask them to approve, then promote again:\n${r.approveUrl}\nWhy: ${r.why.join(' ')}` };
+    } catch (err) {
+      return { ok: false, message: `The data rules in basalt.data.json weren't accepted: ${(err as Error).message.replace(/^Basalt Cloud: /, '')}` };
+    }
+  }
+
   private async deployAndTest(app: AppRow, env: EnvRow, dep: DeploymentRow, pipelineId: string): Promise<boolean> {
     const stage = env.kind === 'preview' ? 'preview' : env.kind;
+    const rules = await this.applyDataRules(env, dep);
+    if (!rules.ok) {
+      await this.log(pipelineId, stage, rules.message);
+      return false;
+    }
     try {
       await this.runtime.release(app, env, dep, stage);
     } catch (err) {
@@ -262,6 +290,8 @@ export class Host {
       await this.audit(ws, 'promote', appName, { depId, to });
       return { pipelineId, url: `https://${env.host}` };
     }
+    const rules = await this.applyDataRules(env, dep);
+    if (!rules.ok) throw new UserError(rules.message, 409);
     const release = await this.runtime.release(app, env, dep, 'promote');
     const smoke = await this.testing.smoke(app, (await this.envs.get(env.id))!, dep);
     if (smoke.status !== 'passed') {

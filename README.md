@@ -24,7 +24,7 @@ The app's own backend can do the same through `ctx.data` in the API framework.
 
 - **Data block:** get, list (filters, sorting, paging), create, update, archive and restore, file uploads, sharing, owner admins and additive rule changes. 104 attack and feature tests.
 - **Cloud:** a database per app, plain-English approval for anything that shows data to more people, the owner's data map, test logins through Basalt Auth and **Guard** (`basalt_check`). Guard scans the app folder for data kept outside Basalt, then signs in as two people and a stranger and tries 12 ways to reach data that isn't theirs, then writes a safety receipt for the owner. 49 tests.
-- **Auth and hosting joined up:** Cloud apps use real Basalt Auth logins, and sessions Auth ends stop working in the database too. Every hosted environment gets its own Cloud data project, served at `/_basalt/data` on the app's own site. Claude sets its rules with `host_data_rules` (test environments go live right away, production waits for the owner's "Yes").
+- **Auth and hosting joined up:** Cloud apps use real Basalt Auth logins, and sessions Auth ends stop working in the database too. Every hosted environment gets its own Cloud data project, served at `/_basalt/data` on the app's own site. The app's rules live in `basalt.data.json` in its folder: deploys apply them to preview and staging before the app's tests run, and promoting to production stops with the owner's approval link until they tap "Yes". (`host_data_rules` sets them by hand.)
 - Reviewed with Codex in several rounds. Every finding so far was fixed.
 
 ## Run it on one laptop (demo)
@@ -34,9 +34,18 @@ cd hosting/deploy
 ./setup.sh basalt.localhost --local
 ```
 
-Apps are then at `http://<app>.basalt.localhost:8080`, owner pages at `http://cloud.basalt.localhost:8080` and the control API at `http://127.0.0.1:4000`. Give Docker at least 8 GB of memory first. On Windows, run this inside WSL2 from a clone made inside WSL2 (a Windows checkout can turn the scripts' line endings into ones bash can't run).
+Then create a workspace for Claude with `docker exec basalt-control node dist/admin.js create-workspace <name>` (it prints the MCP config). Apps are at `http://<app>.basalt.localhost:8080`, owner pages at `http://cloud.basalt.localhost:8080` and the control API at `http://127.0.0.1:4000`. Give Docker at least 8 GB of memory first. On Windows, run this inside WSL2 from a clone made inside WSL2 (a Windows checkout can turn the scripts' line endings into ones bash can't run).
 
 ## Tests
+
+End to end on a running local platform (see above), each with a workspace token in `BASALT_HOST_TOKEN`:
+
+```sh
+node hosting/scripts/e2e-platform.mjs   # Hari's: build, test, preview, staging, production, security, rollback
+node hosting/scripts/e2e-salon.mjs      # a salon app on the Data block: rules, owner approval, two real customers kept apart
+```
+
+Unit and integration suites:
 
 ```sh
 cd data && npm test        # needs Docker (starts its own Postgres)
@@ -48,6 +57,6 @@ cd api && npm test
 
 ## Still open
 
-- Nothing has run on a real server with a domain and Cloudflare tunnel yet. The local demo setup above is being tried end to end.
+- Nothing has run on a real server with a domain and Cloudflare tunnel yet. The one-laptop setup above passes both end to end scripts.
 - Two sets of Claude tools still overlap (Cloud's `basalt_*` and hosting's `host_*`). They should become one.
 - The demo story: plain vibe coded apps vs Basalt apps. A first test found plain builds got basic per-customer checks right. The pitch is that nothing guarantees it, and later edits can quietly break it, while Basalt's rules sit below the code.

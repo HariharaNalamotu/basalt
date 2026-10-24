@@ -21,7 +21,10 @@ export async function initProject(root: string, rootDomain: string) {
     await writeFile(npmrcPath, `${npmrc}${npmrc && !npmrc.endsWith('\n') ? '\n' : ''}@basalt:registry=https://registry.${rootDomain}/\n`);
     written.push('.npmrc');
   }
-  await put('basalt.json', JSON.stringify({ backend: { entry: 'server/index.ts' }, frontend: { output: 'dist' } }, null, 2) + '\n');
+  // A plain site (public/index.html, no build script) is served as is; anything with a build outputs dist/.
+  const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8').catch(() => '{}')) as { scripts?: Record<string, string> };
+  const plainSite = !pkg.scripts?.build && (await exists(path.join(root, 'public/index.html')));
+  await put('basalt.json', JSON.stringify({ backend: { entry: 'server/index.ts' }, frontend: { output: plainSite ? 'public' : 'dist' } }, null, 2) + '\n');
   await put(
     'playwright.config.ts',
     `import { defineConfig } from '@playwright/test';
