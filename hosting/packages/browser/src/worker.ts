@@ -100,7 +100,15 @@ export class BrowserWorker {
     return this.browser;
   }
 
-  async open(input: { host: string; accessToken?: string; owner: string; path?: string }): Promise<{ sessionId: string } & Record<string, unknown>> {
+  async open(input: {
+    host: string;
+    accessToken?: string;
+    owner: string;
+    path?: string;
+    /** "phone" is a 390x844 touch screen; default is a 1280x800 desktop. */
+    viewport?: 'phone' | 'desktop';
+    colorScheme?: 'light' | 'dark';
+  }): Promise<{ sessionId: string } & Record<string, unknown>> {
     if (!input.host.endsWith(`.${this.o.rootDomain}`) && input.host !== this.o.rootDomain) throw new Error('Only platform hosts can be opened.');
     if (this.sessions.size >= (this.o.maxSessions ?? 6)) {
       // Evict this owner's oldest session first, otherwise refuse.
@@ -111,7 +119,8 @@ export class BrowserWorker {
     const browser = await this.getBrowser();
     const context = await browser.newContext({
       ignoreHTTPSErrors: true, // internal edge uses a self-signed certificate
-      viewport: { width: 1280, height: 800 },
+      ...(input.viewport === 'phone' ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } : { viewport: { width: 1280, height: 800 } }),
+      colorScheme: input.colorScheme === 'dark' ? 'dark' : 'light',
       serviceWorkers: 'block',
       acceptDownloads: false,
     });

@@ -228,10 +228,20 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
   });
 
   // ---------------------------------------------------------------- browser (Playwright)
-  tool('browser_open', 'Opens a real Chromium session on a preview/staging environment and returns the page snapshot (accessibility tree). Use host_test_user to get credentials for signing in.', { app, env: testEnv, path: z.string().optional() }, async (a) => {
+  tool(
+    'browser_open',
+    'Opens a real Chromium session on a preview/staging environment and returns the page snapshot (accessibility tree). Use host_test_user to get credentials for signing in. viewport "phone" opens a 390x844 touch screen (most customers), colorScheme "dark" opens in dark mode: check both before telling the human it looks right.',
+    {
+      app,
+      env: testEnv,
+      path: z.string().optional(),
+      viewport: z.enum(['desktop', 'phone']).optional().describe('"phone" (390x844, touch) or "desktop" (1280x800, the default).'),
+      colorScheme: z.enum(['light', 'dark']).optional(),
+    },
+    async (a) => {
     const { env: e } = await host.env(ws, a.app, a.env);
     if (e.kind === 'production') throw new UserError('Browser sessions are for preview and staging only.');
-    const r = await browser('/sessions', { method: 'POST', body: { host: e.host, accessToken: host.testing.accessToken(e, 3600), path: a.path ?? '/' } });
+    const r = await browser('/sessions', { method: 'POST', body: { host: e.host, accessToken: host.testing.accessToken(e, 3600), path: a.path ?? '/', viewport: a.viewport, colorScheme: a.colorScheme } });
     const p = page(r);
     p.content.unshift({ type: 'text', text: `sessionId: ${r.sessionId}` });
     return p;
