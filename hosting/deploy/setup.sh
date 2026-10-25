@@ -58,6 +58,8 @@ else
 fi
 echo "Waiting for the test browser image to finish downloading (app test runs need it)..."
 wait "$PULL"
-echo
-echo "Platform is up. Create a workspace (prints the coding agent's connector setup):"
-echo "  docker exec basalt-control node dist/admin.js create-workspace <name>"
+if [[ -z "${BASALT_FROM_START:-}" ]]; then
+  echo
+  echo "Platform is up. Create a workspace (prints the coding agent's connector setup):"
+  echo "  docker exec basalt-control node dist/admin.js create-workspace <name>"
+fi

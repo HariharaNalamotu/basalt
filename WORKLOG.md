@@ -978,6 +978,43 @@ The demo story is plain vibe-coded apps versus Basalt apps. A first test found t
 
 ---
 
+## 11c. The owner's dashboard, the IP allowlist, and the one-command start (2026-10-24)
+
+Goal: a graphical, non-technical dashboard for the owner of apps hosted on Basalt — analytics, logs, incidents, deployments and security — plus a way to always-allow the owner's own address so a security test (an attack harness run from the same computer) isn't blocked, and a single command that starts everything and hands the coding agent its connector file.
+
+### The IP allowlist (edge)
+
+- **`AppRoute.allowIps`** (`hosting/packages/shared/src/routes.ts`): client IP buckets the app's workspace always lets through. The route table fills it per workspace from a new `allowlist` table (`003_allowlist.sql`, `workspace_id + ip`), so one owner's allowlist only covers that owner's apps.
+- **Edge pipeline (`edge/src/server.ts`)**: the route is looked up first, and an allowlisted client skips the ban check, the per-IP concurrency cap, both rate-limit buckets and every shield penalty. The WAF still inspects and **refuses each malicious request** (`attack_signature` → 403, `scanner_path` → 404), and every refusal is still recorded — the protection stays real and visible, it just never adds up to a ban for that address. Verified: an allowlisted IP sent 16 attack probes in a row, each refused, `bans` stayed empty, and it still loaded the site (200).
+- **Ban provenance (`edge/src/shield.ts`)**: a ban now records when it started, why (the last-straw reason) and on which host, so the dashboard can explain each block in plain words.
+- **Edge analytics (`edge/src/metrics.ts`)**: 24 h of per-minute traffic, unique visitors per hour, top pages and features (ids collapsed, e.g. `/api/todos/:id`), devices, browsers, referrers, a recent-visit log (query strings dropped — they can hold tokens) and a bounded security-event feed. New admin endpoints `GET /detail?host=` and `GET /security?hosts=` next to the existing `/metrics` and `/bans`.
+
+### The dashboard (control)
+
+- **`control/src/dashboard.ts`** serves `/dashboard` off the control plane (reachable at `host.<root>`, and directly on `127.0.0.1:4000` in the demo — so even a banned laptop can still open it and allow itself).
+  - The owner signs in from a signed link (`dashboardLink`, 24 h), which sets a 12 h HttpOnly session cookie scoped to `/dashboard`. No agent token involved.
+  - `GET /api/state` returns, for the owner's workspace only: every app and environment with status and 24 h sparkline; the selected environment's traffic detail, releases, backend health and data rules; recent deployments with CI steps, pipeline logs and test runs; **incidents** derived server-side (outages, error spikes via `errorSpikes`, automatic rollbacks, failed deploys, Guard findings, active bans); the security feed, bans and allowlist; the viewer's own IP; and the change history.
+  - Writes are same-origin only (a custom header + JSON content type + origin check): `POST/DELETE /api/allowlist`, `POST /api/unban` (only lifts bans that touch the owner's apps), `GET /api/logs` (parsed backend logs), and `POST /api/connector` (a fresh workspace token as a downloadable `.mcp.json`).
+- **The page** (`control/src/dashboard-ui/`, inlined under a strict per-nonce CSP; `style-src-attr 'unsafe-inline'` is the one scoped allowance, for dynamic widths): plain dependency-free HTML/CSS/JS. Seven sections — Overview (a plain-English verdict + KPIs + traffic), Visitors, Speed & errors, Security, Updates, Problems, Activity log — hand-drawn SVG charts with hover, light/dark themes, a phone layout, and a **right-click menu on any IP** to always-allow, unblock, filter or copy it. The blocked-visitors table and the "This computer" card make the allowlist one click. The whole thing polls `/api/state` every 5 s.
+- **`host_dashboard`** MCP tool and `basalt-admin dashboard-link <ws> [--connect]` both hand over a link. `basalt-admin tokens`/`revoke-token` manage connector keys.
+
+### One-command start and the connector download
+
+- **`start.sh`** (with `start-mac.command` and `start-windows.cmd`): checks Docker (and WSL on Windows), builds and starts the stack via `setup.sh … --local`, ensures a `my-apps` workspace, and opens the **Connect Claude** page (`/dashboard/connect`). `--no-build` restarts in ~45 s; `--stop` stops the platform and keeps apps and data. `.gitattributes` keeps the shell scripts LF in a Windows checkout.
+- **Connect Claude page**: picks the OS, downloads a ready `.mcp.json` (each download mints its own key), and shows a copy-paste command to drop it in an app folder as `.mcp.json` and open Claude Code. Windows gets `cmd /c npx` and the loopback registry (`REGISTRY_LOOPBACK_URL`, published on `127.0.0.1:4873`) because Node on Windows can't resolve `*.localhost`. `connector.ts` is the single source for the file; the admin CLI and the download use it.
+
+### Verification
+
+- Hosting tests: **70** (edge 29 incl. 3 new allowlist/analytics tests, control 30 incl. 5 new connector/dashboard tests, egress 3, browser 3, mcp 5). Build and typecheck clean.
+- On the running demo stack: deployed a static app, drove real traffic and a batch of attack probes, then exercised the dashboard in a real Chromium — every section rendered with no JS or CSP errors in light and dark mode, the cold-installed connector connected in ~8 s and listed 55 tools, the connector download produced a working file (Mac and Windows shapes), the registry served working tarballs on loopback and refused anonymous publish, and the allowlist round trip (add → ban lifted → re-attack stays unbanned → site still loads) worked end to end.
+
+### Still open
+
+- The dashboard reads the edge's in-memory analytics, so a platform restart resets the 24 h history (bans and allowlist persist; the latter is in Postgres).
+- `start-windows.cmd` and the Windows connector are written but unexercised on a real Windows machine.
+
+---
+
 ## Appendix A: Basalt Auth and Basalt API
 
 Exhaustive inventory, checked against the code. Facts changed by the readiness pass (§11) are marked in place.

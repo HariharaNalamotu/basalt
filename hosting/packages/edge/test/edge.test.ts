@@ -430,3 +430,51 @@ describe('the public origin backends and services see', () => {
     expect(lastData!.headers['x-forwarded-proto']).toBe('https');
   });
 });
+
+describe('owner allowlist and dashboard analytics', () => {
+  it('an allowlisted client is refused attack by attack, but never banned or rate limited on that app', async () => {
+    const ip = '192.0.2.77';
+    setRoutes([route({ allowIps: [ip], protection: { ...DEFAULT_PROTECTION, perIpPerMinute: 10 } }), route({ host: 'other.example.com', envId: 'env_other' })]);
+    // Each attack is still refused by the WAF, so the protection stays visible...
+    expect((await call('/api/x?q=1%20UNION%20SELECT%20password%20FROM%20users', { ip })).status).toBe(403);
+    for (const p of ['/.git/config', '/phpmyadmin/', '/.env', '/wp-admin/', '/wp-login.php']) expect((await call(p, { ip })).status).toBe(404);
+    // ...but it never adds up to a ban, and the per-app rate limit doesn't apply.
+    for (let i = 0; i < 25; i++) expect((await call('/', { ip })).status).toBe(200);
+    expect(edge.shield.bans().some((b) => b.ip === ip)).toBe(false);
+    const events = edge.metrics.securityEvents(new Set(['todo.example.com'])).filter((e) => e.ip === ip);
+    expect(events.length).toBe(6);
+    expect(events.every((e) => e.allowed && !e.banned)).toBe(true);
+  });
+
+  it('the allowlist only covers the owner\'s own apps', async () => {
+    const ip = '192.0.2.78';
+    setRoutes([route({ allowIps: [ip] }), route({ host: 'other.example.com', envId: 'env_other' })]);
+    for (const p of ['/.git/config', '/phpmyadmin/', '/.env', '/wp-admin/', '/wp-login.php', '/.aws/x', '/.ssh/id']) await call(p, { ip, host: 'other.example.com' });
+    expect((await call('/', { ip, host: 'other.example.com' })).status).toBe(403);
+    const ban = edge.shield.bans().find((b) => b.ip === ip)!;
+    expect(ban.host).toBe('other.example.com');
+    expect(ban.reason).toBe('scanner_path');
+    expect(edge.metrics.securityEvents(new Set(['other.example.com'])).some((e) => e.ip === ip && e.banned)).toBe(true);
+    // Still let through on the app that allowlisted it.
+    expect((await call('/', { ip })).status).toBe(200);
+  });
+
+  it('keeps per-minute history, visitors, pages, devices and a visit log, without query strings', async () => {
+    setRoutes([route({ host: 'stats.example.com', envId: 'env_stats' })]);
+    const iphone = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1';
+    await call('/todos/123?token=secret', { host: 'stats.example.com', ip: '198.18.0.1', headers: { accept: 'text/html', 'user-agent': iphone, referer: 'https://news.example.org/post' } });
+    await call('/', { host: 'stats.example.com', ip: '198.18.0.2', headers: { accept: 'text/html', 'user-agent': 'Mozilla/5.0 (Macintosh) Chrome/130.0 Safari/537.36' } });
+    await call('/api/todos/42', { host: 'stats.example.com', ip: '198.18.0.2' });
+    const d = edge.metrics.detail('stats.example.com')!;
+    expect(d.totals.requests).toBe(3);
+    expect(d.series.at(-1)![1]).toBe(3);
+    expect(d.visitors.last24h).toBe(2);
+    expect(d.pages.map((p) => p.key).sort()).toEqual(['/', '/todos/123']);
+    expect(d.api[0]!.key).toBe('GET /api/todos/:id');
+    expect(d.devices.phone).toBe(1);
+    expect(d.devices.computer).toBe(1);
+    expect(d.referrers[0]!.key).toBe('news.example.org');
+    expect(d.access.map((a) => a.path)).toContain('/todos/123');
+    expect(JSON.stringify(d)).not.toContain('secret');
+  });
+});

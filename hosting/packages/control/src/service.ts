@@ -82,6 +82,14 @@ export class Host {
     return { workspaceId: wsId, token };
   }
 
+  /** Another workspace token (each connector file the owner downloads gets its own). Shown once. */
+  async createToken(ws: string, name: string) {
+    const token = `bht_${(await import('node:crypto')).randomBytes(32).toString('base64url')}`;
+    await this.ctx.db.query('INSERT INTO api_tokens (id, workspace_id, token_hash, name) VALUES ($1, $2, $3, $4)', [id('tok'), ws, sha256(token), name.slice(0, 80)]);
+    await this.audit(ws, 'token.created', name.slice(0, 80));
+    return token;
+  }
+
   async authenticate(token: string): Promise<string | null> {
     if (!/^bht_[A-Za-z0-9_-]{43}$/.test(token)) return null;
     const { rows } = await this.ctx.db.query<{ workspace_id: string; id: string }>('SELECT id, workspace_id FROM api_tokens WHERE token_hash = $1 AND revoked_at IS NULL', [sha256(token)]);
@@ -523,14 +531,18 @@ export class Host {
 
   async routeTable(): Promise<RouteTable> {
     const rows = (
-      await this.ctx.db.query<EnvRow & { app_name: string; static_dir: string | null; container: string | null }>(
-        `SELECT e.*, a.name AS app_name, d.static_dir, r.container
+      await this.ctx.db.query<EnvRow & { app_name: string; workspace_id: string; static_dir: string | null; container: string | null }>(
+        `SELECT e.*, a.name AS app_name, a.workspace_id, d.static_dir, r.container
          FROM environments e JOIN apps a ON a.id = e.app_id
          JOIN releases r ON r.id = e.current_release_id
          JOIN deployments d ON d.id = r.deployment_id
          WHERE e.status = 'ready'`,
       )
     ).rows;
+    const allow = new Map<string, string[]>();
+    for (const r of (await this.ctx.db.query<{ workspace_id: string; ip: string }>('SELECT workspace_id, ip FROM allowlist')).rows) {
+      allow.set(r.workspace_id, [...(allow.get(r.workspace_id) ?? []), r.ip]);
+    }
     const routes: Route[] = [];
     for (const e of rows) {
       const secret = (await this.ctx.db.query<{ value_enc: Buffer }>(`SELECT value_enc FROM env_vars WHERE env_id = $1 AND name = 'BASALT_EDGE_SECRET'`, [e.id])).rows[0];
@@ -550,6 +562,7 @@ export class Host {
         protection: { ...DEFAULT_PROTECTION, ...(e.protection as Partial<ProtectionSettings>) },
         csp: { ...EMPTY_CSP, ...(e.csp as Partial<CspSettings>) },
         dataUrl: dataUrlFor(this.ctx.cfg.dataLink, e.data_project_id),
+        allowIps: allow.get(e.workspace_id) ?? [],
       };
       routes.push(route);
     }
