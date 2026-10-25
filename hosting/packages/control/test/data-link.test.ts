@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDataProject, dataStatus, dataUrlFor, deleteDataProject, requestDataAdmin, runDataCheck, setDataRules } from '../src/data-link.js';
+import { createDataProject, dataStatus, dataUrlFor, deleteDataProject, requestDataAdmin, requestRemoveDataAdmin, runDataCheck, setDataRules } from '../src/data-link.js';
 
 const cfg = { url: 'http://cloud:8790/', platformKey: 'k'.repeat(40) };
 
@@ -76,6 +76,18 @@ describe('Basalt Cloud data projects for environments', () => {
     expect(r).toEqual({ passed: 1, failed: 1, results, failures: [results[1]], receiptUrl: 'https://cloud.example.com/owner/abcde12345/check?k=x' });
   });
 
+  it("carries what's waiting for the owner, each with its approval link, and drops anything that isn't a web link", async () => {
+    const pending = [
+      { kind: 'rules', label: 'New rules for who can see what', approveUrl: 'https://cloud.x/approve/a?t=1' },
+      { kind: 'remove_admin', label: 'Remove maria as admin', approveUrl: 'http://cloud.x/approve/b?t=2' },
+      { kind: 'admin', label: 'Make sam an admin', approveUrl: 'javascript:alert(1)' },
+      { kind: 'something_new', label: 'Unknown', approveUrl: 'https://cloud.x/approve/c?t=3' },
+      'junk',
+    ];
+    const st = stub({ status: 200, body: { ok: true, project: { status: 'waiting_for_owner', rules: null, waitingForOwner: true, mapUrl: 'https://cloud.x/owner/a?k=v', pending } } });
+    expect((await dataStatus(cfg, 'bsk_x', st.f)).pending).toEqual([pending[0], pending[1]]);
+  });
+
   it('points the edge at the data project, or nowhere when Cloud is not set up', () => {
     expect(dataUrlFor(cfg, 'abcde12345')).toBe('http://cloud:8790/p/abcde12345');
     expect(dataUrlFor(null, 'abcde12345')).toBeNull();
@@ -85,7 +97,7 @@ describe('Basalt Cloud data projects for environments', () => {
   it('reads status, requests admins and runs Guard with the environment\'s own admin key, never the platform key', async () => {
     const key = 'bsk_abcde12345_secret';
     const st = stub({ status: 200, body: { ok: true, project: { status: 'live', rules: 'Bookings: each person sees their own.', waitingForOwner: false, mapUrl: 'https://cloud.x/owner/abcde12345?k=v' } } });
-    expect(await dataStatus(cfg, key, st.f)).toEqual({ status: 'live', rules: 'Bookings: each person sees their own.', waitingForOwner: false, mapUrl: 'https://cloud.x/owner/abcde12345?k=v' });
+    expect(await dataStatus(cfg, key, st.f)).toEqual({ status: 'live', rules: 'Bookings: each person sees their own.', waitingForOwner: false, mapUrl: 'https://cloud.x/owner/abcde12345?k=v', pending: [] });
     expect(st.calls[0]!.url).toBe('http://cloud:8790/api/projects/me');
     expect((st.calls[0]!.init.headers as Record<string, string>).authorization).toBe(`Bearer ${key}`);
     expect((await dataStatus(cfg, key, stub({ status: 200, body: { ok: true, project: { status: 'weird' } } }).f)).status).toBe('no_rules');
@@ -93,6 +105,14 @@ describe('Basalt Cloud data projects for environments', () => {
     const ad = stub({ status: 202, body: { ok: true, status: 'waiting_for_owner', approveUrl: 'https://cloud.x/approve/1?t=2', userId: 'u1' } });
     expect(await requestDataAdmin(cfg, key, { who: 'maria' }, ad.f)).toEqual({ approveUrl: 'https://cloud.x/approve/1?t=2', userId: 'u1' });
     expect(JSON.parse(String(ad.calls[0]!.init.body))).toEqual({ who: 'maria' });
+
+    // Removing an admin goes through the owner's approval too.
+    const rm = stub({ status: 202, body: { ok: true, status: 'waiting_for_owner', approveUrl: 'https://cloud.x/approve/3?t=4', userId: 'u1' } });
+    expect(await requestRemoveDataAdmin(cfg, key, { email: 'owner@salon.example' }, rm.f)).toEqual({ approveUrl: 'https://cloud.x/approve/3?t=4', userId: 'u1' });
+    expect(rm.calls[0]!.url).toBe('http://cloud:8790/api/projects/me/admins/remove');
+    expect(rm.calls[0]!.init.method).toBe('POST');
+    expect((rm.calls[0]!.init.headers as Record<string, string>).authorization).toBe(`Bearer ${key}`);
+    expect(JSON.parse(String(rm.calls[0]!.init.body))).toEqual({ email: 'owner@salon.example' });
 
     const ck = stub({ status: 200, body: { ok: true, passed: 11, failed: 1, results: [{ id: 'x', title: 'X', passed: false, detail: 'd' }], receiptUrl: 'https://cloud.x/owner/a/check?k=v' } });
     const scan = [{ rule: 'browser_storage', file: 'src/a.js', line: 2, problem: 'p', fix: 'f' }];

@@ -156,7 +156,18 @@
     $('#envs').innerHTML = D.envsOfApp().map(function (e) { return '<button class="env-pill" role="tab" data-env="'+esc(e.name)+'" aria-selected="'+(e.name===ui.env)+'"><span class="sdot '+esc(e.status)+'" aria-hidden="true"></span>'+esc(D.envLabel(e))+'</button>'; }).join('');
     var s = D.sel(), visit = $('#visit');
     visit.hidden = !s;
-    if (s) visit.href = s.url;
+    if (s) visit.href = D.openHref(s);
+  };
+
+  // Production opens at its address; test versions are private, so the dashboard mints a share link.
+  D.openHref = function (s) { return '/dashboard/api/open?app='+encodeURIComponent(s.app)+'&env='+encodeURIComponent(s.env); };
+
+  // Claude asked to delete an app: only the owner's Confirm here deletes it.
+  D.deletionRequests = function () {
+    return (D.data.pendingDeletions || []).map(function (p) {
+      return '<div class="verdict critical del-req" role="alert"><div class="v-icon">'+ic('alert')+'</div><div><h2>'+esc(p.message)+'</h2><p>Claude asked to delete it. Nothing is removed until you tap Confirm.</p></div>'+
+        '<div class="v-actions"><button class="btn secondary" type="button" data-del-cancel="'+esc(p.app)+'">Cancel</button><button class="btn danger" type="button" data-del-confirm="'+esc(p.app)+'">Confirm</button></div></div>';
+    }).join('');
   };
 
   D.sel = function () { return D.data && D.data.selected; };
@@ -175,7 +186,7 @@
       view.innerHTML = D.head('Welcome to your dashboard', 'When Claude puts your first app online, you’ll see its visitors, speed, updates and security here.')+'<div class="card"><div class="empty">'+ic('rocket')+'<b>No apps yet</b><span>Ask Claude to build and launch one.</span></div></div>';
       return;
     }
-    view.innerHTML = (D.views[ui.tab] || D.views.home)();
+    view.innerHTML = D.deletionRequests() + (D.views[ui.tab] || D.views.home)();
     D.drawCharts();
     window.scrollTo(0, scroll);
   };
@@ -440,7 +451,7 @@
 
   function serverFacts(s) {
     var k = s.backend, p = s.protection || {}, rows = [
-      ['Address','<a href="'+esc(s.url)+'" target="_blank" rel="noopener noreferrer">'+esc(s.url.replace(/^https?:\/\//,''))+'</a>'],
+      ['Address','<a href="'+esc(D.openHref(s))+'" target="_blank" rel="noopener noreferrer">'+esc(s.url.replace(/^https?:\/\//,''))+'</a>'],
       ['Server', k?esc(k.state)+(k.health?' ('+esc(k.health)+')':''):'website only'],
       ['Running since', k&&k.startedAt?esc(D.when(k.startedAt)):'–'],
       ['Restarts', k?D.fmt(k.restarts):'–'],
@@ -531,9 +542,14 @@
   function dataCard(s, guard) {
     var d = s.data, rows = [];
     if (d) rows.push('<div class="feed-item"><div class="f-icon '+(d.status==='live'?'good':'warning')+'">'+ic('database')+'</div><div><div class="f-title">'+(d.status==='live'?'Data rules are on':d.status==='waiting_for_owner'?'Waiting for your OK':'No data saved here')+'</div><div class="f-detail">'+esc((d.rules||'This version doesn’t save customer data with Basalt.').split('\n').slice(0,4).join(' '))+'</div>'+(d.mapUrl?'<div class="f-meta"><a href="'+esc(d.mapUrl)+'" target="_blank" rel="noopener noreferrer">See where your data lives '+ic('out')+'</a></div>':'')+'</div></div>');
+    // Each change waiting for the owner gets its own button to the page where they say yes or no.
+    ((d && d.pending) || []).forEach(function (a) {
+      rows.push('<div class="feed-item"><div class="f-icon warning">'+ic('clock')+'</div><div><div class="f-title">'+esc(a.label)+'</div><div class="f-detail">Waiting for your OK. Nothing changes until you say yes.</div><div class="f-meta"><a class="btn" href="'+esc(a.approveUrl)+'" target="_blank" rel="noopener noreferrer">Review and approve '+ic('out')+'</a></div></div></div>');
+    });
     if (guard) rows.push('<div class="feed-item"><div class="f-icon '+(guard.status==='passed'?'good':'critical')+'">'+ic('shield')+'</div><div><div class="f-title">'+(guard.status==='passed'?'Guard: nobody could reach other people’s data':'Guard found data the wrong people could reach')+'</div><div class="f-detail">Guard signs in as two test customers and a stranger and tries '+D.fmt((guard.passed||0)+(guard.failed||0))+' ways to see or change data that isn’t theirs. Last run on '+esc(guard.env)+', '+esc(D.ago(guard.at))+'.</div>'+(guard.receiptUrl?'<div class="f-meta"><a href="'+esc(guard.receiptUrl)+'" target="_blank" rel="noopener noreferrer">Open the safety receipt '+ic('out')+'</a></div>':'')+'</div></div>');
     return rows.length?'<div class="feed">'+rows.join('')+'</div>':D.emptySmall('This app doesn’t save customer data with Basalt yet.');
   }
+  D.dataCard = dataCard;
 
   D.views.security = function () {
     var s = D.sel(), sec = D.data.security, ui = D.ui;
@@ -656,7 +672,7 @@
   function changesLog() {
     var acts = D.data.activity;
     if (!acts.length) return D.emptySmall('No changes yet.');
-    var NAMES = { 'app.created':'Created the app','app.deleted':'Deleted the app','deploy.started':'Started an update','promote':'Moved a version forward','secret.set':'Set a secret','secret.deleted':'Removed a secret','data_rules.updated':'Changed the data rules','data_admin.requested':'Asked to add a data admin','data_check.ran':'Ran a Guard check','protection.updated':'Changed protection settings','allowlist.added':'Always-allowed an address','allowlist.removed':'Removed an always-allowed address','ban.lifted':'Unblocked an address','token.created':'Made a connector key','api_config.updated':'Changed backend settings' };
+    var NAMES = { 'app.created':'Created the app','app.deleted':'Deleted the app','deploy.started':'Started an update','promote':'Moved a version forward','secret.set':'Set a secret','secret.deleted':'Removed a secret','data_rules.updated':'Changed the data rules','data_admin.requested':'Asked to add a data admin','data_admin.removal_requested':'Asked to remove a data admin','data_check.ran':'Ran a Guard check','protection.updated':'Changed protection settings','allowlist.added':'Always-allowed an address','allowlist.removed':'Removed an always-allowed address','ban.lifted':'Unblocked an address','token.created':'Made a connector key','api_config.updated':'Changed backend settings' };
     return '<div class="feed">'+acts.map(function (a){ return '<div class="feed-item"><div class="f-icon info">'+ic('list')+'</div><div><div class="f-title">'+esc(NAMES[a.action]||a.action)+'</div><div class="f-meta">'+(a.target?chip('info', a.target):'')+'</div></div><div class="f-time">'+esc(D.ago(a.at))+'</div></div>'; }).join('')+'</div>';
   }
   D.views.logs = function () {
@@ -686,6 +702,11 @@
   D.allow = function (ip, label) { return act('/allowlist', { ip: ip, label: label || '' }, 'Added to always-allowed.'); };
   D.disallow = function (ip) { return act('/allowlist', { ip: ip, __method:'DELETE' }, 'Removed from always-allowed.'); };
   D.unban = function (ip) { return act('/unban', { ip: ip }, 'Unblocked.'); };
+  D.confirmDelete = function (app, btn) {
+    btn.disabled = true; btn.textContent = 'Deleting…';
+    return act('/delete-app', { app: app }, app+' was deleted.').then(function (){ if (ui.app === app) { ui.app = null; ui.env = null; D.writeHash(); return D.refresh(); } });
+  };
+  D.cancelDelete = function (app) { return act('/delete-app', { app: app, __method:'DELETE' }, app+' stays. Nothing was deleted.'); };
 
   var menu = $('#menu');
   function closeMenu() { menu.hidden = true; }
@@ -722,6 +743,8 @@
     else if (b.dataset.allow !== undefined) { D.allow(b.dataset.allow, b.dataset.label || ''); }
     else if (b.dataset.disallow !== undefined) { D.disallow(b.dataset.disallow); }
     else if (b.dataset.unban !== undefined) { D.unban(b.dataset.unban); }
+    else if (b.dataset.delConfirm !== undefined) { D.confirmDelete(b.dataset.delConfirm, b); }
+    else if (b.dataset.delCancel !== undefined) { D.cancelDelete(b.dataset.delCancel); }
     else if (b.hasAttribute('data-clear-ip')) { ui.ipFilter = ''; D.render(); }
     else if (b.dataset.ipMenu !== undefined) { var r = b.getBoundingClientRect(); openMenu(b.dataset.ipMenu, r.left, r.bottom + 4); }
   });

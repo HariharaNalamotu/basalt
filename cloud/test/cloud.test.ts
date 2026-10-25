@@ -176,6 +176,8 @@ describe('a new app', () => {
     assert.equal(pageRes.status, 200);
     assert.match(html, /Who can see what/);
     assert.match(html, /can also see that one, but can&#39;t change it/);
+    // Rules can only grow once live, so the owner is told before saying yes.
+    assert.match(html, /you can only add to them later, not tighten them/);
 
     const done = await approve(set.body.approveUrl);
     assert.match(await done.text(), /These rules are live/);
@@ -356,6 +358,79 @@ describe('the owner as admin', () => {
     assert.equal((await data(app.dataUrl, late.token, 'get', { table: 'bookings', id: theirs.body.data.id })).status, 404);
   });
 
+  test('removing an admin needs the owner too, and then they only see their own entries again', async () => {
+    const app = await liveApp();
+    const customer = await login(app.key, 'customer');
+    const maria = await login(app.key, 'maria');
+    const made = await data(app.dataUrl, customer.token, 'create', { table: 'bookings', input: { service: 'Color', starts_at: '2026-10-25T15:00:00Z' } });
+    const id = made.body.data.id;
+    await approve((await call('POST', '/api/projects/me/admins', { who: 'maria' }, app.key)).body.approveUrl);
+    assert.equal((await data(app.dataUrl, maria.token, 'get', { table: 'bookings', id })).status, 200);
+
+    const mapUrl = (await call('GET', '/api/projects/me', undefined, app.key)).body.project.mapUrl;
+    const map = await (await fetch(mapUrl)).text();
+    assert.match(map, /Admins \(1\)/);
+    assert.match(map, />maria</);
+
+    const req = await call('POST', '/api/projects/me/admins/remove', { who: 'maria' }, app.key);
+    assert.equal(req.status, 202, JSON.stringify(req.body));
+    assert.equal(req.body.status, 'waiting_for_owner');
+    assert.equal(req.body.userId, maria.userId);
+    const html = await (await fetch(req.body.approveUrl)).text();
+    assert.match(html, /Remove maria as admin/);
+    assert.match(html, /They&#39;ll only see their own entries again/);
+    // Nothing changes until the owner says yes.
+    assert.equal((await data(app.dataUrl, maria.token, 'get', { table: 'bookings', id })).status, 200);
+
+    assert.match(await (await approve(req.body.approveUrl)).text(), /maria is no longer an admin/);
+    assert.equal((await data(app.dataUrl, maria.token, 'get', { table: 'bookings', id })).status, 404);
+    const after = await (await fetch(mapUrl)).text();
+    assert.match(after, /Admins \(0\)/);
+    assert.doesNotMatch(after, />maria</);
+  });
+
+  test("removing someone who isn't an admin says who the admins are, and turning it down keeps them", async () => {
+    const app = await liveApp();
+    await approve((await call('POST', '/api/projects/me/admins', { who: 'maria' }, app.key)).body.approveUrl);
+    const nobody = await call('POST', '/api/projects/me/admins/remove', { who: 'sam' }, app.key);
+    assert.equal(nobody.status, 404);
+    assert.match(nobody.body.error.message, /sam isn't an admin/);
+    assert.match(nobody.body.error.message, /maria/);
+    assert.equal((await call('POST', '/api/projects/me/admins/remove', {}, app.key)).status, 400);
+
+    const req = await call('POST', '/api/projects/me/admins/remove', { who: 'maria' }, app.key);
+    await approve(req.body.approveUrl, 'reject');
+    const maria = await login(app.key, 'maria');
+    const theirs = await data(app.dataUrl, (await login(app.key, 'customer')).token, 'create', { table: 'bookings', input: { service: 'X', starts_at: '2026-10-25T15:00:00Z' } });
+    assert.equal((await data(app.dataUrl, maria.token, 'get', { table: 'bookings', id: theirs.body.data.id })).status, 200);
+  });
+
+  test("the app's status lists what's waiting for the owner, each with its own working link", async () => {
+    const app = await newApp();
+    assert.deepEqual((await call('GET', '/api/projects/me', undefined, app.key)).body.project.pending, []);
+    const set = await call('PUT', '/api/projects/me/rules', { contract: RULES }, app.key);
+    let pending = (await call('GET', '/api/projects/me', undefined, app.key)).body.project.pending;
+    assert.deepEqual(pending, [{ kind: 'rules', label: 'New rules for who can see what', approveUrl: set.body.approveUrl }]);
+    await approve(pending[0].approveUrl);
+
+    const add = await call('POST', '/api/projects/me/admins', { who: 'maria' }, app.key);
+    pending = (await call('GET', '/api/projects/me', undefined, app.key)).body.project.pending;
+    assert.deepEqual(pending, [{ kind: 'admin', label: 'Make maria an admin', approveUrl: add.body.approveUrl }]);
+    assert.equal((await fetch(pending[0].approveUrl)).status, 200);
+    await approve(pending[0].approveUrl);
+
+    const remove = await call('POST', '/api/projects/me/admins/remove', { who: 'maria' }, app.key);
+    pending = (await call('GET', '/api/projects/me', undefined, app.key)).body.project.pending;
+    assert.deepEqual(pending, [{ kind: 'remove_admin', label: 'Remove maria as admin', approveUrl: remove.body.approveUrl }]);
+
+    // Expired links aren't offered.
+    const c = new pg.Client({ connectionString: process.env.CLOUD_ADMIN_URL });
+    await c.connect();
+    await c.query("update cloud.approvals set created_at = now() - interval '8 days' where id = $1", [new URL(remove.body.approveUrl).pathname.split('/').pop()]);
+    await c.end();
+    assert.deepEqual((await call('GET', '/api/projects/me', undefined, app.key)).body.project.pending, []);
+  });
+
   test('turning down an admin request changes nothing', async () => {
     const app = await liveApp();
     const req = await call('POST', '/api/projects/me/admins', { who: 'stranger' }, app.key);
@@ -491,7 +566,7 @@ describe('the MCP server Claude Code uses', () => {
       assert.equal(init.result.serverInfo.name, 'basalt');
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
       const names = (await rpc('tools/list')).result.tools.map((t: any) => t.name);
-      assert.deepEqual(names, ['basalt_start', 'basalt_set_rules', 'basalt_status', 'basalt_connect_app', 'basalt_make_admin', 'basalt_test_login', 'basalt_check']);
+      assert.deepEqual(names, ['basalt_start', 'basalt_set_rules', 'basalt_status', 'basalt_connect_app', 'basalt_make_admin', 'basalt_remove_admin', 'basalt_test_login', 'basalt_check']);
 
       assert.match((await tool('basalt_status')).text, /call basalt_start first/i);
       assert.match((await tool('basalt_start', { app_name: "Maria's Salon" })).text, /locked down database/);

@@ -165,6 +165,12 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { who: { type: 'string', description: 'The test person\'s name, like "maria".' } }, required: ['who'] },
   },
   {
+    name: 'basalt_remove_admin',
+    description:
+      "Takes admin access away from one person, so they only see their own entries again. The owner gets a link to approve it: show it to them. Pass the name they were made admin with (the owner's data map lists every admin).",
+    inputSchema: { type: 'object', properties: { who: { type: 'string', description: 'The admin\'s name as the data map shows it, like "maria".' } }, required: ['who'] },
+  },
+  {
     name: 'basalt_test_login',
     description: 'Signs in as a test person (a real Basalt Auth account made for this app, the same person every time for the same name) and returns their login token, so you can try the app as them. Use two different names to check that one person can never see the other\'s data. Tokens last about ten minutes; ask again for a fresh one.',
     inputSchema: { type: 'object', properties: { who: { type: 'string', description: 'A name for the pretend person, like "maria" or "customer two".' } }, required: ['who'] },
@@ -198,8 +204,9 @@ async function callTool(name: string, args: Record<string, any>): Promise<string
       const s = need();
       const out = await api('GET', '/api/projects/me', undefined, s.adminKey);
       const p = out.project;
-      if (p.status === 'live') return `Live. Rules in plain English:\n${p.rules}${p.waitingForOwner ? '\n\nA newer change is still waiting for the person to approve it.' : ''}\n\nThe owner can see where everything lives and who can reach it on their data map (share this link only with them):\n${p.mapUrl}`;
-      if (p.status === 'waiting_for_owner') return 'Waiting for the person to open the approval link and tap "Yes". If they lost it, call basalt_set_rules again for a fresh link.';
+      const pending = Array.isArray(p.pending) && p.pending.length ? `\n\nWaiting for the person to approve (show them the links):\n${p.pending.map((a: any) => `- ${a.label}: ${a.approveUrl}`).join('\n')}` : '';
+      if (p.status === 'live') return `Live. Rules in plain English:\n${p.rules}${pending}\n\nThe owner can see where everything lives and who can reach it on their data map (share this link only with them):\n${p.mapUrl}`;
+      if (p.status === 'waiting_for_owner') return pending ? `Waiting for the person to open the approval link and tap "Yes".${pending}` : 'Waiting for the person to open the approval link and tap "Yes". If they lost it, call basalt_set_rules again for a fresh link.';
       return 'No rules yet. Ask the person the plain questions, then call basalt_set_rules.';
     }
     case 'basalt_connect_app': {
@@ -212,6 +219,13 @@ async function callTool(name: string, args: Record<string, any>): Promise<string
       const s = need();
       const out = await api('POST', '/api/projects/me/admins', { who: String(args.who ?? '') }, s.adminKey);
       return `The person needs to approve this. Show them this link and ask them to open it and tap "Yes":\n${out.approveUrl}\n\nOnce they do, "${args.who}" can see and change everything in the app. Sign in as them with basalt_test_login to check.`;
+    }
+    case 'basalt_remove_admin': {
+      const s = need();
+      const who = String(args.who ?? '');
+      // The data map shows emails too, so a name with an @ is looked up as one.
+      const out = await api('POST', '/api/projects/me/admins/remove', who.includes('@') ? { email: who } : { who }, s.adminKey);
+      return `The person needs to approve this. Show them this link and ask them to open it and tap "Yes":\n${out.approveUrl}\n\nOnce they do, "${who}" only sees their own entries again.`;
     }
     case 'basalt_test_login': {
       const s = need();

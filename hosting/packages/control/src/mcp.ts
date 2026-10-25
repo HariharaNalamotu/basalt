@@ -7,7 +7,7 @@ import { dashboardLink } from './dashboard.js';
 import { GUIDE_TOPICS, hostGuide } from './guides.js';
 import { emailsReadable } from './naming.js';
 import type { Host } from './service.js';
-import { UserError } from './service.js';
+import { DELETION_HOURS, UserError } from './service.js';
 
 type Content = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -147,18 +147,23 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
   );
   tool('host_data_status', 'Whether an environment\'s data rules are live or waiting for the owner, the rules in plain English, and the owner\'s data map link (where everything lives and who can reach it; share it only with the owner).', { app, env }, async (a) => {
     const s = await host.dataStatus(ws, a.app, a.env);
-    if (s.status === 'no_rules') return text('No data rules yet. Set them with host_data_rules (host_guide "data" explains the format).');
-    if (s.status === 'waiting_for_owner') return text('Waiting for the owner to open the approval link and approve. If they lost it, call host_data_rules again for a fresh link.');
-    return text(`Live. Rules in plain English:\n${s.rules}${s.waitingForOwner ? '\n\nA newer change is still waiting for the owner to approve it.' : ''}${s.mapUrl ? `\n\nOwner's data map (share only with the owner):\n${s.mapUrl}` : ''}`);
+    const pending = s.pending.length ? `\n\nWaiting for the owner to approve (show them the links):\n${s.pending.map((p) => `- ${p.label}: ${p.approveUrl}`).join('\n')}` : '';
+    if (s.status === 'no_rules') return text(`No data rules yet. Set them with host_data_rules (host_guide "data" explains the format).${pending}`);
+    if (s.status === 'waiting_for_owner') return text(pending ? `Waiting for the owner to open the approval link and approve.${pending}` : 'Waiting for the owner to open the approval link and approve. If they lost it, call host_data_rules again for a fresh link.');
+    return text(`Live. Rules in plain English:\n${s.rules}${pending}${s.mapUrl ? `\n\nOwner's data map (share only with the owner):\n${s.mapUrl}` : ''}`);
   }, { readOnlyHint: true });
   tool(
     'host_data_admin',
-    'Asks the owner to make one person an admin of an environment\'s data (they see and change every row, e.g. a business owner viewing all bookings). Always returns an approval link: show it to the human. email = the email a real person signed up in the app with (ask the human for theirs; they must sign up first), who = a test person\'s name (test environments), or userId = a signed-in user\'s id.',
-    { app, env, email: z.string().max(254).optional(), who: z.string().regex(/^[A-Za-z0-9 _-]{1,40}$/).optional(), userId: z.string().uuid().optional(), label: z.string().max(60).optional() },
-    async ({ app: ap, env: e, ...who }) => {
+    'Asks the owner to make one person an admin of an environment\'s data (they see and change every row, e.g. a business owner viewing all bookings), or with remove: true to take that away (they only see their own entries again). Always returns an approval link: show it to the human. email = the email a real person signed up in the app with (ask the human for theirs; they must sign up first), who = a test person\'s name (test environments), or userId = a signed-in user\'s id. The owner\'s data map (host_data_status) lists every admin.',
+    { app, env, email: z.string().max(254).optional(), who: z.string().regex(/^[A-Za-z0-9 _-]{1,40}$/).optional(), userId: z.string().uuid().optional(), label: z.string().max(60).optional(), remove: z.boolean().optional().describe('true to remove this person as admin instead of adding them.') },
+    async ({ app: ap, env: e, remove, ...who }) => {
       if (!who.email && !who.who && !who.userId) throw new UserError('Say who: the email they signed up with (email), a test person\'s name (who) or a user id (userId).');
-      const r = await host.dataAdmin(ws, ap, e, who);
-      return text(`The owner needs to approve this. Show them this link and ask them to open it and approve:\n${r.approveUrl}\n\nUser id: ${r.userId}`);
+      const r = await host.dataAdmin(ws, ap, e, who, remove === true);
+      return text(
+        remove
+          ? `The owner needs to approve removing this admin. Show them this link and ask them to open it and approve:\n${r.approveUrl}\n\nOnce they do, this person only sees their own entries again. User id: ${r.userId}`
+          : `The owner needs to approve this. Show them this link and ask them to open it and approve:\n${r.approveUrl}\n\nUser id: ${r.userId}`,
+      );
     },
   );
   tool(
@@ -280,10 +285,10 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
     await host.destroyEnv(ap, e);
     return text(`Deleted ${a.env}.`);
   }, { destructiveHint: true });
-  tool('host_delete_app', 'Deletes an app with ALL environments and data, including production. Irreversible. Only when the human explicitly asks.', { app, confirm: z.literal(true) }, async (a) => {
-    await host.deleteApp(ws, a.app);
-    return text(`Deleted app ${a.app}.`);
-  }, { destructiveHint: true });
+  tool('host_delete_app', 'Asks the owner to delete an app with ALL environments and data, including production. Nothing is deleted until the owner taps Confirm in their dashboard (deleting can\'t be undone). Only when the human explicitly asks.', { app, confirm: z.literal(true).optional() }, async (a) => {
+    await host.requestAppDeletion(ws, a.app);
+    return text(`Nothing is deleted yet. Deleting ${a.app} removes every version and its data and can't be undone, so the owner confirms it themselves. Give them this link to their dashboard and ask them to tap "Confirm" on "Delete ${a.app}?" (or "Cancel" to keep it). The request waits ${DELETION_HOURS} hours; the link works for 24 hours, don't share it publicly:\n${dashboardLink(ctx.cfg, ws)}`);
+  });
 
   // Stateless guidance and code review from the auth and API toolkits.
   registerAuthTools(server, ctx.authFor(ws), { include: ['auth_integration_guide', 'auth_security_rules', 'auth_review_code'] });
