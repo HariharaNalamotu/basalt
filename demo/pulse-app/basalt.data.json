@@ -1,0 +1,14 @@
+{
+  "tables": {
+    "bookings": {
+      "fields": {
+        "class_key":    { "type": "text", "maxLength": 60, "required": true },
+        "class_type":   { "type": "text", "maxLength": 20, "required": true },
+        "starts_at":    { "type": "timestamp", "required": true },
+        "spot":         { "type": "integer", "min": 1, "max": 30, "required": true },
+        "member_email": { "type": "text", "maxLength": 200, "format": "email" }
+      },
+      "unique": [["class_key", "spot"]]
+    }
+  }
+}
