@@ -5,29 +5,29 @@ The adversarial tests run against Basalt: what each one sends and which weakness
 The tests live in two places:
 
 - **In-repo attack suites** that run in CI against a real database (and, for Cloud, real Basalt Auth).
-- **A standalone black-box tester** (`basalt-tester.mjs`) that fires the checks below at a running Basalt data API as two separate people plus an unauthenticated stranger.
-
-Each check is tagged with its OWASP ASVS section, the standard CASA is based on.
+- **A standalone black-box tester** (`basalt-tester.mjs`, **planned, not in the repo yet**) that will fire the checks below at a running Basalt data API as two separate people plus an unauthenticated stranger.
 
 ---
 
 ## In-repo attack suites
 
-| Area | Location | What it attacks | Count (per repo) |
-| --- | --- | --- | --- |
-| Data block | `data/test/attacks.test.ts` | Ownership, token forgery, injection, damage limits, revocation, files, sharing, migrations | 104 attack + feature tests |
-| Cloud + Guard | `cloud/test/` | Per-app isolation, approval flow, the Guard access-control probe, the code scan | 49 tests |
-| Auth | `auth/packages/server/test/` | Sign-up, sign-in, sessions, MFA, password reset, HTTP hardening | — |
-| API framework | `api/packages/framework/test/` | Edge enforcement, auth-by-default, `ctx.sql` ownership, SSRF, abuse | — |
-| Hosting edge | `hosting/packages/edge/test/` | Static serving, proxy signing, abuse protection, the data route | — |
+| Area | Location | What it attacks |
+| --- | --- | --- |
+| Data block | `data/test/attacks.test.ts` | Ownership, token forgery, injection, damage limits, revocation, files, sharing, migrations |
+| Cloud + Guard | `cloud/test/` | Per-app isolation, approval flow, the Guard access-control probe, the code scan |
+| Auth | `auth/packages/server/test/` | Sign-up, sign-in, sessions, MFA, password reset, HTTP hardening |
+| API framework | `api/packages/framework/test/` | Edge enforcement, auth-by-default, `ctx.sql` ownership, SSRF, abuse |
+| Hosting edge | `hosting/packages/edge/test/` | Static serving, proxy signing, abuse protection, the data route |
 
-Run: `cd data && npm test` (also `cloud`, `auth`, `api`, `hosting`).
+Run: `cd data && npm test` (also `cloud`, `auth`, `api`, `hosting`). Each suite prints its own count; see the repo README for how to run them.
 
 ---
 
-## The black-box attack tester
+## The black-box attack tester (planned)
 
-`basalt-tester.mjs` signs in as person A and person B (and a stranger with no login) and tries, from the outside, to reach data that isn't theirs or to subvert the API. Grouped by what each attack targets.
+> **Planned.** `basalt-tester.mjs` is not in the repo yet. This section is the design for it: nothing below can be run today.
+
+`basalt-tester.mjs` will sign in as person A and person B (and a stranger with no login) and try, from the outside, to reach data that isn't theirs or to subvert the API. Grouped by what each attack targets.
 
 ### Identity — forging or breaking the login token
 
@@ -115,7 +115,9 @@ The core promise. Person B, fully logged in as themselves, tries to touch person
 
 ---
 
-## Running the tester
+## Running the tester (planned)
+
+Once the script lands, the intended usage is:
 
 ```sh
 node basalt-tester.mjs --config tester.config.json
@@ -123,10 +125,4 @@ node basalt-tester.mjs --config tester.config.json --only isolation,injection
 node basalt-tester.mjs --config tester.config.json --json report.json --md report.md
 ```
 
-The config supplies the API URL and two test logins. A positive control (person A's real token must still work) runs last; if it fails, the config is wrong and the refusals above prove nothing.
-
----
-
-## ASVS / CASA coverage
-
-Every check is tagged with its OWASP ASVS section. Together the tests exercise ASVS V2 (authentication), V3 (session management), V4 (access control), V5 (validation & injection), V7 (error handling), V9 (communications), V11 (business logic & DoS), V12 (files) and V14 (configuration) — the chapters CASA assesses against.
+The config will supply the API URL and two test logins. A positive control (person A's real token must still work) will run last; if it fails, the config is wrong and the refusals above prove nothing.
