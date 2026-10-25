@@ -2,10 +2,9 @@
 
 The adversarial tests run against Basalt: what each one sends and which weakness it probes. These are attack tests — every one tries to break a security property on purpose. A test "passes" only when the attack is clearly refused; an error, timeout, or odd answer is treated as "could not tell", never as a pass.
 
-The tests live in two places:
+The tests run in CI against a real database (and, for Cloud, real Basalt Auth). "Already tested today" below names the test behind each check, so you can find and run any of them. Guard (`cloud/src/guard.ts`) also attacks every app's live data on each deploy and writes the owner a safety receipt.
 
-- **In-repo attack suites** that run in CI against a real database (and, for Cloud, real Basalt Auth).
-- **Black-box scans with OWASP ZAP** (**planned, not run yet**) that compare a vibe-coded app with an MCP-connected vibe-coded app from the outside.
+Later on the page: what each check sends and which weakness it probes, and the plan for testing from outside with OWASP ZAP, comparing a vibe-coded app with an MCP-connected vibe-coded app.
 
 ---
 
@@ -23,7 +22,7 @@ Run: `cd data && npm test` (also `cloud`, `auth`, `api`, `hosting`). Each suite 
 
 ### Already tested today
 
-Most of the checks in the catalogue below already run in these suites. Test names are quoted so you can find them; data tests are in `data/test/attacks.test.ts` unless another file is named.
+Almost every check in the tables below already runs in these suites. Test names are quoted so you can find them; data tests are in `data/test/attacks.test.ts` unless another file is named.
 
 | Check | Where it runs today |
 | --- | --- |
@@ -51,7 +50,7 @@ Guard (`cloud/src/guard.ts`) also runs the identity and isolation checks against
 
 ## Check catalogue
 
-What each check sends and which weakness it probes, grouped by what it targets. Most of them already run in the in-repo suites (see "Already tested today" above). They describe person A and person B, two signed-in users, plus a stranger with no login.
+What each check sends and which weakness it probes, grouped by what it targets. These already run inside the repo (see "Already tested today"). They describe person A and person B, two signed-in users, plus a stranger with no login.
 
 ### Identity — forging or breaking the login token
 
@@ -139,7 +138,7 @@ The core promise. Person B, fully logged in as themselves, tries to touch person
 
 ---
 
-## Black-box testing with OWASP ZAP (planned)
+## Next: testing from outside with OWASP ZAP
 
 > **Planned.** These scans haven't been run yet, so this doc has no results.
 
