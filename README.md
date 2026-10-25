@@ -27,6 +27,18 @@ The app's own backend can do the same through `ctx.data` in the API framework.
 - **Auth and hosting joined up:** Cloud apps use real Basalt Auth logins, and sessions Auth ends stop working in the database too. Every hosted environment gets its own Cloud data project, served at `/_basalt/data` on the app's own site. The app's rules live in `basalt.data.json` in its folder: deploys apply them to preview and staging before the app's tests run, and promoting to production stops with the owner's approval link until they tap "Yes". (`host_data_rules` sets them by hand.) After the tests on every deploy, Guard attacks the environment's live data, a failed check stops the deploy and production needs Guard to pass in staging. `host_data_check` runs it on demand and returns the owner's safety receipt.
 - Reviewed with Codex in several rounds. Every finding so far was fixed.
 
+## Quick start (Mac or Windows)
+
+One thing to run. It checks Docker, builds and starts Basalt, and opens the **Connect Claude** page, where you download the connector file (`.mcp.json`) for Claude Code.
+
+| Computer | Run | Needs |
+| --- | --- | --- |
+| Mac | double-click `start-mac.command`, or `./start.sh` in Terminal | Docker Desktop |
+| Windows | double-click `start-windows.cmd` | WSL (`wsl --install`) and Docker Desktop with WSL integration turned on |
+| Linux | `./start.sh` | Docker Engine with Compose |
+
+Then put the downloaded file in an empty folder for your app as `.mcp.json` (the page shows a command that does it), open Claude Code there and approve the `basalt` server. Claude Code on that computer needs Node.js 24 or newer. Each download makes a new workspace key. `./start.sh --no-build` starts again without rebuilding; `./start.sh --stop` stops Basalt and keeps your apps and data. The owner's dashboard is at the same link (`host_dashboard` gives Claude a fresh one, as does `docker exec basalt-control node dist/admin.js dashboard-link my-apps`).
+
 ## Run it on one laptop (demo)
 
 ```sh

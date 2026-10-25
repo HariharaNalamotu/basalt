@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { registerApiTools } from '@basalt/api-mcp';
 import { registerAuthTools } from '@basalt/auth-mcp';
 import type { Ctx } from './ctx.js';
+import { dashboardLink } from './dashboard.js';
 import { GUIDE_TOPICS, hostGuide } from './guides.js';
 import { emailsReadable } from './naming.js';
 import type { Host } from './service.js';
@@ -112,6 +113,13 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
 
   // ---------------------------------------------------------------- observability
   tool('host_logs', 'Backend logs of an environment (JSON lines from @basalt/api, newest last).', { app, env, tail: z.number().int().min(1).max(2000).optional(), sinceMinutes: z.number().int().min(1).max(1440).optional(), grep: z.string().max(100).optional() }, async (a) => text(await host.logs(ws, a.app, a.env, a)), { readOnlyHint: true });
+  tool(
+    'host_dashboard',
+    'A link to the owner\'s dashboard: visitors, speed, errors, deployments, incidents and blocked attackers for every app, in plain words, with an "always allow" list for their own computer. Give it to the human when they ask how their app is doing, or to see who was blocked. Valid for 24 hours; share it only with the owner.',
+    {},
+    async () => text(`Dashboard for the owner (valid 24 hours, don't share it publicly):\n${dashboardLink(ctx.cfg, ws)}`),
+    { readOnlyHint: true },
+  );
   tool('host_metrics', 'Traffic, status codes, latency percentiles, blocked requests (by reason) and backend health for an environment.', { app, env }, async (a) => json(await host.metrics(ws, a.app, a.env)), { readOnlyHint: true });
 
   // ---------------------------------------------------------------- secrets & configuration

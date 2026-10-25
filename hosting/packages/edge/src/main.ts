@@ -70,6 +70,12 @@ const admin = http.createServer(async (req, res) => {
   res.setHeader('content-type', 'application/json');
   if (url.pathname === '/metrics') return res.end(JSON.stringify(edge.metrics.snapshot()));
   if (url.pathname === '/bans' && req.method === 'GET') return res.end(JSON.stringify({ bans: edge.shield.bans() }));
+  // The owner's dashboard: one site's traffic, and the security feed for a set of sites.
+  if (url.pathname === '/detail' && req.method === 'GET') return res.end(JSON.stringify({ detail: edge.metrics.detail(url.searchParams.get('host') ?? '') }));
+  if (url.pathname === '/security' && req.method === 'GET') {
+    const hosts = new Set((url.searchParams.get('hosts') ?? '').split(',').filter(Boolean));
+    return res.end(JSON.stringify({ events: edge.metrics.securityEvents(hosts), bans: edge.shield.bans() }));
+  }
   if (url.pathname === '/bans' && req.method === 'DELETE') {
     edge.shield.unban(url.searchParams.get('ip') ?? '');
     return res.end('{"ok":true}');
