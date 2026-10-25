@@ -21,11 +21,37 @@ The tests live in two places:
 
 Run: `cd data && npm test` (also `cloud`, `auth`, `api`, `hosting`). Each suite prints its own count; see the repo README for how to run them.
 
+### Already tested today
+
+Most of the checks in the planned tester below already run in these suites. Test names are quoted so you can find them; data tests are in `data/test/attacks.test.ts` unless another file is named.
+
+| Check | Where it runs today |
+| --- | --- |
+| no-token, forged-sig, alg:none, expired | "no token", "token signed with the wrong secret", "alg none token", "expired token" |
+| payload-swap, no-exp, future-iat, long-life | "payload swapped to another user keeps the old signature", "token with no expiry or no issued-at time", "token issued in the future", "token that lives longer than allowed" |
+| string-exp / frac-exp, zero-id, non-canonical | "expiry written as a string", "fractional expiry and the all-zero user id are refused", "a token with a different spelling of the same signature is refused" |
+| role-claim | "a service or admin role claim gets nothing" |
+| get, list, update, archive | "bob cannot read alice's booking...", "bob's list never includes alice's rows", "bob cannot update alice's booking", "nobody can archive someone else's row" |
+| fake-owner, immutable owner_id / id / archived_at | "setting owner_id to someone else is refused", "changing owner_id or id on update is refused", "archived_at cannot be set through a normal update" |
+| filter injection | "SQL in a value is stored as plain text" (one payload, not three) |
+| table-name, bad-id, sort, cursor | "SQL in a table name is refused", "SQL in an id is refused", "bad filters and sorts are refused", "a forged page cursor is refused" |
+| proto, unknown-field, raw-route, page-cap | "__proto__ and unknown fields are refused", "unknown routes, like a raw SQL or delete endpoint, get 404", "page size is capped" |
+| catalog (`pg_authid`) | Guard's "Reading the database's own tables" (`cloud/src/guard.ts`) |
+| other-file, ticket-guess | `data/test/files.test.ts`: "someone else can't get a link to my file, and made-up links don't work" |
+| svg / html, polyglot, traversal, headers | `data/test/files.test.ts`: "file types that can run code, like SVG, HTML and programs", "a web page pretending to be an image", "file names are cleaned", "an image goes up and comes back byte for byte, with safe headers" |
+| csrf, cors, error-leak | "is refused from another site (CSRF) or without an Origin", "browsers get CORS headers and preflight works", "errors never include database details" |
+| body-cap, bad-json, unknown-route | "oversized and non-JSON bodies are refused", "unknown routes, like a raw SQL or delete endpoint, get 404" |
+| rate | "limits are enforced in the database, across every service instance" |
+| hsts, retry-after | `hosting/packages/edge/test/edge.test.ts`: "serves index.html with strict security headers and CSP", "rate limits per IP per app with Retry-After" |
+| self-admin | Partly: "the Data service's login cannot make anyone an admin". Admins are only added through the owner's approval page. |
+
+Guard (`cloud/src/guard.ts`) also runs the identity and isolation checks against every app's live data on each deploy and writes the owner a safety receipt.
+
 ---
 
 ## The black-box attack tester (planned)
 
-> **Planned.** `basalt-tester.mjs` is not in the repo yet. This section is the design for it: nothing below can be run today.
+> **Planned.** `basalt-tester.mjs` is not in the repo yet. This section is its design: it would run the checks below from outside, against any running Basalt. Most of them already run inside the repo today (see "Already tested today" above).
 
 `basalt-tester.mjs` will sign in as person A and person B (and a stranger with no login) and try, from the outside, to reach data that isn't theirs or to subvert the API. Grouped by what each attack targets.
 
