@@ -131,23 +131,34 @@ function sampleInput(table: TableSpec, userA: string, fileId: string | null): Re
 }
 
 // A different valid value for one field, for the "change someone else's entry" check.
-function change(table: TableSpec): { field: string; value: unknown } | null {
-  for (const [field, spec] of table.fields) {
-    const was = sample(spec, '', null);
+// Picks the value from what A's entry really holds, not a guess: test entries get random values
+// in unique fields, and trying the value the entry already has would look like a change.
+function change(table: TableSpec, current: Record<string, unknown>): { field: string; value: unknown } | null {
+  const unique = new Set((table.unique ?? []).flat());
+  // Fields outside unique rules first, so the owner's own change can't clash with another entry.
+  const fields = [...table.fields].sort(([a], [b]) => Number(unique.has(a)) - Number(unique.has(b)));
+  for (const [field, spec] of fields) {
+    const was = current[field];
+    let value: unknown;
     switch (spec.type) {
       case 'text':
-        return { field, value: spec.format ? OTHER_TEXT[spec.format] : 'Changed'.slice(0, spec.maxLength) };
+        value = spec.format ? OTHER_TEXT[spec.format] : 'Changed'.slice(0, spec.maxLength);
+        break;
       case 'boolean':
-        return { field, value: false };
+        value = was !== true;
+        break;
       case 'timestamp':
-        return { field, value: '2001-01-01T00:00:00.000Z' };
+        value = '2001-01-01T00:00:00.000Z';
+        break;
       case 'integer':
       case 'number': {
-        const n = was as number;
-        if (spec.max === undefined || n + 1 <= spec.max) return { field, value: n + 1 };
-        if (spec.min === undefined || n - 1 >= spec.min) return { field, value: n - 1 };
+        const n = typeof was === 'number' ? was : (sample(spec, '', null) as number);
+        if (spec.max === undefined || n + 1 <= spec.max) value = n + 1;
+        else if (spec.min === undefined || n - 1 >= spec.min) value = n - 1;
+        break;
       }
     }
+    if (value !== undefined && !same(was, value)) return { field, value };
   }
   return null;
 }
@@ -219,7 +230,7 @@ export async function runChecks(contract: Contract, t: GuardTarget): Promise<Che
     const listed = rows?.some((r) => r?.id === id) ?? false;
     add('other_person_list', "Listing everyone's entries", rows !== null && !listed, listed ? "Person A's entry showed up in person B's list." : rows ? "Person B's list only had their own entries." : unsure(list), name);
 
-    const c = change(table);
+    const c = change(table, mine.data ?? {});
     if (!c) {
       add('other_person_update', "Changing someone else's entry", false, "Couldn't tell: this kind of entry has no field the check knows how to change.", name);
     } else {

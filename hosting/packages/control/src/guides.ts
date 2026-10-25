@@ -6,7 +6,7 @@ const workflow = (root: string) => `# Basalt Host — the workflow (you do all o
 
 1. **Create the app** (once): \`host_create_app { app: "todo-app" }\`. Production will be https://todo-app.${root}.
 2. **Set up the project** (once): \`host_init { app }\` (local tool) writes basalt.json, .npmrc for @basalt packages, a Playwright config and example e2e test. Follow the **project** topic for layout.
-3. **Decide what the app saves** before writing data code: read the **data** topic. Ask the human a few short plain questions (what it keeps track of, what each thing needs, who else should see an entry), write \`basalt.data.json\` and save data from the page through \`/_basalt/data\`. Most apps (bookings, orders, sign-ups, notes, including "no double bookings") need no backend at all. Use the Data block unless the app truly needs code on a server.
+3. **Decide what the app saves** before writing data code: read the **data** topic. Ask the human a few short plain questions (what it keeps track of, what each thing needs, who else should see an entry), write \`basalt.data.json\` and save data from the page through \`/_basalt/data\`. Most apps (bookings, orders, sign-ups, notes, including "no double bookings") need no backend at all. **Anything about a person always goes in the Data block, even when the app also has a backend.** Never make your own tables for it in db/migrations or with ctx.sql: only the Data block gets the per-person rules, Guard's attacks, the owner's approval and the safety receipt, and the build warns when an app has its own tables and no basalt.data.json. Things that aren't about anyone (a class timetable, a price list) can live in a file in the code.
    **Design it** before writing any page: read the **design** topic (a palette and type from the business, a local CSS starter, tappable time slots, every save outcome designed).
    **Write the app** with @basalt/auth (sign-in) and, only for logic that must run on a server, @basalt/api (backend). Read \`api_integration_guide\` (topics routes, database, frontend) and \`auth_integration_guide\`.
    On Basalt Host provisioning is automatic: ignore api_setup, .basalt/*.env files, basalt-dev-edge and api_status instructions from those guides.
@@ -45,6 +45,8 @@ Ask the human in plain words, one question at a time: what the app keeps track o
 \`\`\`
 
 Names: lowercase letters, numbers and underscores. Types: "text" (maxLength up to 10000, default 1000; optional "format": "email" | "phone" | "url" | "postal_code" | "slug"), "integer" and "number" (optional "min", "max"), "boolean", "timestamp" (ISO), "user" (another person's user id) and "file" (an uploaded file's id). Every row gets id, owner_id, created_at and updated_at automatically. "shareWith" names a "user" field whose person can read (never change) that row. "unique" lists groups of required fields no two active entries may share across everyone, like \`"unique": [["starts_at"]]\` so two customers can't book the same time (archived entries don't count, so cancelling frees the slot). This needs no backend: the database refuses a clash with err.code "conflict" without revealing whose entry it is.
+
+**Counts across people (spots left, seats taken).** A member can't read other members' bookings, so don't try to count them in the page, and don't move bookings into your own tables to get a count. Instead give each class numbered spots and make \`["class_key", "spot"]\` unique: the page offers spot numbers, a taken spot comes back with err.code "conflict" ("that spot was just taken, pick another") and a class is full when every spot is taken. Show the class size rather than spots left. The owner's "All bookings" page (admin, below) shows the real counts.
 
 Don't make personal details unique (email, phone, name): a clash tells whoever tried that the value is taken, so it would let anyone check whether someone is a customer. Unique is for things like time slots, seat numbers and order numbers.
 
@@ -117,7 +119,7 @@ basalt.json             optional: { "backend": { "entry": "server/index.ts" }, "
 basalt.data.json        what the app saves and who can see it (see the data topic)
 server/index.ts         backend entry: createApi() + routes + serve(api)   (Node runs TypeScript directly)
 server/routes/*.ts      route modules (import with .ts extensions)
-db/migrations/NNN_*.sql applied automatically with the admin role before each release
+db/migrations/NNN_*.sql only for data that isn't about anyone; people's data goes in basalt.data.json
 src/ , index.html       frontend (e.g. Vite + React); "build" must write dist/index.html
 public/index.html       plain static site without a build step (alternative)
 e2e/*.spec.ts           Playwright tests, run against every preview and staging deploy

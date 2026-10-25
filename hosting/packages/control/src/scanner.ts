@@ -58,5 +58,21 @@ export async function scanSource(root: string): Promise<{ blocking: ScanFinding[
     }
   }
   await walk(root);
+  // Tables the app makes itself skip the per-person rules, Guard, owner approval and the receipt.
+  const migrations = path.join(root, 'db', 'migrations');
+  const hasRules = await stat(path.join(root, 'basalt.data.json')).then(() => true, () => false);
+  if (!hasRules) {
+    for (const f of (await readdir(migrations).catch(() => [] as string[])).filter((n) => n.endsWith('.sql')).sort()) {
+      const lines = (await readFile(path.join(migrations, f), 'utf8')).split('\n');
+      const i = lines.findIndex((l) => /\bcreate\s+table\b/i.test(l));
+      if (i < 0) continue;
+      warnings.push({
+        file: path.join('db', 'migrations', f), line: i + 1, rule: 'own-tables-without-data-rules', severity: 'medium',
+        problem: "The app keeps data in its own tables and has no basalt.data.json, so nothing stops one person reaching another's entries, Guard can't check it and the owner never approves who sees what.",
+        fix: 'Move anything about people (bookings, orders, names, notes) into the Data block: write basalt.data.json and save through /_basalt/data or ctx.data. See host_guide { topic: "data" }.',
+      });
+      break;
+    }
+  }
   return { blocking, warnings };
 }
