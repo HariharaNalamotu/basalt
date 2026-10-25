@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { after, before, describe, test } from 'node:test';
 import { parseContract, pg } from '../../data/src/index.ts';
 import { AuthLink } from '../src/auth.ts';
@@ -269,6 +270,39 @@ describe('the owner as admin', () => {
     assert.equal((await data(app.dataUrl, customer.token, 'list', { table: 'bookings' })).body.data.rows.length, 0);
     await data(app.dataUrl, customer.token, 'restore', { table: 'bookings', id });
     assert.equal((await data(app.dataUrl, customer.token, 'list', { table: 'bookings' })).body.data.rows.length, 1);
+  });
+
+  test("the owner is named by the email they signed up with, since nobody knows their user id", async () => {
+    const app = await liveApp();
+    const p = (await projects.get(app.id))!;
+    const platform = (path: string, body: unknown) =>
+      fetch(`${authServer.url}/v1/platform/projects/${p.authProjectId}${path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${authServer.platformKey}`, 'x-basalt-owner': 'basalt-cloud', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const password = `Pw-${randomUUID()}`;
+    assert.equal((await platform('/users', { email: 'owner@salon.example', password })).status, 201);
+    const signIn = await (await fetch(`${authServer.url}/v1/projects/${p.authProjectId}/signin`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'owner@salon.example', password }),
+    })).json();
+    const ownerToken = JSON.parse(Buffer.from(signIn.accessToken.split('.')[1], 'base64url').toString()).bdg;
+    const customer = await login(app.key, 'customer');
+    const made = await data(app.dataUrl, customer.token, 'create', { table: 'bookings', input: { service: 'Color', starts_at: '2026-10-25T15:00:00Z' } });
+
+    const req = await call('POST', '/api/projects/me/admins', { email: ' Owner@Salon.example ' }, app.key);
+    assert.equal(req.status, 202, JSON.stringify(req.body));
+    assert.equal(req.body.userId, signIn.user.id);
+    assert.match(await (await fetch(req.body.approveUrl)).text(), /owner@salon\.example/);
+    assert.equal((await data(app.dataUrl, ownerToken, 'get', { table: 'bookings', id: made.body.data.id })).status, 404);
+    await approve(req.body.approveUrl);
+    assert.equal((await data(app.dataUrl, ownerToken, 'list', { table: 'bookings' })).body.data.rows.length, 1);
+
+    const nobody = await call('POST', '/api/projects/me/admins', { email: 'nobody@salon.example' }, app.key);
+    assert.equal(nobody.status, 404);
+    assert.match(nobody.body.error.message, /sign up in the app first/);
   });
 
   test('turning down an admin request changes nothing', async () => {

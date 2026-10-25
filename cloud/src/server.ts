@@ -5,7 +5,7 @@
 //   GET  /api/projects/me              (admin key)   -> status, rules summary, approval link
 //   PUT  /api/projects/me/rules        { contract }  -> live now, or waiting for the owner's yes
 //   POST /api/projects/me/test-login   { who }       -> a login token for a test person
-//   POST /api/projects/me/admins       { who | userId } -> asks the owner to make someone an admin
+//   POST /api/projects/me/admins       { email | who | userId } -> asks the owner to make someone an admin
 //   POST /api/projects/me/check        { scan? }     -> Guard's safety check, with a receipt link
 //   GET  /approve/<id>?t=<token>                     -> the owner's approval page
 //   GET  /owner/<project id>?k=<key>                  -> the owner's data map
@@ -310,8 +310,14 @@ export function createCloudServer(options: CloudServerOptions) {
         if (!p.authProjectId) throw new HttpError(409, 'This app was made before Basalt Auth was connected.');
         uid = (await options.auth.testLogin(p.authProjectId, body.who, p.authOwner)).userId;
         label = body.who;
+      } else if (typeof body.email === 'string' && /^[^\s@]{1,64}@[^\s@]{1,190}$/.test(body.email.trim())) {
+        if (!p.authProjectId) throw new HttpError(409, 'This app was made before Basalt Auth was connected.');
+        label = body.email.trim().toLowerCase();
+        const found = await options.auth.userIdByEmail(p.authProjectId, label, p.authOwner);
+        if (!found) throw new HttpError(404, `Nobody has signed up with ${label} yet. Ask them to sign up in the app first, then try again.`);
+        uid = found;
       } else {
-        throw new HttpError(400, 'Say who should be an admin: a test person\'s name (who) or a user id (userId).');
+        throw new HttpError(400, 'Say who should be an admin: the email they signed up with (email), a test person\'s name (who) or a user id (userId).');
       }
       const { id, token } = await projects.requestAdmin(p, uid, label);
       return sendJson(res, 202, { ok: true, status: 'waiting_for_owner', approveUrl: `${base}/approve/${id}?t=${token}`, userId: uid });

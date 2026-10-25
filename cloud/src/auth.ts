@@ -125,6 +125,12 @@ export class AuthLink {
     return { userId: entry.userId, token: entry.token, expiresInSeconds: Math.floor((entry.expiresAt - Date.now()) / 1000) };
   }
 
+  /** The id of the person who signed up with this email, or null if nobody has. */
+  async userIdByEmail(projectId: string, email: string, owner = this.#owner): Promise<string | null> {
+    const r = await this.#platform<{ users: { id: string }[] }>('GET', `/projects/${projectId}/users?email=${encodeURIComponent(email)}&limit=1`, undefined, owner);
+    return r.users[0]?.id ?? null;
+  }
+
   /** Sessions Auth ended early, oldest first. */
   async revocations(projectId: string, opts: { since?: Date; cursor?: string }, owner = this.#owner) {
     const q = new URLSearchParams();
