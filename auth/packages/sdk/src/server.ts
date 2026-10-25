@@ -266,7 +266,7 @@ export function createAuthServer(options: AuthServerOptions = {}): AuthServer {
     let fromCookie = false;
     if (authz?.toLowerCase().startsWith('bearer ')) token = authz.slice(7).trim();
     else {
-      token = readCookie(h('cookie'), ACCESS_COOKIES);
+      token = readAccessCookie(h('cookie'), h('x-forwarded-proto'));
       fromCookie = token !== undefined;
     }
     if (!token) return null;
@@ -523,18 +523,22 @@ function headerGetter(req: RequestLike): (name: string) => string | undefined {
   };
 }
 
-function readCookie(header: string | undefined, names: string[]): string | undefined {
+// The access cookie, by the same rule as the Data block (data/src/server.ts): __Host-basalt_at can only
+// be set by this exact site, so it always wins. The plain name is only for plain-http setups; on https
+// it can only have been planted by another site under the same parent domain. Two of the same name
+// means one was planted, so refuse rather than guess.
+function readAccessCookie(header: string | undefined, proto: string | undefined): string | undefined {
   if (!header) return undefined;
-  const jar = new Map<string, string>();
+  const found: Record<string, string[]> = {};
   for (const part of header.split(';')) {
     const eq = part.indexOf('=');
-    if (eq > 0) jar.set(part.slice(0, eq).trim(), part.slice(eq + 1).trim());
+    const name = part.slice(0, eq).trim();
+    if (eq > 0 && ACCESS_COOKIES.includes(name)) (found[name] ??= []).push(part.slice(eq + 1).trim());
   }
-  for (const n of names) {
-    const v = jar.get(n);
-    if (v) return decodeURIComponent(v);
-  }
-  return undefined;
+  const https = proto?.split(',')[0]?.trim().toLowerCase() === 'https';
+  const pick = found['__Host-basalt_at'] ?? (https ? undefined : found['basalt_at']);
+  if (!pick || pick.length > 1 || !pick[0]) return undefined;
+  return decodeURIComponent(pick[0]);
 }
 
 /** Origin must equal this server's own origin (as seen by the browser) or be explicitly allowed. */

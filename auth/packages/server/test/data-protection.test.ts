@@ -151,6 +151,17 @@ describe('database-enforced ownership', () => {
     expect(await asApp(a.grant, 'SELECT * FROM todos')).toEqual([]); // others unaffected
   });
 
+  it("app code can't push the revocation sync point into the future to stall syncing", async () => {
+    const before = (await asApp(null, 'SELECT basalt_auth.revocations_synced_to() AS t'))[0].t;
+    // No rows and a far-future sync point: nothing should move.
+    await asApp(null, `SELECT basalt_auth.record_revocations('{}'::uuid[], '{}'::timestamptz[], '2100-01-01')`);
+    expect((await asApp(null, 'SELECT basalt_auth.revocations_synced_to() AS t'))[0].t).toEqual(before);
+    // A made-up revocation dated in the future moves it no further than now.
+    await asApp(null, `SELECT basalt_auth.record_revocations(ARRAY[gen_random_uuid()], ARRAY['2100-01-01'::timestamptz], '2100-01-01')`);
+    const after = new Date((await asApp(null, 'SELECT basalt_auth.revocations_synced_to() AS t'))[0].t);
+    expect(after.getTime()).toBeLessThanOrEqual(Date.now() + 5_000);
+  });
+
   it('records revocations for every way a session can end (trigger-based, no path can forget)', async () => {
     const sid = (u: { accessToken: string }) => decodeJwt(u.accessToken).sid as string;
     const disabled = await signUp();

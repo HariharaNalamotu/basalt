@@ -234,6 +234,12 @@ describe('proxying', () => {
     expect(lastAuth!.headers['x-forwarded-prefix']).toBe('/_basalt/auth');
   });
 
+  it("an encoded ? or # in the path stays part of the path, so it can't add a query the edge never saw", async () => {
+    const r = await call('/_basalt/auth/signin%3Fredirect=evil%23x', { method: 'POST', ip: freshIp(), headers: { 'content-type': 'application/json' }, body: '{}' });
+    expect(r.status).toBe(200);
+    expect(lastAuth!.url).toBe('/v1/projects/prj_test123/signin%3Fredirect=evil%23x');
+  });
+
   it('keeps backend internals private', async () => {
     for (const p of ['/_basalt/introspect', '/_basalt/openapi.json', '/_basalt/ready']) {
       expect((await call(p, { ip: freshIp() })).status, p).toBe(404);

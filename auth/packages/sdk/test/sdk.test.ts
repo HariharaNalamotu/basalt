@@ -165,6 +165,21 @@ describe('backend SDK', () => {
     expect((await server.getUser(req))?.id).toBe(user.id);
   });
 
+  it('on https, ignores a plain basalt_at cookie another site could have planted, and refuses duplicates', async () => {
+    const { b: victim, user } = await signedUp();
+    const { b: attacker, user: other } = await signedUp();
+    const mine = victim.jar.cookies.get('__Host-basalt_at')!;
+    const planted = attacker.jar.cookies.get('__Host-basalt_at')!;
+    const call = (cookie: string, proto: string) => server.getUser({ method: 'GET', headers: { cookie, host: 'app.example.com', 'x-forwarded-proto': proto } });
+    // The victim's secure cookie expired; only the planted plain one is left.
+    expect(await call(`basalt_at=${planted}`, 'https')).toBeNull();
+    // Plain-http setups (local dev) still use the plain name.
+    expect((await call(`basalt_at=${planted}`, 'http'))?.id).toBe(other.id);
+    // Two secure cookies means one was planted: refuse rather than guess.
+    expect(await call(`__Host-basalt_at=${planted}; __Host-basalt_at=${mine}`, 'https')).toBeNull();
+    expect((await call(`__Host-basalt_at=${mine}; basalt_at=${planted}`, 'https'))?.id).toBe(user.id);
+  });
+
   it('requireUser enforces sign-in, verified email and MFA', async () => {
     await expect(server.requireUser(new Request('https://app.example.com/'))).rejects.toMatchObject({ status: 401 });
     const { b } = await signedUp();

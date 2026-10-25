@@ -1019,7 +1019,7 @@ Goal: a graphical, non-technical dashboard for the owner of apps hosted on Basal
 
 Exhaustive inventory, checked against the code. Facts changed by the readiness pass (§11) are marked in place.
 
-Source: `/Users/Hari/basalt` @ branch `hari` (HEAD 569a411). Paths repo-relative. Verified against source; README claims noted only where code agrees.
+Source: this repo @ branch `hari` (HEAD 569a411). Paths repo-relative. Verified against source; README claims noted only where code agrees.
 
 ---
 
@@ -1692,7 +1692,7 @@ E2E `scripts/e2e-plug-and-play.mjs` (MCP client over stdio; edge `http://localho
 
 Exhaustive inventory, checked against the code. Facts changed by the readiness pass (§11) are marked in place.
 
-Source: `/Users/Hari/basalt`, branch `hari`, last commit touching these dirs `076559f`. Everything here was checked against the code. Paths are relative to the repo root.
+Source: this repo, branch `hari`, last commit touching these dirs `076559f`. Everything here was checked against the code. Paths are relative to the repo root.
 
 ---
 
