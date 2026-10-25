@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Connect Claude</title>
+<!--STYLE-->
+</head>
+<body>
+<main class="connect">
+  <header class="c-head">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Basalt</span></div>
+    <a class="btn secondary" id="to-dashboard" href="/dashboard" hidden>Go to your dashboard</a>
+  </header>
+
+  <section class="c-hero">
+    <h1>Connect Claude to Basalt</h1>
+    <p>Basalt is running on this computer. Give Claude the connector file below and it can build your apps, test them and put them online here.</p>
+  </section>
+
+  <ol class="c-steps">
+    <li class="card c-step">
+      <span class="c-num" aria-hidden="true">1</span>
+      <div>
+        <h2>Which computer will Claude run on?</h2>
+        <div class="seg c-os" role="group" aria-label="Computer">
+          <button type="button" data-os="mac">Mac</button>
+          <button type="button" data-os="windows">Windows</button>
+          <button type="button" data-os="linux">Linux</button>
+        </div>
+        <p class="muted small" id="os-note"></p>
+      </div>
+    </li>
+
+    <li class="card c-step">
+      <span class="c-num" aria-hidden="true">2</span>
+      <div>
+        <h2>Download the connector file</h2>
+        <p>It holds a private key to your Basalt, so keep it to yourself and never put it online (for example on GitHub).</p>
+        <button class="btn c-download" type="button" id="download">Download .mcp.json</button>
+        <p class="c-done" id="done" role="status" hidden></p>
+      </div>
+    </li>
+
+    <li class="card c-step">
+      <span class="c-num" aria-hidden="true">3</span>
+      <div>
+        <h2>Put it in your app's folder</h2>
+        <p>Make a new, empty folder for your app (for example <b>my-app</b> in your home folder) and move the file into it. It must be named exactly <code>.mcp.json</code>. Some browsers save it as <code>mcp.json</code> without the dot; the command below fixes the name too.</p>
+        <div class="c-cmd"><pre id="move-cmd"></pre><button class="row-btn" type="button" data-copy="move-cmd">Copy</button></div>
+        <p class="muted small" id="move-note"></p>
+      </div>
+    </li>
+
+    <li class="card c-step">
+      <span class="c-num" aria-hidden="true">4</span>
+      <div>
+        <h2>Open Claude Code in that folder</h2>
+        <div class="c-cmd"><pre id="open-cmd"></pre><button class="row-btn" type="button" data-copy="open-cmd">Copy</button></div>
+        <p>When Claude Code asks whether to use the <b>basalt</b> server from this folder, say yes. Then just tell it what you want, for example:</p>
+        <blockquote class="c-quote">Build me a booking page for my salon and put it online with Basalt.</blockquote>
+        <p class="muted small">Claude Code needs Node.js 24 or newer on this computer (from nodejs.org). To check the connection, type <code>/mcp</code> inside Claude Code: <b>basalt</b> should say connected.</p>
+      </div>
+    </li>
+  </ol>
+
+  <p class="muted small c-foot">Downloading again makes a new key; old files keep working. Your apps will be at <code>http://&lt;app&gt;.basalt.localhost:8080</code>.</p>
+</main>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<!--SCRIPT-->
+</body>
+</html>

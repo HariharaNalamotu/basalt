@@ -30,6 +30,11 @@ export interface AppRoute {
    * the app's own site at /_basalt/data so the signed-in session cookie reaches it. Null: none.
    */
   dataUrl: string | null;
+  /**
+   * Client IP buckets (see ipBucket) the app's owner always lets through: never banned, never
+   * rate limited on this app. The WAF still refuses each malicious request and records it.
+   */
+  allowIps?: string[];
 }
 
 export interface ProtectionSettings {

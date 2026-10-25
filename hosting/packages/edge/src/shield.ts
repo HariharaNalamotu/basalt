@@ -14,7 +14,7 @@ export interface ShieldOptions {
   maxClients?: number;
 }
 
-type Entry = { score: number; at: number; bannedUntil: number; bans: number };
+type Entry = { score: number; at: number; bannedUntil: number; bans: number; bannedAt?: number; reason?: string; host?: string };
 
 const SCANNER_PATH = /^\/(?:\.env|\.git|\.svn|\.hg|\.ds_store|\.aws|\.ssh|\.htaccess|\.htpasswd|wp-admin|wp-login\.php|wp-content|wp-includes|xmlrpc\.php|phpmyadmin|pma|myadmin|admin\.php|cgi-bin|server-status|actuator|vendor\/phpunit|boaform|hnap1|solr|console|owa|autodiscover|telescope|_profiler|debug\/default)(?:\/|$|\?)/i;
 const ATTACK = [
@@ -58,14 +58,20 @@ export class Shield {
     return e && e.bannedUntil > now ? Math.ceil((e.bannedUntil - now) / 1000) : 0;
   }
 
-  /** Adds misbehaviour points; returns true if this pushed the client into a ban. */
-  penalize(key: string, points: number, now = Date.now()): boolean {
+  /**
+   * Adds misbehaviour points; returns true if this pushed the client into a ban. `why` says what
+   * the last straw was and on which site, so the owner can see why someone was blocked.
+   */
+  penalize(key: string, points: number, now = Date.now(), why?: { reason: string; host: string }): boolean {
     const e = this.entry(key, now);
     if (e.bannedUntil > now) return false;
     e.score += points;
     if (e.score >= this.o.banThreshold) {
       e.bans++;
       e.bannedUntil = now + Math.min(this.o.maxBanMs, this.o.baseBanMs * 2 ** (e.bans - 1));
+      e.bannedAt = now;
+      e.reason = why?.reason;
+      e.host = why?.host;
       e.score = 0;
       return true;
     }
@@ -92,7 +98,9 @@ export class Shield {
   }
 
   bans(now = Date.now()) {
-    return [...this.clients].filter(([, e]) => e.bannedUntil > now).map(([ip, e]) => ({ ip, until: new Date(e.bannedUntil).toISOString(), bans: e.bans }));
+    return [...this.clients]
+      .filter(([, e]) => e.bannedUntil > now)
+      .map(([ip, e]) => ({ ip, until: new Date(e.bannedUntil).toISOString(), bans: e.bans, since: e.bannedAt ? new Date(e.bannedAt).toISOString() : null, reason: e.reason ?? null, host: e.host ?? null }));
   }
 }
 

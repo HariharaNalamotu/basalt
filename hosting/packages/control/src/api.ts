@@ -3,6 +3,7 @@ import { Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { TokenBuckets, safeEqual } from '@basalt/host-shared';
 import type { Ctx } from './ctx.js';
+import { createDashboard } from './dashboard.js';
 import { createMcpServer } from './mcp.js';
 import { CapacityError } from './environments.js';
 import { MAX_UPLOAD_BYTES } from './sources.js';
@@ -21,6 +22,9 @@ export function createPublicApi(ctx: Ctx, host: Host) {
     return c.json({ error: status === 500 ? 'Internal error.' : err.message }, status as 400);
   });
   app.get('/v1/health', (c) => c.json({ ok: true }));
+  app.get('/favicon.ico', (c) => c.body(null, 204, { 'cache-control': 'public, max-age=86400' }));
+  // The owner's dashboard signs in with its own link and cookie, not the agent's token.
+  app.route('/dashboard', createDashboard(ctx, host));
 
   const auth: MiddlewareHandler<Env> = async (c, next) => {
     const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '';

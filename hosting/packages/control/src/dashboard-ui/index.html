@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Basalt Dashboard</title>
+<!--STYLE-->
+</head>
+<body>
+<div class="shell">
+  <aside class="nav" aria-label="Sections">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Basalt</span></div>
+    <nav id="nav"></nav>
+    <div class="nav-foot">
+      <button class="theme-toggle" id="theme" type="button" aria-label="Switch light or dark">
+        <span data-icon="moon" aria-hidden="true"></span><span>Dark mode</span>
+      </button>
+    </div>
+  </aside>
+  <main class="main">
+    <header class="top">
+      <div class="picker">
+        <label class="sr" for="app">App</label>
+        <select id="app"></select>
+        <div class="envs" id="envs" role="tablist" aria-label="Version of the app"></div>
+      </div>
+      <div class="top-right">
+        <span class="live" id="live"><span class="dot" aria-hidden="true"></span><span id="live-text">Connecting…</span></span>
+        <a class="visit" id="visit" href="#" target="_blank" rel="noopener noreferrer">Open site <span data-icon="out" aria-hidden="true"></span></a>
+      </div>
+    </header>
+    <div id="view" class="view" tabindex="-1"></div>
+  </main>
+</div>
+<div id="menu" class="menu" role="menu" hidden></div>
+<div id="tip" class="tip" role="tooltip" hidden></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<!--SCRIPT-->
+</body>
+</html>

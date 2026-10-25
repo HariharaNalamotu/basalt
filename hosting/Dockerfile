@@ -28,7 +28,7 @@ COPY hosting/scripts hosting/scripts
 RUN cd auth && npx tsc -p packages/sdk/tsconfig.build.json && npx tsc -p packages/mcp/tsconfig.build.json \
  && cd ../api && npx tsc -p packages/framework/tsconfig.build.json && npx tsc -p packages/mcp/tsconfig.build.json \
  && cd ../hosting && for p in shared edge egress browser control mcp; do npx tsc -p packages/$p/tsconfig.build.json; done \
- && cp -R packages/control/src/migrations packages/control/dist/ \
+ && cp -R packages/control/src/migrations packages/control/src/dashboard-ui packages/control/dist/ \
  && node scripts/pack-basalt.mjs /src /out/packages \
  && find /src -path '*/node_modules/.cache' -prune -exec rm -rf {} + \
  && rm -rf /src/*/packages/*/src /src/*/packages/*/test
