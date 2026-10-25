@@ -42,6 +42,8 @@ for key in CLOUD_MASTER_KEY CLOUD_PLATFORM_KEY; do
 done
 
 docker build -t basalt/runtime:1 ../images/runtime
+# App builds run in this image. Building Basalt uses it too, but BuildKit doesn't always keep it as a named image.
+docker pull node:24-alpine > /dev/null || echo "Warning: couldn't download node:24-alpine. Basalt will try again on the first app deploy."
 # The test browser image is several GB. Download it alongside the build; only app test runs need it.
 docker pull mcr.microsoft.com/playwright:v1.64.1-noble > /dev/null &
 PULL=$!

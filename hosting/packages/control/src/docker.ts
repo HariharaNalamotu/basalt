@@ -122,6 +122,14 @@ export class Docker {
   removeImage(tag: string) {
     return this.call('DELETE', `/images/${encodeURIComponent(tag)}?force=true`, undefined, { ok: [200, 404, 409] });
   }
+  /** Pulls an image the platform runs (build or test) if this machine doesn't have it yet. */
+  async ensureImage(ref: string) {
+    if (await this.imageExists(ref)) return;
+    const res = (await this.call('POST', `/images/create?fromImage=${encodeURIComponent(ref)}`, undefined, { raw: true, timeoutMs: 0 })) as { body: { text(): Promise<string> } };
+    // The pull streams JSON progress lines; a failure arrives as a line with "error", not a status code.
+    const failed = (await res.body.text()).split('\n').map((l) => { try { return JSON.parse(l); } catch { return {}; } }).find((l) => l.error);
+    if (failed) throw new Error(`couldn't download ${ref}: ${failed.error}`);
+  }
   async imageExists(tag: string) {
     try {
       await this.call('GET', `/images/${encodeURIComponent(tag)}/json`);

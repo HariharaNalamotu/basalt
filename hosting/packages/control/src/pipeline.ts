@@ -120,6 +120,7 @@ export class Pipeline {
     const started = Date.now();
     const cname = `basalt-build-${depId}-${name}`;
     await this.ctx.docker.remove(cname).catch(() => {});
+    await this.ctx.docker.ensureImage(this.ctx.cfg.BUILD_IMAGE);
     await this.ctx.docker.createContainer(cname, {
       Image: this.ctx.cfg.BUILD_IMAGE,
       User: '10001:10001',
