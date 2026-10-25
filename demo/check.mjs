@@ -43,7 +43,7 @@ for (const [name, fn] of Object.entries(scenarios)) {
   const writes = [];
   const ctx = {
     window: {}, console: { log() {}, table() {} }, crypto: webcrypto, btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
-    document: { getElementById() {}, createElement() { return { style: {}, querySelector() { return {}; } }; }, body: { appendChild() {} } },
+    document: { getElementById() {}, createElement() { return { style: {}, setAttribute() {}, addEventListener() {}, querySelector() { return { focus() {} }; } }; }, body: { appendChild() {} } },
     fetch: async (url, opts) => { const b = JSON.parse(opts.body); if (/update|archive|restore|create/.test(url)) writes.push(url.split('/').pop() + ':' + (b.id ?? 'new')); const r = fn(url, b, n); return { status: r.status, json: async () => r.json }; },
   };
   vm.createContext(ctx);

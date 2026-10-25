@@ -1,5 +1,5 @@
 import type { CheckResult } from './guard.ts';
-import { esc, page } from './html.ts';
+import { banner, contextLine, esc, friendlyName, icon, page } from './html.ts';
 import type { ScanFinding } from './scan.ts';
 
 // The owner's safety receipt: what Guard tried against their app the last
@@ -12,11 +12,15 @@ export function renderReceipt(appName: string, check: { results: CheckResult[]; 
   const allGood = passed === total && check.findings !== null && found === 0 && !stale;
   const toFix = found ? `, ${found} thing${found === 1 ? '' : 's'} to fix in the code` : '';
   const when = new Date(check.at).toUTCString().replace(' GMT', ' UTC');
+  // Each attempt gets the badge for what was actually seen: a clear refusal, a leak, or no clear answer.
+  const verdict = (r: CheckResult) => (r.passed ? 'refused' : /^Couldn't tell|wasn't checked/.test(r.detail) ? 'unclear' : 'leaked');
+  const badge = { refused: ['safe', 'shield', 'REFUSED'], leaked: ['danger', 'problem', 'LEAKED'], unclear: ['warning', 'question', "CAN'T TELL"] } as const;
   const rows = check.results
-    .map(
-      (r) => `<li class="${r.passed ? 'ok' : 'bad'}"><span class="mark" aria-hidden="true">${r.passed ? '&#x2713;' : '&#x2715;'}</span>
-<span><strong>${esc(r.title)}</strong>${r.table ? ` <span class="muted">in ${esc(r.table.replaceAll('_', ' '))}</span>` : ''}<br><span class="muted">${r.passed ? 'Safe' : 'Problem'}: ${esc(r.detail)}</span></span></li>`,
-    )
+    .map((r) => {
+      const [tone, ic, label] = badge[verdict(r)];
+      return `<div class="result-row"><span class="badge tone--${tone}">${icon(ic)}${label}</span>
+<div><div class="row__title">${esc(r.title)}${r.table ? ` <span class="muted">in ${esc(r.table.replaceAll('_', ' '))}</span>` : ''}</div><p>${esc(r.detail)}</p></div></div>`;
+    })
     .join('');
   const code = check.findings === null
     ? "<p>The app's code wasn't checked this time. Ask Claude to run basalt_check from the app's folder.</p>"
@@ -24,20 +28,25 @@ export function renderReceipt(appName: string, check: { results: CheckResult[]; 
     ? `<ul>${check.findings.map((f) => `<li><strong>${esc(f.file || 'App folder')}${f.line ? `, line ${f.line}` : ''}</strong>: ${esc(f.problem)} <span class="muted">${esc(f.fix)}</span></li>`).join('')}</ul>`
     : "<p>Nothing found in the app's folder on the builder's computer. All of the app's data goes through Basalt.</p>";
 
+  const leaked = check.results.filter((r) => verdict(r) === 'leaked').length;
+  const unclear = check.results.filter((r) => verdict(r) === 'unclear').length;
+  const headline = `${passed} of ${total} attacks were refused${toFix}`;
+  const status = stale
+    ? banner('warning', "The app's rules changed after this check", 'Ask Claude to run it again before trusting this receipt.')
+    : leaked
+    ? banner('danger', `${leaked} attack${leaked === 1 ? '' : 's'} got through`, 'Ask Claude to fix this before the app goes live. Customers could reach data that isn\'t theirs.')
+    : unclear || found || check.findings === null
+    ? banner('warning', 'Something needs a look', unclear ? `${unclear} check${unclear === 1 ? '' : 's'} couldn't tell either way.` : 'See the code check below.')
+    : banner('safe', 'Every attack was refused', 'Nobody could reach data that wasn\'t theirs.');
+
   return page(
     `${appName}: safety receipt`,
-    `<style>
-:root{--ok:#2b8a3e;--bad:#e03131}@media (prefers-color-scheme:dark){:root{--ok:#51cf66;--bad:#ff6b6b}}
-.checks{list-style:none;padding:0}.checks li{display:flex;gap:12px;align-items:flex-start;margin:12px 0}
-.mark{font-weight:700;font-size:20px;line-height:1.2;width:20px;flex:none}.ok .mark{color:var(--ok)}.bad .mark{color:var(--bad)}
-.score{font-size:20px;font-weight:600;color:${allGood ? 'var(--ok)' : 'var(--bad)'}}
-</style>
-<h1>Safety receipt for ${esc(appName)}</h1>
-${stale ? '<div class="warn">The app\'s rules changed after this check. Ask Claude to run it again.</div>' : ''}
-<p class="score">${passed} of ${total} checks passed${toFix}</p>
-<p class="muted">Checked ${esc(when)}. Basalt signed in as two pretend people and a stranger and tried to reach data that wasn't theirs, using the same address your app uses.</p>
-<div class="card"><h2>What we tried</h2><ul class="checks">${rows}</ul></div>
-<div class="card"><h2>Data kept outside Basalt</h2>${code}</div>
+    `<header class="page-header__copy"><p class="decision__context">${contextLine(appName)}</p><h1>Safety receipt for ${esc(friendlyName(appName).app)}</h1>
+<p class="summary numeric">${headline}</p>
+<p class="muted">Checked ${esc(when)}. Basalt signed in as two pretend people and a stranger and tried to reach data that wasn't theirs, using the same address your app uses. This receipt describes these checks against this version.</p></header>
+${status}
+<section class="card"><div class="card__header"><h2>What we tried</h2></div>${rows}</section>
+<section class="card"><div class="card__header"><h2>Data kept outside Basalt</h2></div>${code}</section>
 <p class="muted">The test entries were archived afterwards. Ask Claude to run the check again after any change.</p>`,
   );
 }
