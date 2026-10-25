@@ -57,7 +57,10 @@ else
   docker compose up -d --wait --wait-timeout 300
 fi
 echo "Waiting for the test browser image to finish downloading (app test runs need it)..."
-wait "$PULL"
+if ! wait "$PULL"; then
+  # Basalt itself is already up; only app test runs need this image. Don't stop the quick start over it.
+  echo "Warning: couldn't download the test browser image. Basalt is running, but app test runs will fail until it downloads. Try again later: docker pull mcr.microsoft.com/playwright:v1.64.1-noble"
+fi
 if [[ -z "${BASALT_FROM_START:-}" ]]; then
   echo
   echo "Platform is up. Create a workspace (prints the coding agent's connector setup):"
