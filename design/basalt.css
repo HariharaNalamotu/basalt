@@ -136,7 +136,8 @@ pre { white-space:pre-wrap; padding:var(--s4); margin:var(--s0); background:var(
 .decision-page { padding:var(--s16) var(--s4); }
 .decision { max-width:var(--decision); margin-inline:auto; padding:var(--s8); border-radius:var(--r-decision); display:grid; gap:var(--s6); }
 .decision__context { font-size:var(--sm); line-height:var(--lh-sm); }
-.decision__question { margin-top:var(--s4); overflow-wrap:anywhere; }
+.decision__head { display:grid; gap:var(--s4); }
+.decision__question { overflow-wrap:anywhere; }
 .decision__actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--s3); }
 .decision__actions .button { min-height:var(--decision-control); }
 .form { display:grid; gap:var(--s5); }

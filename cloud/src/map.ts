@@ -72,7 +72,7 @@ function diagram(contract: Contract, admins: number): string {
       const y = ay(i);
       lines.push(`<line x1="170" y1="${y}" x2="222" y2="${y}" stroke="${color.none}" stroke-width="2" stroke-dasharray="5 5"/>`);
       lines.push(`<text x="228" y="${y + 7}" fill="${color.none}" font-size="22" font-weight="700">&#x2715;</text>`);
-      lines.push(`<text x="252" y="${y + 6}" fill="${color.none}" font-size="15">no key</text>`);
+      lines.push(`<text x="252" y="${y + 6}" fill="${color.none}" font-size="15">Cannot access</text>`);
       return;
     }
     for (const t of a.to) {
@@ -131,7 +131,7 @@ export function renderMap(appName: string, contract: Contract, stats: MapStats):
 <h1>Where ${esc(friendlyName(appName).app)}'s information lives</h1>
 <p class="muted">Live: ${tables.length} kind${tables.length === 1 ? '' : 's'} of data, ${stats.files.count} file${stats.files.count === 1 ? '' : 's'} (${mb} MB), ${stats.admins} admin${stats.admins === 1 ? '' : 's'}.</p>
 <div class="card"><h2>Who can reach what</h2>${diagram(contract, stats.admins)}
-<p class="legend"><span><i class="dot" style="background:var(--ok)"></i>their own</span><span><i class="dot" style="background:var(--share)"></i>read only, when assigned</span><span><i class="dot" style="background:var(--admin)"></i>everything</span><span><i class="dot" style="background:var(--bad)"></i>no way in</span></p>
+<p class="legend"><span><i class="dot" style="background:var(--ok)"></i>their own</span><span><i class="dot" style="background:var(--share)"></i>read only, when assigned</span><span><i class="dot" style="background:var(--admin)"></i>everything</span><span><i class="dot" style="background:var(--bad)"></i>cannot access</span></p>
 <p>The database applies these rules. The AI that built your app only ever gets the same access as the person signed in. Someone who breaks into the website still can't open the data, because the database checks every request itself.</p></div>
 ${cards}
 <div class="card"><h2>Recent changes</h2>${recent}<p class="muted">Basalt records what changed and when, never the values.</p></div>`,

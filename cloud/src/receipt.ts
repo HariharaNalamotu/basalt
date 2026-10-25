@@ -35,14 +35,19 @@ export function renderReceipt(appName: string, check: { results: CheckResult[]; 
     ? banner('warning', "The app's rules changed after this check", 'Ask Claude to run it again before trusting this receipt.')
     : leaked
     ? banner('danger', `${leaked} attack${leaked === 1 ? '' : 's'} got through`, 'Ask Claude to fix this before the app goes live. Customers could reach data that isn\'t theirs.')
-    : unclear || found || check.findings === null
-    ? banner('warning', 'Something needs a look', unclear ? `${unclear} check${unclear === 1 ? '' : 's'} couldn't tell either way.` : 'See the code check below.')
+    : unclear
+    ? banner('warning', `${unclear} check${unclear === 1 ? '' : 's'} couldn't tell either way`, 'Ask Claude to run the check again. A check that can\'t tell is never counted as safe.')
+    : found
+    ? banner('warning', 'The code check found something to fix', `${found} thing${found === 1 ? '' : 's'} in the app's code keep data outside Basalt. See the code check below.`)
+    : check.findings === null
+    ? banner('warning', "The app's code wasn't checked", 'Every attack was refused, but the code check below didn\'t run. Ask Claude to run it from the app\'s folder.')
     : banner('safe', 'Every attack was refused', 'Nobody could reach data that wasn\'t theirs.');
 
   return page(
     `${appName}: safety receipt`,
     `<header class="page-header__copy"><p class="decision__context">${contextLine(appName)}</p><h1>Safety receipt for ${esc(friendlyName(appName).app)}</h1>
 <p class="summary numeric">${headline}</p>
+<p class="numeric">Refused: ${passed} · Leaked: ${leaked} · Couldn't tell: ${unclear}</p>
 <p class="muted">Checked ${esc(when)}. Basalt signed in as two pretend people and a stranger and tried to reach data that wasn't theirs, using the same address your app uses. This receipt describes these checks against this version.</p></header>
 ${status}
 <section class="card"><div class="card__header"><h2>What we tried</h2></div>${rows}</section>

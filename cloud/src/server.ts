@@ -65,8 +65,8 @@ function decisionPage(title: string, projectName: string, question: string, cons
   return page(
     title,
     `<section class="decision" aria-labelledby="question">
-<p class="decision__context">${contextLine(projectName)}</p>
-<h1 id="question" class="decision__question" tabindex="-1">${question}</h1>
+<div class="decision__head"><p class="decision__context">${contextLine(projectName)}</p>
+<h1 id="question" class="decision__question" tabindex="-1">${question}</h1></div>
 ${consequence}
 ${extra}
 <form method="post" class="decision__actions"><input type="hidden" name="t" value="${esc(token)}">
@@ -427,7 +427,11 @@ export function createCloudServer(options: CloudServerOptions) {
           `Make ${approval.admin!.label} an admin`,
           p.name,
           `Make ${who} an admin of ${esc(friendlyName(p.name).app)}?`,
-          banner('warning', 'An admin can see and change everything everyone has saved in this app.', 'Only say yes for yourself or someone you fully trust. Nothing changes until you say yes.'),
+          banner(
+            'warning',
+            'An admin can see and change all customer information saved in this app.',
+            `${friendlyName(p.name).env === 'Production' ? 'This applies to the production app your customers use. ' : ''}Approve only if you trust this person with that access. Nothing changes until you say yes.`,
+          ),
           '',
           token!,
           'Yes, make them an admin',

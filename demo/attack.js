@@ -86,6 +86,8 @@
 #basalt-attack .d{font-size:16px;line-height:24px;margin-top:2px;overflow-wrap:anywhere}
 #basalt-attack .safe{--tone:var(--safe);--tone-bg:var(--safe-bg)}#basalt-attack .danger{--tone:var(--danger);--tone-bg:var(--danger-bg)}
 #basalt-attack .warning{--tone:var(--warning);--tone-bg:var(--warning-bg)}#basalt-attack .info{--tone:var(--info);--tone-bg:var(--info-bg)}
+@media (min-height:900px) and (min-width:1024px){#basalt-attack .t{font-size:24px;line-height:32px}#basalt-attack .d{font-size:20px;line-height:28px}
+  #basalt-attack .row{min-height:104px;padding:16px 0;gap:24px}}
 @media (max-height:820px) and (min-width:1024px){#basalt-attack{padding:20px 32px}#basalt-attack .inner{gap:14px}#basalt-attack .brand{margin-bottom:4px}
   #basalt-attack h1{font-size:32px;line-height:40px}#basalt-attack .intro{font-size:18px;line-height:26px;margin-top:4px}
   #basalt-attack .summary{font-size:28px;line-height:36px}#basalt-attack .row{grid-template-columns:152px minmax(0,1fr);padding:9px 0}}

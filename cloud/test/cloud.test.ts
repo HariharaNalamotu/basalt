@@ -255,7 +255,7 @@ describe('the owner as admin', () => {
     const req = await call('POST', '/api/projects/me/admins', { who: 'maria' }, app.key);
     assert.equal(req.body.status, 'waiting_for_owner');
     const html = await (await fetch(req.body.approveUrl)).text();
-    assert.match(html, /can see and change everything/);
+    assert.match(html, /can see and change all customer information/);
     assert.equal((await data(app.dataUrl, owner.token, 'get', { table: 'bookings', id })).status, 404);
 
     await approve(req.body.approveUrl);
@@ -378,7 +378,7 @@ describe("the owner's data map", () => {
     assert.equal(res.status, 200);
     assert.match(html, /Where Test salon/);
     assert.match(html, /The AI that built it/);
-    assert.match(html, /no key/);
+    assert.match(html, /Cannot access/);
     assert.match(html, /class="pii">phone/);
     assert.match(html, /1 saved/);
     assert.match(html, /a new booking was added/);
