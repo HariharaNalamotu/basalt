@@ -156,7 +156,18 @@
     $('#envs').innerHTML = D.envsOfApp().map(function (e) { return '<button class="env-pill" role="tab" data-env="'+esc(e.name)+'" aria-selected="'+(e.name===ui.env)+'"><span class="sdot '+esc(e.status)+'" aria-hidden="true"></span>'+esc(D.envLabel(e))+'</button>'; }).join('');
     var s = D.sel(), visit = $('#visit');
     visit.hidden = !s;
-    if (s) visit.href = s.url;
+    if (s) visit.href = D.openHref(s);
+  };
+
+  // Production opens at its address; test versions are private, so the dashboard mints a share link.
+  D.openHref = function (s) { return '/dashboard/api/open?app='+encodeURIComponent(s.app)+'&env='+encodeURIComponent(s.env); };
+
+  // Claude asked to delete an app: only the owner's Confirm here deletes it.
+  D.deletionRequests = function () {
+    return (D.data.pendingDeletions || []).map(function (p) {
+      return '<div class="verdict critical del-req" role="alert"><div class="v-icon">'+ic('alert')+'</div><div><h2>'+esc(p.message)+'</h2><p>Claude asked to delete it. Nothing is removed until you tap Confirm.</p></div>'+
+        '<div class="v-actions"><button class="btn secondary" type="button" data-del-cancel="'+esc(p.app)+'">Cancel</button><button class="btn danger" type="button" data-del-confirm="'+esc(p.app)+'">Confirm</button></div></div>';
+    }).join('');
   };
 
   D.sel = function () { return D.data && D.data.selected; };
@@ -175,7 +186,7 @@
       view.innerHTML = D.head('Welcome to your dashboard', 'When Claude puts your first app online, you’ll see its visitors, speed, updates and security here.')+'<div class="card"><div class="empty">'+ic('rocket')+'<b>No apps yet</b><span>Ask Claude to build and launch one.</span></div></div>';
       return;
     }
-    view.innerHTML = (D.views[ui.tab] || D.views.home)();
+    view.innerHTML = D.deletionRequests() + (D.views[ui.tab] || D.views.home)();
     D.drawCharts();
     window.scrollTo(0, scroll);
   };
@@ -440,7 +451,7 @@
 
   function serverFacts(s) {
     var k = s.backend, p = s.protection || {}, rows = [
-      ['Address','<a href="'+esc(s.url)+'" target="_blank" rel="noopener noreferrer">'+esc(s.url.replace(/^https?:\/\//,''))+'</a>'],
+      ['Address','<a href="'+esc(D.openHref(s))+'" target="_blank" rel="noopener noreferrer">'+esc(s.url.replace(/^https?:\/\//,''))+'</a>'],
       ['Server', k?esc(k.state)+(k.health?' ('+esc(k.health)+')':''):'website only'],
       ['Running since', k&&k.startedAt?esc(D.when(k.startedAt)):'–'],
       ['Restarts', k?D.fmt(k.restarts):'–'],
@@ -686,6 +697,11 @@
   D.allow = function (ip, label) { return act('/allowlist', { ip: ip, label: label || '' }, 'Added to always-allowed.'); };
   D.disallow = function (ip) { return act('/allowlist', { ip: ip, __method:'DELETE' }, 'Removed from always-allowed.'); };
   D.unban = function (ip) { return act('/unban', { ip: ip }, 'Unblocked.'); };
+  D.confirmDelete = function (app, btn) {
+    btn.disabled = true; btn.textContent = 'Deleting…';
+    return act('/delete-app', { app: app }, app+' was deleted.').then(function (){ if (ui.app === app) { ui.app = null; ui.env = null; D.writeHash(); return D.refresh(); } });
+  };
+  D.cancelDelete = function (app) { return act('/delete-app', { app: app, __method:'DELETE' }, app+' stays. Nothing was deleted.'); };
 
   var menu = $('#menu');
   function closeMenu() { menu.hidden = true; }
@@ -722,6 +738,8 @@
     else if (b.dataset.allow !== undefined) { D.allow(b.dataset.allow, b.dataset.label || ''); }
     else if (b.dataset.disallow !== undefined) { D.disallow(b.dataset.disallow); }
     else if (b.dataset.unban !== undefined) { D.unban(b.dataset.unban); }
+    else if (b.dataset.delConfirm !== undefined) { D.confirmDelete(b.dataset.delConfirm, b); }
+    else if (b.dataset.delCancel !== undefined) { D.cancelDelete(b.dataset.delCancel); }
     else if (b.hasAttribute('data-clear-ip')) { ui.ipFilter = ''; D.render(); }
     else if (b.dataset.ipMenu !== undefined) { var r = b.getBoundingClientRect(); openMenu(b.dataset.ipMenu, r.left, r.bottom + 4); }
   });

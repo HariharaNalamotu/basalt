@@ -249,7 +249,7 @@ export function createEdgeHandler(o: EdgeOptions) {
       const t = new URLSearchParams(query).get('t');
       const payload = route.accessKey ? verifyToken<{ env: string; exp: number }>(route.accessKey, t) : null;
       if (!payload || payload.env !== route.envId) {
-        send(res, 403, '<!doctype html><title>Link expired</title><p>This preview link is invalid or has expired.</p>', securityHeaders(route, false));
+        send(res, 403, '<!doctype html><title>Link expired</title><p>This share link has expired or isn\'t valid.</p><p>Ask the person building the app (or Claude) for a fresh share link. If you own the app, open it from your Basalt dashboard instead.</p>', securityHeaders(route, false));
         return 403;
       }
       res.writeHead(303, {
@@ -289,7 +289,7 @@ export function createEdgeHandler(o: EdgeOptions) {
       const payload = verifyToken<{ env: string; exp: number }>(route.accessKey, token);
       if (!payload || payload.env !== route.envId) {
         const wantsHtml = (req.headers.accept ?? '').includes('text/html');
-        if (wantsHtml) send(res, 401, '<!doctype html><title>Private environment</title><p>This is a private test environment. Ask for a share link.</p>', securityHeaders(route, false));
+        if (wantsHtml) send(res, 401, '<!doctype html><title>Private test version</title><p>This is a private test version of the app, so it needs a share link.</p><p>Ask the person building the app (or Claude) for a fresh share link. If you own the app, open it from your Basalt dashboard instead.</p>', securityHeaders(route, false));
         else send(res, 401, errorJson('environment_private', 'This environment is private.', requestId));
         return 401;
       }

@@ -168,6 +168,19 @@ const tool = async (name, args = {}) => {
   if (r.isError) throw new Error(`${name}: ${text}`);
   return { text, content: r.content };
 };
+
+// Deleting an app needs the owner: host_delete_app only asks, then the owner taps Confirm in the
+// dashboard. The test plays the owner through the dashboard link the tool returns.
+const deleteApp = async (app) => {
+  const asked = await tool('host_delete_app', { app });
+  const link = /https?:\/\/\S+\/dashboard\/open\?t=\S+/.exec(asked.text)?.[0];
+  if (!link) throw new Error(`host_delete_app gave no dashboard link: ${asked.text}`);
+  const open = await fetch(link, { redirect: 'manual' });
+  const cookie = (open.headers.get('set-cookie') ?? '').split(';')[0];
+  const res = await fetch(new URL('/dashboard/api/delete-app', link), { method: 'POST', headers: { cookie, 'content-type': 'application/json', 'x-basalt-dashboard': '1' }, body: JSON.stringify({ app }), signal: AbortSignal.timeout(300_000) });
+  if (!res.ok) throw new Error(`owner confirm failed: ${res.status} ${await res.text()}`);
+  return `Deleted app ${app}.`;
+};
 const waitDone = async (depId) => {
   for (;;) {
     const r = await tool('host_wait', { deploymentId: depId });
@@ -198,7 +211,7 @@ try {
     const d = await tool('host_deploy', { app: APP });
     await waitDone(/"deploymentId": "(dep_[a-z0-9]+)"/.exec(d.text)[1]);
     const t = Date.now();
-    await tool('host_delete_app', { app: APP, confirm: true });
+    await deleteApp(APP);
     console.log(`quick: deleted in ${Date.now() - t}ms`);
     process.exit(0);
   }
@@ -353,8 +366,8 @@ try {
     console.log(`kept ${APP} running (E2E_KEEP); delete it with host_delete_app when done`);
   } else {
     // Deleting the app removes everything it owned.
-    const del = await tool('host_delete_app', { app: APP, confirm: true });
-    ok(/Deleted app/.test(del.text), 'host_delete_app');
+    const del = await deleteApp(APP);
+    ok(/Deleted app/.test(del), 'host_delete_app asks and the owner confirms in the dashboard');
     const leftovers = execSync(`docker ps -a --filter label=basalt.app=${APP} -q; docker network ls --format '{{.Name}}' --filter label=basalt.env | xargs -r -n1 docker network inspect --format '{{.Name}} {{len .Containers}}' 2>/dev/null | grep -c ' 0$' || true`).toString().trim();
     const pw = envFile.POSTGRES_PASSWORD;
     const dbs = execSync(`docker exec -e PGPASSWORD=${pw} basalt-postgres psql -U postgres -tAc "select count(*) from pg_database where datname like 'basalt_${APP}%'"`).toString().trim();
@@ -366,7 +379,7 @@ try {
   failed = true;
   console.error('FAIL:', err.message);
 } finally {
-  if (failed) await mcp.callTool({ name: 'host_delete_app', arguments: { app: APP, confirm: true } }, undefined, { timeout: 300_000 }).catch(() => {});
+  if (failed) await deleteApp(APP).catch(() => {});
   await mcp.close().catch(() => {});
   rmSync(appDir, { recursive: true, force: true });
   if (failed) process.exitCode = 1;

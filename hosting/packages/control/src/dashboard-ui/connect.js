@@ -7,8 +7,8 @@
   let os = /Windows/i.test(ua) ? 'windows' : /Mac/i.test(ua) ? 'mac' : /Linux|X11/i.test(ua) ? 'linux' : 'mac';
 
   const MOVE = {
-    mac: 'mkdir -p ~/my-app && mv ~/Downloads/*mcp.json ~/my-app/.mcp.json',
-    linux: 'mkdir -p ~/my-app && mv ~/Downloads/*mcp.json ~/my-app/.mcp.json',
+    mac: 'mkdir -p ~/my-app && mv "$(ls -t ~/Downloads/*mcp*.json | head -1)" ~/my-app/.mcp.json',
+    linux: 'mkdir -p ~/my-app && mv "$(ls -t ~/Downloads/*mcp*.json | head -1)" ~/my-app/.mcp.json',
     windows: 'New-Item -ItemType Directory -Force $HOME\\my-app | Out-Null; Move-Item -Force (Get-ChildItem $HOME\\Downloads\\*mcp*.json | Sort-Object LastWriteTime | Select-Object -Last 1).FullName $HOME\\my-app\\.mcp.json',
   };
   const MOVE_NOTE = {

@@ -51,6 +51,8 @@ One thing to run. It checks Docker, builds and starts Basalt, and opens the **Co
 
 Then put the downloaded file in an empty folder for your app as `.mcp.json` (the page shows a command that does it), open Claude Code there and approve the `basalt` server. Claude Code on that computer needs Node.js 24 or newer. Each download makes a new workspace key. `./start.sh --no-build` starts again without rebuilding; `./start.sh --stop` stops Basalt and keeps your apps and data. The owner's dashboard is at the same link (`host_dashboard` gives Claude a fresh one, as does `docker exec basalt-control node dist/admin.js dashboard-link my-apps`).
 
+**Emails:** your apps' customers won't get any emails (sign up codes, password resets) until Basalt has an email key. That key is `RESEND_API_KEY`, an API key from [Resend](https://resend.com), the email service Basalt sends through. Put it in `hosting/deploy/.env` with `MAIL_FROM` set to an address on a domain you verified with Resend, then run `./start.sh --no-build`. Until then Claude reads the codes with `host_test_emails` and gives them to you. This applies to the one laptop setup below too.
+
 ## Run it on one laptop (demo)
 
 ```sh

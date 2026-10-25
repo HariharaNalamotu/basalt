@@ -44,6 +44,9 @@ export const CspPatch = z
 const RESERVED_VARS = /^(BASALT_|DATABASE_|REDIS_|NODE_|HTTPS?_PROXY$|NO_PROXY$|PORT$|HOME$|PATH$)/;
 export const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/;
 
+/** How long a deletion Claude asked for waits for the owner's Confirm. */
+export const DELETION_HOURS = 24;
+
 type PipelineLog = Array<{ at: string; stage: string; message: string }>;
 
 export class Host {
@@ -143,6 +146,32 @@ export class Host {
     }
     await this.ctx.db.query('DELETE FROM apps WHERE id = $1', [app.id]);
     await this.audit(ws, 'app.deleted', name);
+  }
+
+  // Deleting an app can't be undone, so Claude only asks; the owner confirms in their dashboard.
+  async requestAppDeletion(ws: string, name: string) {
+    const app = await this.app(ws, name);
+    await this.ctx.db.query('INSERT INTO pending_deletions (app_id, workspace_id) VALUES ($1, $2) ON CONFLICT (app_id) DO UPDATE SET requested_at = now()', [app.id, ws]);
+    await this.audit(ws, 'app.delete_requested', name);
+  }
+
+  async pendingDeletions(ws: string) {
+    const rows = (await this.ctx.db.query<{ name: string; requested_at: Date }>(`SELECT a.name, p.requested_at FROM pending_deletions p JOIN apps a ON a.id = p.app_id WHERE p.workspace_id = $1 AND a.workspace_id = $1 AND p.requested_at > now() - interval '${DELETION_HOURS} hours' ORDER BY p.requested_at`, [ws])).rows;
+    return rows.map((r) => ({ app: r.name, requestedAt: new Date(r.requested_at).toISOString(), message: `Delete ${r.name}? This removes every version and its data and can't be undone.` }));
+  }
+
+  /** Only the owner's Confirm gets here. Claims the request first, so it runs once. */
+  async confirmAppDeletion(ws: string, name: string) {
+    const app = await this.app(ws, name);
+    const claimed = await this.ctx.db.query(`DELETE FROM pending_deletions WHERE app_id = $1 AND workspace_id = $2 AND requested_at > now() - interval '${DELETION_HOURS} hours' RETURNING app_id`, [app.id, ws]);
+    if (!claimed.rowCount) throw new UserError(`Nothing is waiting to delete ${name}. If you still want it gone, ask Claude to delete it again.`, 404);
+    await this.deleteApp(ws, name);
+  }
+
+  async cancelAppDeletion(ws: string, name: string) {
+    const app = await this.app(ws, name);
+    await this.ctx.db.query('DELETE FROM pending_deletions WHERE app_id = $1 AND workspace_id = $2', [app.id, ws]);
+    await this.audit(ws, 'app.delete_cancelled', name);
   }
 
   // -------------------------------------------------------------------------- environments
