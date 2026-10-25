@@ -51,6 +51,7 @@ What Basalt doesn't solve, said plainly:
 - **Cloud:** a database per app, plain-English approval for anything that shows data to more people, the owner's data map, test logins through Basalt Auth and **Guard** (`basalt_check`). Guard scans the app folder for data kept outside Basalt, then signs in as two people and a stranger and tries to reach data that isn't theirs: 11 attacks for a one-table app, 6 more for each extra table and one more when the app stores files. Then it writes a safety receipt for the owner. 63 tests.
 - **Auth and hosting joined up:** Cloud apps use real Basalt Auth logins, and sessions Auth ends stop working in the database too. Every hosted environment gets its own Cloud data project, served at `/_basalt/data` on the app's own site. The app's rules live in `basalt.data.json` in its folder: deploys apply them to preview and staging before the app's tests run, and promoting to production stops with the owner's approval link until they tap "Yes". (`host_data_rules` sets them by hand.) After the tests on every deploy, Guard attacks the environment's live data, a failed check stops the deploy and production needs Guard to pass in staging. `host_data_check` runs it on demand and returns the owner's safety receipt.
 - **Owner dashboard:** the owner's apps, traffic, deploys and security events in one place, with a button to approve anything waiting, admins named on the data map and removable through the same approval flow, a working link to open test versions, owner-confirmed app deletes and sign out.
+- **Machine self-check:** at startup, every 15 seconds and before every deploy, Basalt checks what it expects the computer to have (its own services, network, data volume and the images builds run in). It fixes what it safely can, like downloading a missing build image or giving a service back its usual name, and otherwise stops the deploy with a plain message saying what's missing and how to fix it.
 - Reviewed with Codex and Claude in several rounds. What's fixed is in the pull request history; what's still open is under Known limits.
 
 ## Quick start
@@ -107,7 +108,7 @@ cd api && npm test
 
 ## Known limits
 
-- It has only run on one laptop, not yet on a real server with a domain and Cloudflare tunnel. On one laptop it passes both end-to-end scripts and a real-browser check.
+- It hasn't run on a real server with a domain and Cloudflare tunnel yet. In one laptop mode it runs on our laptops, and on every change CI starts it from scratch on a fresh machine and deploys an app through the MCP end to end.
 - The Windows start script hasn't been run on a real Windows machine.
 - Approval links go back to Claude so it can show them to the owner (see "Where Claude sits" above).
 - Password reset can reveal whether an account exists: after 5 wrong codes, a real account is told to wait while an unknown one keeps getting "wrong code". Changing a password or deleting an account doesn't ask for the second factor.
