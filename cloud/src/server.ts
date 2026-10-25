@@ -313,9 +313,12 @@ export function createCloudServer(options: CloudServerOptions) {
       } else if (typeof body.email === 'string' && /^[^\s@]{1,64}@[^\s@]{1,190}$/.test(body.email.trim())) {
         if (!p.authProjectId) throw new HttpError(409, 'This app was made before Basalt Auth was connected.');
         label = body.email.trim().toLowerCase();
-        const found = await options.auth.userIdByEmail(p.authProjectId, label, p.authOwner);
+        const found = await options.auth.userByEmail(p.authProjectId, label, p.authOwner);
         if (!found) throw new HttpError(404, `Nobody has signed up with ${label} yet. Ask them to sign up in the app first, then try again.`);
-        uid = found;
+        // Anyone can sign up with someone else's address; only a confirmed one proves it's theirs.
+        if (!found.emailVerified) throw new HttpError(409, `${label} hasn't been confirmed yet. Ask them to confirm it with the code Basalt emailed them, then try again.`);
+        if (found.disabled) throw new HttpError(409, `The account for ${label} is switched off, so it can't be made an admin.`);
+        uid = found.id;
       } else {
         throw new HttpError(400, 'Say who should be an admin: the email they signed up with (email), a test person\'s name (who) or a user id (userId).');
       }
@@ -371,6 +374,10 @@ export function createCloudServer(options: CloudServerOptions) {
     if (!approval) return sendHtml(res, 404, page('Link not found', '<h1>This link doesn\'t work</h1><p>It may be mistyped or expired. Ask Claude for a new one.</p>'));
     const p = (await projects.get(approval.projectId))!;
 
+    const gone = () => sendHtml(res, 410, page('Already decided', '<h1>This request was already decided</h1><p>Ask Claude for the latest link if you need one.</p>'));
+    if (approval.expired) {
+      return sendHtml(res, 410, page('Link expired', '<h1>This link has expired</h1><p>Approval links work for 7 days. Nothing changed. Ask Claude for a new one.</p>'));
+    }
     if (approval.status !== 'pending') {
       const word = { approved: 'already approved', rejected: 'already turned down', replaced: 'replaced by a newer request', pending: '' }[approval.status];
       return sendHtml(res, 410, page('Already decided', `<h1>This request was ${word}</h1><p>Ask Claude for the latest link if you need one.</p>`));
@@ -380,11 +387,16 @@ export function createCloudServer(options: CloudServerOptions) {
       const who = esc(approval.admin!.label);
       if (form) {
         if (form.get('decision') === 'approve') {
-          await projects.addAdmin(p, approval.admin!.uid);
-          await projects.decide(approval, 'approved');
+          if (!(await projects.decide(approval, 'approved'))) return gone();
+          try {
+            await projects.addAdmin(p, approval.admin!.uid);
+          } catch (err) {
+            await projects.reopen(approval);
+            throw err;
+          }
           return sendHtml(res, 200, page('Admin added', `<h1>Done. ${who} is now an admin of ${esc(p.name)}.</h1><p class="muted">You can close this page and go back to Claude.</p>`));
         }
-        await projects.decide(approval, 'rejected');
+        if (!(await projects.decide(approval, 'rejected'))) return gone();
         return sendHtml(res, 200, page('Not approved', '<h1>Nothing changed</h1><p>Nobody new can see everything. Tell Claude what you\'d like instead.</p>'));
       }
       return sendHtml(
@@ -404,16 +416,17 @@ export function createCloudServer(options: CloudServerOptions) {
     const contract = parseContract(approval.contract);
     if (form) {
       if (form.get('decision') === 'approve') {
+        if (!(await projects.decide(approval, 'approved'))) return gone();
         try {
           await projects.apply(p, approval.contract);
         } catch (err) {
+          await projects.reopen(approval);
           return sendHtml(res, 409, page('Not applied', `<h1>These rules couldn't be applied</h1><p>${esc((err as Error).message)}</p><p>Nothing changed. Tell Claude what this page says and it will fix it.</p>`));
         }
-        await projects.decide(approval, 'approved');
         await dropHandler(p.id);
         return sendHtml(res, 200, page('Rules are live', `<h1>Done. These rules are live for ${esc(p.name)}.</h1>${summaryHtml(contract)}<p class="muted">You can close this page and go back to Claude.</p>`));
       }
-      await projects.decide(approval, 'rejected');
+      if (!(await projects.decide(approval, 'rejected'))) return gone();
       return sendHtml(res, 200, page('Not approved', `<h1>Nothing changed</h1><p>Your app keeps its current rules. Tell Claude what you'd like instead.</p>`));
     }
 

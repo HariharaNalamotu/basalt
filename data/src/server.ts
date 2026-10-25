@@ -163,12 +163,20 @@ function fromSessionCookie(req: IncomingMessage): string {
     sameOrigin = false;
   }
   if (!sameOrigin) throw new BasaltError('denied', 'Cookie logins only work from the app\'s own site.');
-  let cookie: string | undefined;
+  const found: Record<string, string[]> = {};
   for (const part of raw.split(';')) {
     const i = part.indexOf('=');
     const name = part.slice(0, i).trim();
-    if (i > 0 && SESSION_COOKIES.includes(name)) cookie = part.slice(i + 1).trim();
+    if (i > 0 && SESSION_COOKIES.includes(name)) (found[name] ??= []).push(part.slice(i + 1).trim());
   }
+  // __Host-basalt_at can only be set by this exact site, so it always wins. The plain name is only
+  // used by plain-http setups; on https it can only have been planted by another site under the
+  // same parent domain. Two of the same name means one was planted: refuse rather than guess.
+  const secure = found['__Host-basalt_at'];
+  const plain = found['basalt_at'];
+  const pick = secure ?? (origin!.startsWith('http://') ? plain : undefined);
+  if (pick && pick.length > 1) throw new BasaltError('denied', DENIED);
+  const cookie = pick?.[0];
   const segments = cookie?.split('.');
   if (!segments || segments.length !== 3 || segments[1].length > 8000) throw new BasaltError('denied', DENIED);
   let claims: unknown;
@@ -227,7 +235,7 @@ export function createDataHandler(options: DataServerOptions): DataHandler {
         'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${file.name.replace(/[^A-Za-z0-9 ._-]/g, '_')}"`,
         'x-content-type-options': 'nosniff',
         'content-security-policy': "default-src 'none'; sandbox",
-        'cache-control': 'private, max-age=300',
+        'cache-control': 'private, no-store',
         ...CORS,
       });
       return void res.end(file.data);

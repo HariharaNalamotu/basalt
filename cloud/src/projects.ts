@@ -8,6 +8,8 @@ import { decrypt, encrypt, randomId, randomSecret, sameHash, sha256 } from './se
 // own three roles, so no key for one app opens another.
 
 const SQL_DIR = new URL('../../data/sql/', import.meta.url);
+// Approval links stop working after this many days. Claude can always ask for a fresh one.
+const APPROVAL_DAYS = 7;
 
 export interface CloudConfig {
   // Superuser connection to the postgres database.
@@ -41,6 +43,8 @@ export interface Approval {
   contract: unknown;
   admin?: { uid: string; label: string };
   status: 'pending' | 'approved' | 'rejected' | 'replaced';
+  // Still pending, but older than the link's lifetime.
+  expired: boolean;
 }
 
 function withDb(url: string, db: string): string {
@@ -422,6 +426,7 @@ export class Projects {
       contract: r.contract,
       admin: r.admin_uid ? { uid: r.admin_uid, label: r.admin_label } : undefined,
       status: r.status,
+      expired: r.status === 'pending' && Date.now() - new Date(r.created_at).getTime() > APPROVAL_DAYS * 86_400_000,
     };
   }
 
@@ -430,8 +435,21 @@ export class Projects {
     return r ? { id: r.id } : null;
   }
 
-  async decide(approval: Approval, status: 'approved' | 'rejected'): Promise<void> {
-    await this.#pool.query(`update cloud.approvals set status = $2, decided_at = now() where id = $1 and status = 'pending'`, [approval.id, status]);
+  /**
+   * Claims the decision before anything is applied, so two taps at the same moment can't both act.
+   * Returns false if it was already decided (or expired).
+   */
+  async decide(approval: Approval, status: 'approved' | 'rejected'): Promise<boolean> {
+    const r = await this.#pool.query(
+      `update cloud.approvals set status = $2, decided_at = now() where id = $1 and status = 'pending' and created_at > now() - make_interval(days => $3)`,
+      [approval.id, status, APPROVAL_DAYS],
+    );
+    return r.rowCount === 1;
+  }
+
+  /** Puts a claimed approval back when applying it failed, so the owner can try again. */
+  async reopen(approval: Approval): Promise<void> {
+    await this.#pool.query(`update cloud.approvals set status = 'pending', decided_at = null where id = $1 and status = 'approved'`, [approval.id]);
   }
 
   // Guard results, shown on the owner's safety receipt.

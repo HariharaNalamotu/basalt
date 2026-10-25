@@ -96,6 +96,8 @@ describe('uploading and downloading', () => {
     assert.equal(dl.headers.get('content-type'), 'image/png');
     assert.equal(dl.headers.get('x-content-type-options'), 'nosniff');
     assert.match(dl.headers.get('content-security-policy') ?? '', /sandbox/);
+    // Private files aren't kept in the browser's cache (a shared computer, a later visitor).
+    assert.equal(dl.headers.get('cache-control'), 'private, no-store');
   });
 
   test('a PDF works too and downloads as an attachment-safe file', async () => {

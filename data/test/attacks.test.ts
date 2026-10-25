@@ -922,6 +922,20 @@ describe('browser cookie logins on the app\'s own origin', () => {
     assert.equal((await list({ origin: 'https://app.test', cookie: '__Host-basalt_at=garbage' })).status, 401);
   });
 
+  test("a cookie another site planted on the parent domain can't stand in for the real one", async () => {
+    // Sibling apps under one parent domain can set a plain basalt_at for the whole domain (cookie
+    // tossing). Only plain-http setups ever use that name; __Host- can't be set by another site.
+    const planted = accessCookie(bobToken).replace('__Host-basalt_at=', 'basalt_at=');
+    const seesAlice = (r: { status: number; body: any }) => r.status === 200 && r.body.data.rows.some((row: { id: unknown }) => row.id === aliceBooking.id);
+    assert.ok(seesAlice(await list({ origin: 'https://app.test', cookie: `${planted}; ${accessCookie(aliceToken)}` })));
+    assert.ok(seesAlice(await list({ origin: 'https://app.test', cookie: `${accessCookie(aliceToken)}; ${planted}` })));
+    assert.equal((await list({ origin: 'https://app.test', cookie: planted })).status, 401);
+    assert.equal((await list({ origin: 'https://app.test', cookie: `${accessCookie(aliceToken)}; ${accessCookie(bobToken)}` })).status, 401);
+    // A plain-http development setup still works with the plain name, but not with two of them.
+    assert.equal((await list({ origin: 'http://app.test', cookie: accessCookie(aliceToken).replace('__Host-basalt_at=', 'basalt_at=') })).status, 200);
+    assert.equal((await list({ origin: 'http://app.test', cookie: `${planted}; ${accessCookie(aliceToken).replace('__Host-basalt_at=', 'basalt_at=')}` })).status, 401);
+  });
+
   test('an explicit Authorization header still takes precedence', async () => {
     const r = await list({ authorization: `Bearer ${bobToken}`, origin: 'https://evil.test', cookie: accessCookie(aliceToken) });
     assert.equal(r.status, 200);

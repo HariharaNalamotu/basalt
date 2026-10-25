@@ -305,6 +305,57 @@ describe('the owner as admin', () => {
     assert.match(nobody.body.error.message, /sign up in the app first/);
   });
 
+  test("an account that never confirmed its email, or was switched off, can't be made admin by email", async () => {
+    const app = await liveApp();
+    const p = (await projects.get(app.id))!;
+    const platform = (method: string, path: string, body: unknown) =>
+      fetch(`${authServer.url}/v1/platform/projects/${p.authProjectId}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${authServer.platformKey}`, 'x-basalt-owner': 'basalt-cloud', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    // Someone signs up with the owner's address on an app that doesn't ask for the email code.
+    assert.equal((await platform('PATCH', '', { settings: { requireEmailVerification: false } })).status, 200);
+    const su = await fetch(`${authServer.url}/v1/projects/${p.authProjectId}/signup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'real.owner@salon.example', password: `Pw-${randomUUID()}` }),
+    });
+    assert.ok(su.status < 300, String(su.status));
+    const unverified = await call('POST', '/api/projects/me/admins', { email: 'real.owner@salon.example' }, app.key);
+    assert.equal(unverified.status, 409, JSON.stringify(unverified.body));
+    assert.match(unverified.body.error.message, /confirm/);
+
+    const made = await platform('POST', '/users', { email: 'off@salon.example', password: `Pw-${randomUUID()}` });
+    const { user } = await made.json();
+    assert.equal((await platform('PATCH', `/users/${user.id}`, { disabled: true })).status, 200);
+    assert.equal((await call('POST', '/api/projects/me/admins', { email: 'off@salon.example' }, app.key)).status, 409);
+  });
+
+  test('a link decides once, even when tapped twice at the same moment, and stops working after a week', async () => {
+    const app = await liveApp();
+    const decide = (url: string, decision: string) => {
+      const u = new URL(url);
+      return fetch(`${base}${u.pathname}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ t: u.searchParams.get('t')!, decision }).toString() });
+    };
+    const req = await call('POST', '/api/projects/me/admins', { who: 'twice' }, app.key);
+    const both = await Promise.all([decide(req.body.approveUrl, 'approve'), decide(req.body.approveUrl, 'reject')]);
+    assert.deepEqual(both.map((r) => r.status).sort(), [200, 410]);
+
+    const old = await call('POST', '/api/projects/me/admins', { who: 'late' }, app.key);
+    const c = new pg.Client({ connectionString: process.env.CLOUD_ADMIN_URL });
+    await c.connect();
+    await c.query("update cloud.approvals set created_at = now() - interval '8 days' where id = $1", [new URL(old.body.approveUrl).pathname.split('/').pop()]);
+    await c.end();
+    const page = await fetch(old.body.approveUrl);
+    assert.equal(page.status, 410);
+    assert.match(await page.text(), /expired/);
+    assert.equal((await decide(old.body.approveUrl, 'approve')).status, 410);
+    const late = await login(app.key, 'late');
+    const theirs = await data(app.dataUrl, (await login(app.key, 'customer')).token, 'create', { table: 'bookings', input: { service: 'X', starts_at: '2026-10-25T15:00:00Z' } });
+    assert.equal((await data(app.dataUrl, late.token, 'get', { table: 'bookings', id: theirs.body.data.id })).status, 404);
+  });
+
   test('turning down an admin request changes nothing', async () => {
     const app = await liveApp();
     const req = await call('POST', '/api/projects/me/admins', { who: 'stranger' }, app.key);
