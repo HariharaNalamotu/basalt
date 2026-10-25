@@ -21,6 +21,14 @@ describe('the agent guide', () => {
     expect(data).toMatch(/first version/i);
   });
 
+  it('says a list returns at most 100 rows and gives a helper that pages through everything', () => {
+    // A real agent asked for { limit: 200 } on the owner's All bookings page, which the Data block refuses.
+    const data = hostGuide('data', 'apps.dev');
+    expect(data).toMatch(/limit 1 to 100/);
+    expect(data).toMatch(/listAll: async/);
+    expect(data).toMatch(/All bookings[\s\S]{0,200}listAll/);
+  });
+
   it('sends the agent to the data topic from the workflow', () => {
     expect(hostGuide('workflow', 'apps.dev')).toMatch(/topic "data"|\*\*data\*\* topic/);
   });
