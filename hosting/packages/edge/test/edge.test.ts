@@ -118,7 +118,7 @@ beforeAll(async () => {
     req.on('data', (d) => (bytes += d.length));
     req.on('end', () => {
       lastData = { url: req.url ?? '', method: req.method ?? '', headers: req.headers, bytes };
-      res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'sneaky=1; Path=/', 'content-security-policy': "default-src 'none'; sandbox" });
+      res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'sneaky=1; Path=/', 'content-security-policy': "default-src 'none'; sandbox", 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type' });
       res.end('{"ok":true,"data":{"rows":[]}}');
     });
   });
@@ -395,6 +395,10 @@ describe('/_basalt/data: the Data block on the app\'s own site', () => {
     expect(lastData!.headers.cookie).toBe('__Host-basalt_at=tok');
     expect(lastData!.headers['x-forwarded-host']).toBe('todo.example.com');
     expect(lastData!.headers.origin).toBe('https://todo.example.com');
+    // The app's page calls its data on its own site, so other sites get no cross-site allowance
+    // (OWASP ZAP flags Basalt Cloud's "*" as a cross-domain misconfiguration).
+    expect(r.headers.get('access-control-allow-origin')).toBeNull();
+    expect(r.headers.get('access-control-allow-headers')).toBeNull();
   });
 
   it('passes uploads, file links and downloads, and keeps the download safety headers', async () => {

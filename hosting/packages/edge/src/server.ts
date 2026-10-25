@@ -19,6 +19,8 @@ const STRIP_REQUEST = [
   'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'host',
 ];
 const STRIP_RESPONSE = ['connection', 'keep-alive', 'transfer-encoding', 'server', 'x-powered-by'];
+// Basalt's own routes on an app's site are same-site only: its page never needs a cross-site allowance.
+const CROSS_SITE = ['access-control-allow-origin', 'access-control-allow-credentials', 'access-control-allow-methods', 'access-control-allow-headers', 'access-control-expose-headers', 'access-control-max-age'];
 // The only Data block routes a browser may reach through /_basalt/data.
 const DATA_POST = /^\/v1\/(data\/(get|list|create|update|archive|restore)|files|files\/link)$/;
 const DATA_GET = /^\/v1\/files\/download\/[0-9a-f]{64}$/;
@@ -342,7 +344,7 @@ export function createEdgeHandler(o: EdgeOptions) {
       }
       const headers = upstreamHeaders(req, ip, requestId, route.host);
       const limit = rest === '/v1/files' ? DATA_MAX_UPLOAD : DATA_MAX_BODY;
-      const r = await proxy(req, res, `${route.dataUrl!.replace(/\/+$/, '')}${rest}`, headers, limit, securityHeaders(route, false), ['set-cookie']);
+      const r = await proxy(req, res, `${route.dataUrl!.replace(/\/+$/, '')}${rest}`, headers, limit, securityHeaders(route, false), ['set-cookie', ...CROSS_SITE]);
       if (r === -413) {
         send(res, 413, errorJson('payload_too_large', 'Request body too large.', requestId));
         return 413;
