@@ -389,9 +389,20 @@ describe('/_basalt/data: the Data block on the app\'s own site', () => {
   });
 
   it('caps data calls at 256 KB and uploads at 6 MB', async () => {
-    expect((await post('/_basalt/data/v1/data/create', 'x'.repeat(300 * 1024))).status).toBe(413);
+    // The edge answers 413 and closes the connection, so a client still sending may only see the
+    // connection cut. Either way the request must never reach the Data service.
+    const tooBig = async (p: string, size: number, headers: Record<string, string> = {}) => {
+      lastData = undefined;
+      const status = await post(p, 'x'.repeat(size), headers).then((r) => r.status, (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return 'closed';
+        throw err;
+      });
+      expect([413, 'closed']).toContain(status);
+      expect(lastData).toBeUndefined();
+    };
+    await tooBig('/_basalt/data/v1/data/create', 300 * 1024);
     expect((await post('/_basalt/data/v1/files', 'x'.repeat(5 * 1024 * 1024), { 'content-type': 'text/plain' })).status).toBe(200);
-    expect((await post('/_basalt/data/v1/files', 'x'.repeat(7 * 1024 * 1024), { 'content-type': 'text/plain' })).status).toBe(413);
+    await tooBig('/_basalt/data/v1/files', 7 * 1024 * 1024, { 'content-type': 'text/plain' });
   });
 
   it('is not found for environments without a Data project', async () => {
