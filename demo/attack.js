@@ -120,7 +120,18 @@
     const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
     const label = (r) => (r.pass ? r.badge || 'REFUSED' : r.pass === null ? "CAN'T TELL" : r.badge ? 'BROKEN' : 'LEAKED');
     const svg = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
-    el.innerHTML = `<style>${STAGE_CSS}</style>
+    // Basalt apps' CSP blocks inline <style> blocks, so the panel's styles go in as a constructed
+    // stylesheet, which the CSP allows. Older browsers without one fall back to a <style> block.
+    let styleTag = '';
+    if (typeof CSSStyleSheet === 'function' && 'adoptedStyleSheets' in document) {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(STAGE_CSS);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets.filter((s) => s !== window.__basaltAttackSheet), sheet];
+      window.__basaltAttackSheet = sheet;
+    } else {
+      styleTag = `<style>${STAGE_CSS}</style>`;
+    }
+    el.innerHTML = `${styleTag}
       <div class="inner">
         <div class="head">
           <div><div class="brand"><svg class="mark" viewBox="0 0 64 64" aria-hidden="true" style="fill:none;stroke:none"><polygon points="12,14 24,6 40,6 52,14 52,50 40,58 24,58 12,50" fill="#7D8996"/><polygon points="12,14 24,6 40,6 52,14 40,22 24,22" fill="#E3E6EA"/><polygon points="12,14 24,22 24,58 12,50" fill="#E3E6EA"/></svg>Basalt</div>
