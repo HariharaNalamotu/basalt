@@ -39,16 +39,31 @@
   }
 
   // A copy of one of B's own entries that the rules will accept, at a fresh time so it can't
-  // clash with a real booking.
-  function copyOf(row) {
+  // clash with a real booking. If the app has a unique rule (one person per class spot), a plain
+  // copy still clashes, so later tries also tag plain text (tries >= 1) and move whole numbers
+  // (tries >= 2). Emails and phone numbers stay as they are, so they still pass their format.
+  function copyOf(row, tries = 0) {
     const input = {};
+    const tag = Math.random().toString(36).slice(2, 6);
     for (const [k, v] of Object.entries(row)) {
       if (SYSTEM.includes(k) || v === null) continue;
+      const plainText = typeof v === 'string' && !/@/.test(v) && !/^\+?[\d\s().-]{7,}$/.test(v);
       input[k] = typeof v === 'string' && /^\d{4}-\d\d-\d\dT/.test(v)
         ? new Date(Date.UTC(2099, 0, 1) + Math.floor(Math.random() * 5e5) * 60000).toISOString()
-        : v;
+        : tries >= 1 && plainText ? `${v}-t${tag}`
+          : tries >= 2 && Number.isInteger(v) ? (v > 1 ? v - 1 : v + 1)
+            : v;
     }
     return input;
+  }
+  // Saves a copy of B's entry (plus anything in extra), trying fresh values while it clashes.
+  async function saveCopy(table, row, extra = {}) {
+    let r;
+    for (let tries = 0; tries < 3; tries++) {
+      r = await data('create', { table, input: { ...copyOf(row, tries), ...extra } });
+      if (r.status !== 409) return r;
+    }
+    return r;
   }
 
   // The stage panel from the Basalt design system (design/README.md, "Stage demo panel"): black and
@@ -165,7 +180,7 @@
     const template = first.rows.find((r) => r.owner_id !== targetOwner);
     if (!template) return console.log(`%cBook something as this customer first (and make sure it isn't customer A's login).`, 'font-size:16px');
     // Who B really is, from a throwaway test entry B saves now (far in the future, archived at the end).
-    const probe = await data('create', { table, input: copyOf(template) });
+    const probe = await saveCopy(table, template);
     if (!probe.ok) return console.log(`%cCouldn't save a test entry to start (Basalt said${said(probe)}).`, 'font-size:16px');
     const me = probe.data.owner_id;
     if (me === targetOwner) {
@@ -207,7 +222,7 @@
 
     // 6. Save an entry in A's name.
     if (targetOwner) {
-      const fake = await data('create', { table, input: { ...copyOf(template), owner_id: targetOwner } });
+      const fake = await saveCopy(table, template, { owner_id: targetOwner });
       if (fake.ok && fake.data.id) await data('archive', { table, id: fake.data.id });
       const faked = fake.ok && fake.data.owner_id !== me;
       add("Book in customer A's name", faked ? false : fake.ok ? true : verdict(fake, ['invalid_input'], 400),

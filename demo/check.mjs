@@ -30,6 +30,20 @@ const scenarios = {
     if (url.endsWith('/archive')) return b.id === 'probe' ? ok({}) : no(404, 'not_found');
     return no(404, 'not_found');
   },
+  // An app with a unique rule (one person per class spot): a copy of B's own entry clashes.
+  uniqueSpot: (url, b) => {
+    const S = { id: 's-row', owner_id: 'B', class_key: 'yoga-0700', spot: 1, member_email: 'b@example.com', starts_at: '2026-10-28T10:00:00Z' };
+    if (url.endsWith('/list')) return b.table === 'pg_authid' ? no(400, 'invalid_input') : b.where ? ok({ rows: [], next: null }) : ok({ rows: [S], next: null });
+    if (url.endsWith('/create')) {
+      if ('owner_id' in b.input) return no(400, 'invalid_input');
+      if (b.input.class_key === S.class_key && b.input.spot === S.spot) return no(409, 'conflict');
+      if (!/^[^@\s]+@[^@\s]+$/.test(b.input.member_email)) return no(400, 'invalid_input');
+      return ok({ ...b.input, id: 'probe', owner_id: 'B' });
+    }
+    if (url.endsWith('/get')) return b.id === 'probe' ? ok({ id: 'probe', owner_id: 'B' }) : no(404, 'not_found');
+    if (url.endsWith('/archive') && b.id === 'probe') return ok({});
+    return no(404, 'not_found');
+  },
   leakOnPageTwo: (url, b) => {
     if (url.endsWith('/list')) return b.table === 'pg_authid' ? no(400, 'invalid_input') : b.after ? ok({ rows: [C], next: null }) : ok({ rows: [B], next: 'p2' });
     if (url.endsWith('/create')) return 'owner_id' in b.input ? no(400, 'invalid_input') : ok({ ...b.input, id: 'probe', owner_id: 'B' });
