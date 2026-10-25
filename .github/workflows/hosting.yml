@@ -55,3 +55,41 @@ jobs:
           docker compose config -q
           docker compose -f docker-compose.yml -f docker-compose.local.yml config -q
           bash -n setup.sh
+
+  # Starts Basalt on a machine with nothing on it, the way a new person would, then deploys an
+  # app through the MCP. Catches anything Basalt assumes a machine already has (an image, a
+  # container name, a network) that only happened to exist on our laptops.
+  clean-machine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            auth/package-lock.json
+            api/package-lock.json
+            hosting/package-lock.json
+      # The e2e script drives the MCP server from the repo, which needs the toolkits built.
+      - run: npm ci && npm run build
+        working-directory: auth
+      - run: npm ci && npm run build
+        working-directory: api
+      - run: npm ci && npm run build
+        working-directory: hosting
+      - name: Start Basalt from scratch
+        working-directory: hosting/deploy
+        run: BASALT_FROM_START=1 ./setup.sh basalt.localhost --local
+      - name: Forget the build image, like a machine that never kept it
+        run: docker image rm node:24-alpine || true
+      - name: Deploy an app through the MCP (build, preview, staging, production, rollback)
+        run: |
+          token=$(docker exec basalt-control node dist/admin.js create-workspace ci | grep -o '"BASALT_HOST_TOKEN": "[^"]*"' | head -1 | cut -d'"' -f4)
+          test -n "$token"
+          BASALT_HOST_TOKEN=$token node hosting/scripts/e2e-platform.mjs
+      - name: Service logs
+        if: failure()
+        working-directory: hosting/deploy
+        run: docker compose -f docker-compose.yml -f docker-compose.local.yml logs --tail 200 control cloud edge

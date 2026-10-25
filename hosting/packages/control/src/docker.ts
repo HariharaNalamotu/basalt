@@ -78,6 +78,10 @@ export class Docker {
     return { exitCode: info.ExitCode, output };
   }
 
+  rename(id: string, name: string) {
+    return this.call('POST', `/containers/${id}/rename?name=${encodeURIComponent(name)}`, undefined, { ok: [204] });
+  }
+
   // networks
   createNetwork(name: string, spec: Record<string, unknown>) {
     return this.call('POST', '/networks/create', { Name: name, ...spec }) as Promise<{ Id: string }>;
@@ -97,6 +101,13 @@ export class Docker {
   }
   inspectNetwork(name: string) {
     return this.call('GET', `/networks/${name}`) as Promise<any>;
+  }
+
+  async networkExists(name: string) {
+    return this.call('GET', `/networks/${encodeURIComponent(name)}`, undefined, { ok: [200, 404] }).then((r) => Boolean((r as { Id?: string }).Id));
+  }
+  async volumeExists(name: string) {
+    return this.call('GET', `/volumes/${encodeURIComponent(name)}`, undefined, { ok: [200, 404] }).then((r) => Boolean((r as { Name?: string }).Name));
   }
 
   // images
