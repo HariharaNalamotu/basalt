@@ -379,7 +379,7 @@ try {
   failed = true;
   console.error('FAIL:', err.message);
 } finally {
-  if (failed) await deleteApp(APP).catch(() => {});
+  if (failed) await deleteApp(APP).catch((err) => console.log(`WARNING: couldn't delete test app ${APP} (${err.message}). Delete it from the dashboard.`));
   await mcp.close().catch(() => {});
   rmSync(appDir, { recursive: true, force: true });
   if (failed) process.exitCode = 1;

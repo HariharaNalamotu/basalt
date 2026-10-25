@@ -1,85 +1,130 @@
+/* Basalt black and silver, from design/basalt.css. Light is the fallback; dark is the brand. */
 :root {
   color-scheme: light;
-  --bg: #f4f3f0;
-  --surface: #fcfcfb;
-  --surface-2: #f0efeb;
-  --line: #e4e2dc;
-  --grid: #ebe9e4;
-  --ink: #0b0b0b;
-  --ink-2: #52514e;
-  --ink-3: #807e78;
-  --accent: #2a78d6;
-  --accent-ink: #ffffff;
-  --series-1: #2a78d6;
-  --series-2: #eb6834;
-  --series-3: #1baf7a;
-  --good: #0ca30c;
-  --good-ink: #006300;
-  --good-bg: #e7f5e7;
-  --warning: #fab219;
-  --warning-ink: #7a5200;
-  --warning-bg: #fff4dc;
-  --serious: #ec835a;
-  --serious-ink: #8a3a17;
-  --serious-bg: #fdece4;
-  --critical: #d03b3b;
-  --critical-ink: #a32424;
-  --critical-bg: #fbe8e8;
-  --neutral-bg: #eceae5;
-  --shadow: 0 1px 2px rgba(20, 20, 18, .05), 0 4px 16px rgba(20, 20, 18, .04);
-  --radius: 14px;
+  --bg: #F3F5F7;
+  --surface: #FFFFFF;
+  --surface-2: #EAEEF2;
+  --line: #CAD1D9;
+  --grid: #DEE4EA;
+  --ink: #171B20;
+  --ink-2: #39424D;
+  --ink-3: #505C69;
+  --mark-body: #15181C;
+  --mark-face: #C6CCD3;
+  --silver: #15181C;
+  --silver-hover: #39424D;
+  --silver-ink: #F2F4F6;
+  --accent: #39424D;
+  --accent-ink: #F2F4F6;
+  --series-1: #505C69;
+  --series-2: #725014;
+  --series-3: #285E46;
+  --good: #285E46;
+  --good-ink: #285E46;
+  --good-bg: #E7F1EB;
+  --warning: #725014;
+  --warning-ink: #725014;
+  --warning-bg: #F8EEDB;
+  --serious: #725014;
+  --serious-ink: #725014;
+  --serious-bg: #F8EEDB;
+  --critical: #8A3543;
+  --critical-ink: #8A3543;
+  --critical-bg: #F8E8EB;
+  --neutral-bg: #EAEEF2;
+  --on-status: #FFFFFF;
+  --shadow: 0 1px 2px #15202B0D;
+  --glass: linear-gradient(180deg, #FFFFFFD9 0%, #FFFFFFB3 100%);
+  --glass-edge: #15181C1F;
+  --glass-highlight: #FFFFFF;
+  --glass-shadow: 0 12px 32px #15202B12;
+  --backdrop: radial-gradient(120% 70% at 50% -10%, #FFFFFF 0%, #E9EDF1 60%);
+  --radius: 12px;
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #121211;
-    --surface: #1a1a19;
-    --surface-2: #232321;
-    --line: #2e2e2b;
-    --grid: #2a2a27;
-    --ink: #f0efec;
-    --ink-2: #c3c2b7;
-    --ink-3: #8f8e86;
-    --accent: #3987e5;
-    --series-1: #3987e5;
-    --series-2: #d95926;
-    --series-3: #199e70;
-    --good-ink: #6fd46f;
-    --good-bg: #13291a;
-    --warning-ink: #fac75a;
-    --warning-bg: #2d2412;
-    --serious-ink: #f2a584;
-    --serious-bg: #2e1c14;
-    --critical-ink: #f08a8a;
-    --critical-bg: #321617;
-    --neutral-bg: #2a2a27;
+    --bg: #0C0E11;
+    --surface: #13161A;
+    --surface-2: #1B1F24;
+    --line: #2A3038;
+    --grid: #1F242A;
+    --ink: #F2F4F6;
+    --ink-2: #C0C6CE;
+    --ink-3: #969FA9;
+    --mark-body: #7D8996;
+    --mark-face: #E3E6EA;
+    --silver: #CCD2D9;
+    --silver-hover: #E3E6EA;
+    --silver-ink: #15181C;
+    --accent: #CCD2D9;
+    --accent-ink: #15181C;
+    --series-1: #CCD2D9;
+    --series-2: #E1C38C;
+    --series-3: #A9CEBC;
+    --good: #A9CEBC;
+    --good-ink: #A9CEBC;
+    --good-bg: #182B24;
+    --warning: #E1C38C;
+    --warning-ink: #E1C38C;
+    --warning-bg: #30281A;
+    --serious: #E1C38C;
+    --serious-ink: #E1C38C;
+    --serious-bg: #30281A;
+    --critical: #E4ADB3;
+    --critical-ink: #E4ADB3;
+    --critical-bg: #321F25;
+    --neutral-bg: #1B1F24;
+    --on-status: #15181C;
     --shadow: none;
+    --glass: linear-gradient(180deg, #FFFFFF0D 0%, #FFFFFF05 100%);
+    --glass-edge: #FFFFFF24;
+    --glass-highlight: #FFFFFF1A;
+    --glass-shadow: 0 24px 60px #00000073;
+    --backdrop: radial-gradient(120% 70% at 50% -10%, #1C2128 0%, #0C0E11 60%);
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #121211;
-  --surface: #1a1a19;
-  --surface-2: #232321;
-  --line: #2e2e2b;
-  --grid: #2a2a27;
-  --ink: #f0efec;
-  --ink-2: #c3c2b7;
-  --ink-3: #8f8e86;
-  --accent: #3987e5;
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --series-3: #199e70;
-  --good-ink: #6fd46f;
-  --good-bg: #13291a;
-  --warning-ink: #fac75a;
-  --warning-bg: #2d2412;
-  --serious-ink: #f2a584;
-  --serious-bg: #2e1c14;
-  --critical-ink: #f08a8a;
-  --critical-bg: #321617;
-  --neutral-bg: #2a2a27;
+  --bg: #0C0E11;
+  --surface: #13161A;
+  --surface-2: #1B1F24;
+  --line: #2A3038;
+  --grid: #1F242A;
+  --ink: #F2F4F6;
+  --ink-2: #C0C6CE;
+  --ink-3: #969FA9;
+  --mark-body: #7D8996;
+  --mark-face: #E3E6EA;
+  --silver: #CCD2D9;
+  --silver-hover: #E3E6EA;
+  --silver-ink: #15181C;
+  --accent: #CCD2D9;
+  --accent-ink: #15181C;
+  --series-1: #CCD2D9;
+  --series-2: #E1C38C;
+  --series-3: #A9CEBC;
+  --good: #A9CEBC;
+  --good-ink: #A9CEBC;
+  --good-bg: #182B24;
+  --warning: #E1C38C;
+  --warning-ink: #E1C38C;
+  --warning-bg: #30281A;
+  --serious: #E1C38C;
+  --serious-ink: #E1C38C;
+  --serious-bg: #30281A;
+  --critical: #E4ADB3;
+  --critical-ink: #E4ADB3;
+  --critical-bg: #321F25;
+  --neutral-bg: #1B1F24;
+  --on-status: #15181C;
   --shadow: none;
+  --glass: linear-gradient(180deg, #FFFFFF0D 0%, #FFFFFF05 100%);
+  --glass-edge: #FFFFFF24;
+  --glass-highlight: #FFFFFF1A;
+  --glass-shadow: 0 24px 60px #00000073;
+  --backdrop: radial-gradient(120% 70% at 50% -10%, #1C2128 0%, #0C0E11 60%);
 }
 
 * { box-sizing: border-box; }
@@ -100,8 +145,9 @@ svg.icon { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: no
 .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
 .nav { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 8px; padding: 20px 14px; border-right: 1px solid var(--line); background: var(--surface); }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: -.01em; padding: 4px 10px 16px; }
-.brand-mark { width: 26px; height: 26px; border-radius: 8px; background: linear-gradient(135deg, #3a3a38, #0b0b0b); box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); position: relative; }
-.brand-mark::after { content: ""; position: absolute; inset: 7px 6px 6px; border-radius: 3px; background: linear-gradient(180deg, #8f8e86, #52514e); clip-path: polygon(50% 0, 100% 40%, 80% 100%, 20% 100%, 0 40%); }
+.brand-mark { width: 26px; height: 26px; flex: none; display: block; }
+.brand-mark .body { fill: var(--mark-body); }
+.brand-mark .face { fill: var(--mark-face); }
 #nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; border: 0; background: none; cursor: pointer; text-align: left; color: var(--ink-2); font-weight: 500; }
 .nav-item:hover { background: var(--surface-2); color: var(--ink); }
@@ -314,6 +360,27 @@ pre.log { margin: 8px 0 0; padding: 12px; border-radius: 10px; background: var(-
 .tip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .toast { position: fixed; z-index: 60; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 12px 18px; border-radius: 12px; background: var(--ink); color: var(--surface); font-weight: 550; box-shadow: 0 10px 30px rgba(0,0,0,.25); max-width: calc(100vw - 32px); }
 .toast.bad { background: var(--critical); color: #fff; }
+
+/* ---------------------------------------------------------------- Basalt finish: glass, silver, serif */
+body { background: var(--backdrop) fixed, var(--bg); }
+.nav { background: var(--glass); border-right-color: var(--glass-edge); -webkit-backdrop-filter: blur(14px) saturate(115%); backdrop-filter: blur(14px) saturate(115%); }
+.brand span:last-child { font-family: var(--font-display); font-weight: 500; font-size: 15px; letter-spacing: .22em; text-transform: uppercase; color: var(--silver); }
+.top { background: none; -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.page-head h1 { font-family: var(--font-display); font-weight: 500; letter-spacing: -.005em; }
+.card, .app-card { background: var(--glass); border-color: var(--glass-edge); box-shadow: inset 0 1px 0 var(--glass-highlight), var(--glass-shadow); }
+.verdict { border-color: var(--glass-edge); box-shadow: inset 0 1px 0 var(--glass-highlight); }
+.verdict.neutral { background: var(--glass); }
+.verdict.good .v-icon, .verdict.warning .v-icon, .verdict.critical .v-icon, .btn.good, .btn.danger, .toast.bad, .nav-item .badge { color: var(--on-status); }
+.nav-item[aria-current="page"] { background: var(--surface-2); color: var(--ink); box-shadow: inset 2px 0 0 var(--silver); }
+.nav-item[aria-current="page"] .badge.soft { background: var(--neutral-bg); }
+.btn, .visit { background: var(--silver); border-color: var(--silver); color: var(--silver-ink); }
+.btn:hover, .visit:hover { background: var(--silver-hover); border-color: var(--silver-hover); }
+.btn.secondary { background: var(--glass); border-color: var(--glass-edge); color: var(--ink); }
+.env-pill[aria-selected="true"], .seg button[aria-pressed="true"] { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--glass-edge); }
+.app-card[aria-pressed="true"] { border-color: var(--silver); box-shadow: 0 0 0 1px var(--silver); }
+.live.on .dot { animation: none; box-shadow: 0 0 0 3px var(--good-bg); }
+.tip, .toast { background: var(--surface-2); color: var(--ink); border: 1px solid var(--glass-edge); }
+.menu { background: var(--surface); border-color: var(--glass-edge); }
 
 /* ---------------------------------------------------------------- small screens */
 @media (max-width: 1100px) {
