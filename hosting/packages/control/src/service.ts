@@ -163,9 +163,15 @@ export class Host {
   /** Only the owner's Confirm gets here. Claims the request first, so it runs once. */
   async confirmAppDeletion(ws: string, name: string) {
     const app = await this.app(ws, name);
-    const claimed = await this.ctx.db.query(`DELETE FROM pending_deletions WHERE app_id = $1 AND workspace_id = $2 AND requested_at > now() - interval '${DELETION_HOURS} hours' RETURNING app_id`, [app.id, ws]);
+    const claimed = await this.ctx.db.query<{ requested_at: Date }>(`DELETE FROM pending_deletions WHERE app_id = $1 AND workspace_id = $2 AND requested_at > now() - interval '${DELETION_HOURS} hours' RETURNING requested_at`, [app.id, ws]);
     if (!claimed.rowCount) throw new UserError(`Nothing is waiting to delete ${name}. If you still want it gone, ask Claude to delete it again.`, 404);
-    await this.deleteApp(ws, name);
+    try {
+      await this.deleteApp(ws, name);
+    } catch (err) {
+      // Put the owner's request back, so tapping Confirm again finishes the job.
+      await this.ctx.db.query('INSERT INTO pending_deletions (app_id, workspace_id, requested_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [app.id, ws, claimed.rows[0]!.requested_at]).catch(() => {});
+      throw err;
+    }
   }
 
   async cancelAppDeletion(ws: string, name: string) {
