@@ -104,7 +104,8 @@ This document records everything built in this repository up to 2026-10-24, how 
 | # | Commit | Author | What landed | Size |
 |---|---|---|---|---|
 | 26 | `569a411` | Hari | Hosting e2e covers the hosted Data block path; lockfile sync | |
-| 27 | this pass | Hari | **Deployment readiness** (§11). <ul><li>one MCP connector covering data (`host_data_status`, `host_data_admin`, `host_data_check`, the `data` guide)</li><li>a correct connector setup printout</li><li>a working local demo origin</li><li>registry tarball URLs fixed</li><li>demo-mode test browsers and browser tools fixed</li><li>a Cloud crash on app deletion fixed</li><li>health-gated startup</li><li>CI for hosting, Data and Cloud</li><li>this document</li></ul> | 33 files, +527/−85, plus new files |
+| 27 | `bea69d5`, `77e8413` (PR #4) | Hari | **Deployment readiness** (§11). <ul><li>one MCP connector covering data (`host_data_status`, `host_data_admin`, `host_data_check`, the `data` guide)</li><li>a correct connector setup printout</li><li>a working local demo origin</li><li>registry tarball URLs fixed</li><li>demo-mode test browsers and browser tools fixed</li><li>a Cloud crash on app deletion fixed</li><li>health-gated startup</li><li>CI for hosting, Data and Cloud</li><li>this document</li></ul> | 33 files, +527/−85, plus new files |
+| 28 | PR #3 → PR #5 | Mihir, merged by Hari | **Rules as code, Guard as a deploy gate, unique fields** (§11b). Mihir's PR #3 merged onto main with its conflicts and bugs fixed | |
 
 ### Earlier issues found and fixed (before this pass)
 
@@ -876,7 +877,67 @@ Each bug was fixed and has a test.
 
 ---
 
-## 12. Known limitations and open items
+## 11b. Rules as code, Guard as a deploy gate, unique fields (PR #3 → PR #5)
+
+Mihir's PR #3 branched before PR #4 merged. It conflicted with main in 12 files. PR #5 merges it onto main (his commits are kept), keeps his features, takes main's version wherever both solved the same problem, and fixes the bugs the merge exposed.
+
+### Kept from PR #3
+
+- **`basalt.data.json` (rules as code).**
+  - The build reads the app's data rules (up to 256 KB of JSON).
+  - Every preview and staging deploy applies them before the release and its tests. If Cloud refuses them, the deploy fails with Cloud's reason.
+  - Shipping or promoting to production applies them first. When they need the owner's approval, it stops with the approval link and releases nothing. After the owner says yes, promoting again goes live.
+- **Guard as a deploy gate.**
+  - For apps with `basalt.data.json`, Guard runs after the e2e tests on every preview and staging deploy. It is recorded as a `guard` test run.
+  - Any check that gets through fails the deploy.
+  - Promoting to production requires a passed Guard run in staging.
+- **`unique` in the Data block.**
+  - Up to 5 groups of 1 to 3 required fields per table, enforced by partial unique indexes over active rows only. Archiving frees the value.
+  - A clash returns `conflict` (HTTP 409), naming the fields but never whose row holds them.
+  - It can only be set when a table is created; migrations refuse to change it.
+  - Guard generates fresh values for unique fields.
+  - Owner pages describe it in plain words.
+  - Tests: 5 in `data/test/unique.test.ts`, plus one for the summary text.
+- **Production sign-up emails readable in demo mode.** Production email is readable by the agent only on the one-laptop demo (`PUBLIC_SCHEME=http`) with no email provider configured. Otherwise a demo sign-up could never be finished. Real deployments keep production email private.
+- **`host_init` serves a plain `public/` site as is** when there is no build script.
+- **The workflow guide tells agents not to run `npm install` on the human's computer.**
+- **`setup.sh` downloads the 3.5 GB test-browser image in parallel** with the build.
+- **The Data service compares the cookie origin by hostname.** Compatible with main's port-aware edge, and covered by a test.
+- **`hosting/scripts/e2e-salon.mjs`:**
+  - a salon app with no backend that signs in with Basalt Auth and books through `/_basalt/data`
+  - two customers kept apart on preview and on production
+  - the owner approving production rules
+  - real sign-ups verifying their emails
+
+### Superseded by main (dropped)
+
+- `LOCAL_HTTP_PORT`, `appUrl()` and `appOrigins()`: main's `PUBLIC_SCHEME` and `PUBLIC_PORT` (`cfg.appUrl()`) already cover links, Auth origins and the edge.
+- Auth `*.localhost` origins: identical in main.
+- `BASALT_HOST_RULES` in the e2e runner: main already maps the host. The automatic merge produced two `launchOptions` keys in the generated Playwright config, which is invalid; main's copy is the one kept.
+- `EGRESS_PROXY: ""` for the browser worker in demo mode: dropped. It would have let pages opened by the agent's browser tools reach internal services directly. Main fixes the same Chrome problem with the proxy still on, and that was verified.
+
+### Fixed while merging
+
+1. **Hidden type clash.** `data-link.ts` merged "cleanly" with two different `GuardResult` interfaces and two Guard calls (`runGuard`, `runDataCheck`). Now there is one `runDataCheck`, returning both `results` and `failures`.
+2. **Duplicate `host_data_check` tool and `Host.dataCheck`.** Registering a tool twice would fail the MCP server at startup. There is now one tool and one method. It has main's local folder scan and PR #3's refusal to run on production, where Guard's test people and rows don't belong among real customers. It records a `guard` test run, so on-demand checks count toward the production gate.
+3. **Broken file links in the data guide.** `fileUrl` called `/_basalt/data/v1/data/files/link`, which the edge 404s; the real route is `/v1/files/link`. A new test checks every Data path in the guide against the edge's allow-list.
+4. **Privacy warning.** A `conflict` tells whoever tried that a value is taken. The guide now says not to make personal details (email, phone, name) unique. Unique is for slots, seats and order numbers.
+5. **Data guide merged.** Mihir's fuller guide is kept. It now also covers `host_data_status`, `host_data_admin`, `host_data_rules` and the local scan in `host_data_check`.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Auth tests | 116 |
+| Data tests | 110 (5 new uniqueness tests, 1 new port test) |
+| Cloud tests | 52 |
+| Hosting tests | 62 |
+| Hosting typecheck | clean |
+| Platform e2e (`e2e-platform.mjs`) on the rebuilt demo stack | 47/47 in 149 s |
+| Salon e2e (`e2e-salon.mjs`) | 25/25 |
+| Leftovers after both runs | none |
+
+
 
 ### Deployment
 
@@ -914,6 +975,43 @@ These come from Appendix B §7 and are still open:
 ### Product
 
 The demo story is plain vibe-coded apps versus Basalt apps. A first test found that plain builds got basic per-customer checks right. The pitch is that nothing guarantees that, and later edits can quietly break it, while Basalt's rules sit below the code.
+
+---
+
+## 11c. The owner's dashboard, the IP allowlist, and the one-command start (2026-10-24)
+
+Goal: a graphical, non-technical dashboard for the owner of apps hosted on Basalt — analytics, logs, incidents, deployments and security — plus a way to always-allow the owner's own address so a security test (an attack harness run from the same computer) isn't blocked, and a single command that starts everything and hands the coding agent its connector file.
+
+### The IP allowlist (edge)
+
+- **`AppRoute.allowIps`** (`hosting/packages/shared/src/routes.ts`): client IP buckets the app's workspace always lets through. The route table fills it per workspace from a new `allowlist` table (`003_allowlist.sql`, `workspace_id + ip`), so one owner's allowlist only covers that owner's apps.
+- **Edge pipeline (`edge/src/server.ts`)**: the route is looked up first, and an allowlisted client skips the ban check, the per-IP concurrency cap, both rate-limit buckets and every shield penalty. The WAF still inspects and **refuses each malicious request** (`attack_signature` → 403, `scanner_path` → 404), and every refusal is still recorded — the protection stays real and visible, it just never adds up to a ban for that address. Verified: an allowlisted IP sent 16 attack probes in a row, each refused, `bans` stayed empty, and it still loaded the site (200).
+- **Ban provenance (`edge/src/shield.ts`)**: a ban now records when it started, why (the last-straw reason) and on which host, so the dashboard can explain each block in plain words.
+- **Edge analytics (`edge/src/metrics.ts`)**: 24 h of per-minute traffic, unique visitors per hour, top pages and features (ids collapsed, e.g. `/api/todos/:id`), devices, browsers, referrers, a recent-visit log (query strings dropped — they can hold tokens) and a bounded security-event feed. New admin endpoints `GET /detail?host=` and `GET /security?hosts=` next to the existing `/metrics` and `/bans`.
+
+### The dashboard (control)
+
+- **`control/src/dashboard.ts`** serves `/dashboard` off the control plane (reachable at `host.<root>`, and directly on `127.0.0.1:4000` in the demo — so even a banned laptop can still open it and allow itself).
+  - The owner signs in from a signed link (`dashboardLink`, 24 h), which sets a 12 h HttpOnly session cookie scoped to `/dashboard`. No agent token involved.
+  - `GET /api/state` returns, for the owner's workspace only: every app and environment with status and 24 h sparkline; the selected environment's traffic detail, releases, backend health and data rules; recent deployments with CI steps, pipeline logs and test runs; **incidents** derived server-side (outages, error spikes via `errorSpikes`, automatic rollbacks, failed deploys, Guard findings, active bans); the security feed, bans and allowlist; the viewer's own IP; and the change history.
+  - Writes are same-origin only (a custom header + JSON content type + origin check): `POST/DELETE /api/allowlist`, `POST /api/unban` (only lifts bans that touch the owner's apps), `GET /api/logs` (parsed backend logs), and `POST /api/connector` (a fresh workspace token as a downloadable `.mcp.json`).
+- **The page** (`control/src/dashboard-ui/`, inlined under a strict per-nonce CSP; `style-src-attr 'unsafe-inline'` is the one scoped allowance, for dynamic widths): plain dependency-free HTML/CSS/JS. Seven sections — Overview (a plain-English verdict + KPIs + traffic), Visitors, Speed & errors, Security, Updates, Problems, Activity log — hand-drawn SVG charts with hover, light/dark themes, a phone layout, and a **right-click menu on any IP** to always-allow, unblock, filter or copy it. The blocked-visitors table and the "This computer" card make the allowlist one click. The whole thing polls `/api/state` every 5 s.
+- **`host_dashboard`** MCP tool and `basalt-admin dashboard-link <ws> [--connect]` both hand over a link. `basalt-admin tokens`/`revoke-token` manage connector keys.
+
+### One-command start and the connector download
+
+- **`start.sh`** (with `start-mac.command` and `start-windows.cmd`): checks Docker (and WSL on Windows), builds and starts the stack via `setup.sh … --local`, ensures a `my-apps` workspace, and opens the **Connect Claude** page (`/dashboard/connect`). `--no-build` restarts in ~45 s; `--stop` stops the platform and keeps apps and data. `.gitattributes` keeps the shell scripts LF in a Windows checkout.
+- **Connect Claude page**: picks the OS, downloads a ready `.mcp.json` (each download mints its own key), and shows a copy-paste command to drop it in an app folder as `.mcp.json` and open Claude Code. Windows gets `cmd /c npx` and the loopback registry (`REGISTRY_LOOPBACK_URL`, published on `127.0.0.1:4873`) because Node on Windows can't resolve `*.localhost`. `connector.ts` is the single source for the file; the admin CLI and the download use it.
+
+### Verification
+
+- Hosting tests: **70** (edge 29 incl. 3 new allowlist/analytics tests, control 30 incl. 5 new connector/dashboard tests, egress 3, browser 3, mcp 5). Build and typecheck clean.
+- On the running demo stack: deployed a static app, drove real traffic and a batch of attack probes, then exercised the dashboard in a real Chromium — every section rendered with no JS or CSP errors in light and dark mode, the cold-installed connector connected in ~8 s and listed 55 tools, the connector download produced a working file (Mac and Windows shapes), the registry served working tarballs on loopback and refused anonymous publish, and the allowlist round trip (add → ban lifted → re-attack stays unbanned → site still loads) worked end to end.
+
+### Still open
+
+- The dashboard reads the edge's in-memory analytics, so a platform restart resets the 24 h history (bans and allowlist persist; the latter is in Postgres).
+- `start-windows.cmd` and the Windows connector are written but unexercised on a real Windows machine.
 
 ---
 

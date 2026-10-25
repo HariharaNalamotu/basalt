@@ -24,8 +24,20 @@ The app's own backend can do the same through `ctx.data` in the API framework.
 
 - **Data block:** get, list (filters, sorting, paging), create, update, archive and restore, file uploads, sharing, owner admins and additive rule changes. 104 attack and feature tests.
 - **Cloud:** a database per app, plain-English approval for anything that shows data to more people, the owner's data map, test logins through Basalt Auth and **Guard** (`basalt_check`). Guard scans the app folder for data kept outside Basalt, then signs in as two people and a stranger and tries 12 ways to reach data that isn't theirs, then writes a safety receipt for the owner. 49 tests.
-- **Auth and hosting joined up:** Cloud apps use real Basalt Auth logins, and sessions Auth ends stop working in the database too. Every hosted environment gets its own Cloud data project, served at `/_basalt/data` on the app's own site. Claude sets its rules with `host_data_rules` (test environments go live right away, production waits for the owner's "Yes").
+- **Auth and hosting joined up:** Cloud apps use real Basalt Auth logins, and sessions Auth ends stop working in the database too. Every hosted environment gets its own Cloud data project, served at `/_basalt/data` on the app's own site. The app's rules live in `basalt.data.json` in its folder: deploys apply them to preview and staging before the app's tests run, and promoting to production stops with the owner's approval link until they tap "Yes". (`host_data_rules` sets them by hand.) After the tests on every deploy, Guard attacks the environment's live data, a failed check stops the deploy and production needs Guard to pass in staging. `host_data_check` runs it on demand and returns the owner's safety receipt.
 - Reviewed with Codex in several rounds. Every finding so far was fixed.
+
+## Quick start (Mac or Windows)
+
+One thing to run. It checks Docker, builds and starts Basalt, and opens the **Connect Claude** page, where you download the connector file (`.mcp.json`) for Claude Code.
+
+| Computer | Run | Needs |
+| --- | --- | --- |
+| Mac | double-click `start-mac.command`, or `./start.sh` in Terminal | Docker Desktop |
+| Windows | double-click `start-windows.cmd` | WSL (`wsl --install`) and Docker Desktop with WSL integration turned on |
+| Linux | `./start.sh` | Docker Engine with Compose |
+
+Then put the downloaded file in an empty folder for your app as `.mcp.json` (the page shows a command that does it), open Claude Code there and approve the `basalt` server. Claude Code on that computer needs Node.js 24 or newer. Each download makes a new workspace key. `./start.sh --no-build` starts again without rebuilding; `./start.sh --stop` stops Basalt and keeps your apps and data. The owner's dashboard is at the same link (`host_dashboard` gives Claude a fresh one, as does `docker exec basalt-control node dist/admin.js dashboard-link my-apps`).
 
 ## Run it on one laptop (demo)
 
@@ -48,6 +60,15 @@ This prints a ready `claude mcp add basalt …` command (and the same as `.mcp.j
 
 ## Tests
 
+End to end on a running local platform (see above), each with a workspace token in `BASALT_HOST_TOKEN`:
+
+```sh
+node hosting/scripts/e2e-platform.mjs   # Hari's: build, test, preview, staging, production, security, rollback
+node hosting/scripts/e2e-salon.mjs      # a salon app on the Data block: rules, owner approval, two real customers kept apart
+```
+
+Unit and integration suites:
+
 ```sh
 cd data && npm test        # needs Docker (starts its own Postgres)
 cd cloud && npm test       # also runs Basalt Auth in-process
@@ -58,6 +79,6 @@ cd api && npm test
 
 ## Still open
 
-- Nothing has run on a real server with a domain and Cloudflare tunnel yet. The local demo setup above passes the full end-to-end run (47 checks) and a real-browser check.
+- Nothing has run on a real server with a domain and Cloudflare tunnel yet. The one-laptop setup above passes both end-to-end scripts and a real-browser check.
 - Hosted apps now use one connector. Cloud's standalone `basalt_*` connector remains for apps that aren't hosted on Basalt.
 - The demo story: plain vibe coded apps vs Basalt apps. A first test found plain builds got basic per-customer checks right. The pitch is that nothing guarantees it, and later edits can quietly break it, while Basalt's rules sit below the code.

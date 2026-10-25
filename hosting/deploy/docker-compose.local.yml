@@ -24,6 +24,11 @@ services:
       # What basalt-admin create-workspace prints for the coding agent's connector.
       HOST_PUBLIC_URL: http://127.0.0.1:4000
       REGISTRY_PUBLIC_URL: http://registry.${ROOT_DOMAIN}:8080/
+      # Windows can't resolve *.localhost outside the browser, so its connector uses this port.
+      REGISTRY_LOOPBACK_URL: http://127.0.0.1:4873/
+  verdaccio:
+    # Loopback only. Reading is open; publishing needs the platform's own account.
+    ports: ["127.0.0.1:4873:4873"]
   cloud:
     environment:
       # Owner pages (approvals, data map, safety receipt) through the local edge.

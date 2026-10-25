@@ -1,0 +1,6 @@
+# Shell scripts run in bash (macOS, Linux, WSL): always LF, even in a Windows checkout.
+*.sh       text eol=lf
+*.command  text eol=lf
+*.mjs      text eol=lf
+# Windows batch files need CRLF.
+*.cmd      text eol=crlf

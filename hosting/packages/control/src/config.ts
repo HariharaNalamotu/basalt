@@ -62,6 +62,8 @@ const Env = z.object({
   HOST_PUBLIC_URL: z.string().url().optional(),
   /** Where developers' npm reaches the @basalt registry. Default https://registry.<ROOT_DOMAIN>/. */
   REGISTRY_PUBLIC_URL: z.string().url().optional(),
+  /** One-laptop demo: the registry on a loopback port, for machines that can't resolve *.localhost (Windows). */
+  REGISTRY_LOOPBACK_URL: z.string().url().optional(),
 });
 
 export type Config = ReturnType<typeof loadConfig>;
@@ -78,5 +80,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const registryPublicUrl = (c.REGISTRY_PUBLIC_URL ?? `https://registry.${c.ROOT_DOMAIN}/`).replace(/\/*$/, '/');
   /** The URL people and their browsers use for an app host (what links and allowed origins say). */
   const appUrl = (host: string) => `${c.PUBLIC_SCHEME}://${host}${c.PUBLIC_PORT ? `:${c.PUBLIC_PORT}` : ''}`;
-  return { ...c, masterKey, dataLink, hostPublicUrl, registryPublicUrl, appUrl, infraContainers: c.INFRA_CONTAINERS.split(',').map((s) => s.trim()).filter(Boolean) };
+  const registryLoopbackUrl = c.REGISTRY_LOOPBACK_URL ? c.REGISTRY_LOOPBACK_URL.replace(/\/*$/, '/') : null;
+  return { ...c, masterKey, dataLink, hostPublicUrl, registryPublicUrl, registryLoopbackUrl, appUrl, infraContainers: c.INFRA_CONTAINERS.split(',').map((s) => s.trim()).filter(Boolean) };
 }

@@ -64,6 +64,18 @@ describe('Basalt Cloud data projects for environments', () => {
     expect((prod.calls[0]!.init.headers as Record<string, string>).authorization).toBe('Bearer bsk_x');
   });
 
+  it("runs Guard with the environment's key and reports what leaked, with the owner's receipt", async () => {
+    const results = [
+      { id: 'no_login', title: 'Someone with no login', passed: true, detail: 'Was turned away.' },
+      { id: 'other_person_list', title: "Listing everyone's entries", passed: false, detail: "Person A's entry showed up in person B's list.", table: 'bookings' },
+    ];
+    const { f, calls } = stub({ status: 200, body: { ok: true, passed: 1, failed: 1, results, codeFindings: null, receiptUrl: 'https://cloud.example.com/owner/abcde12345/check?k=x' } });
+    const r = await runDataCheck(cfg, 'bsk_x', null, f);
+    expect(calls[0]!.url).toBe('http://cloud:8790/api/projects/me/check');
+    expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe('Bearer bsk_x');
+    expect(r).toEqual({ passed: 1, failed: 1, results, failures: [results[1]], receiptUrl: 'https://cloud.example.com/owner/abcde12345/check?k=x' });
+  });
+
   it('points the edge at the data project, or nowhere when Cloud is not set up', () => {
     expect(dataUrlFor(cfg, 'abcde12345')).toBe('http://cloud:8790/p/abcde12345');
     expect(dataUrlFor(null, 'abcde12345')).toBeNull();

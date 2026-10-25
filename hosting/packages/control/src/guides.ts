@@ -5,10 +5,11 @@ const workflow = (root: string) => `# Basalt Host — the workflow (you do all o
 
 1. **Create the app** (once): \`host_create_app { app: "todo-app" }\`. Production will be https://todo-app.${root}.
 2. **Set up the project** (once): \`host_init { app }\` (local tool) writes basalt.json, .npmrc for @basalt packages, a Playwright config and example e2e test. Follow the **project** topic for layout.
-3. **Write the app** with @basalt/api (backend) and @basalt/auth (sign-in). Read \`api_integration_guide\` (topics routes, database, frontend) and \`auth_integration_guide\`.
-   For anything the app saves per person (bookings, notes, orders, uploads), use the Basalt Data block: read the **data** topic, set the rules on the preview with \`host_data_rules\`, and use \`basalt()\` in the browser or \`ctx.data\` in the backend.
+3. **Decide what the app saves** before writing data code: read the **data** topic. Ask the human a few short plain questions (what it keeps track of, what each thing needs, who else should see an entry), write \`basalt.data.json\` and save data from the page through \`/_basalt/data\`. Most apps (bookings, orders, sign-ups, notes, including "no double bookings") need no backend at all. Use the Data block unless the app truly needs code on a server.
+   **Write the app** with @basalt/auth (sign-in) and, only for logic that must run on a server, @basalt/api (backend). Read \`api_integration_guide\` (topics routes, database, frontend) and \`auth_integration_guide\`.
    On Basalt Host provisioning is automatic: ignore api_setup, .basalt/*.env files, basalt-dev-edge and api_status instructions from those guides.
 4. **Check your code**: \`api_review_code\` / \`auth_review_code\` on what you wrote. The build blocks critical/high findings anyway.
+   **No local install is needed**: don't run npm install on the human's computer. \`host_deploy\` installs dependencies and builds on the platform (a missing package-lock.json is only a warning).
 5. **Deploy**: \`host_deploy { app }\` (local tool) packs the project, builds it (install, security scan, audit, typecheck, lint, unit tests, build), deploys a **private preview**, and runs smoke + your e2e tests. Poll \`host_wait\` until done.
 6. **If anything fails**: \`host_deployment\` (failed step output), \`host_build_logs\`, \`host_logs\` (backend), \`host_metrics\`. Reproduce UI problems with \`browser_open\` → \`browser_snapshot\`/\`browser_click\`/\`browser_fill\`/\`browser_screenshot\`/\`browser_console\`/\`browser_network\`. Fix, deploy again.
 7. **Verify by hand** on the preview: \`host_test_user\` for credentials, \`host_test_emails\` for verification codes, browser_* tools to click through the main flows. Screenshot key pages and look at them.
@@ -20,6 +21,76 @@ const workflow = (root: string) => `# Basalt Host — the workflow (you do all o
 Rollback any time with \`host_rollback\`. Secrets (API keys) via \`host_set_secret\`, never in code.
 `;
 
+const data = (root: string) => `# Basalt Host: saving data (the Data block)
+
+Every environment has its own locked down database. Each signed-in person only ever reaches their own entries (or ones shared with them read only), and the database itself checks every request, so no bug in the page or backend can widen access. Use it for everything the app saves. Never keep app data in localStorage, files or another database.
+
+## 1. Ask, then write the rules
+
+Ask the human in plain words, one question at a time: what the app keeps track of, what each thing needs to remember, which details are must-haves, and whether one other person (like the staff member a booking is assigned to) should be able to see an entry. Never mention databases or code. Then write **basalt.data.json** in the project root:
+
+\`\`\`json
+{ "tables": { "bookings": {
+    "fields": {
+      "service":   { "type": "text", "maxLength": 100, "required": true },
+      "starts_at": { "type": "timestamp", "required": true },
+      "phone":     { "type": "text", "format": "phone" },
+      "staff_id":  { "type": "user" }
+    },
+    "shareWith": "staff_id",
+    "unique": [["starts_at", "staff_id"]]
+} } }
+\`\`\`
+
+Names: lowercase letters, numbers and underscores. Types: "text" (maxLength up to 10000, default 1000; optional "format": "email" | "phone" | "url" | "postal_code" | "slug"), "integer" and "number" (optional "min", "max"), "boolean", "timestamp" (ISO), "user" (another person's user id) and "file" (an uploaded file's id). Every row gets id, owner_id, created_at and updated_at automatically. "shareWith" names a "user" field whose person can read (never change) that row. "unique" lists groups of required fields no two active entries may share across everyone, like \`"unique": [["starts_at"]]\` so two customers can't book the same time (archived entries don't count, so cancelling frees the slot). This needs no backend: the database refuses a clash with err.code "conflict" without revealing whose entry it is.
+
+Don't make personal details unique (email, phone, name): a clash tells whoever tried that the value is taken, so it would let anyone check whether someone is a customer. Unique is for things like time slots, seat numbers and order numbers.
+
+Later changes may only add optional fields or tables. Removing a field, making one required or changing its rules is refused.
+
+## 2. What happens on deploy
+
+Preview and staging take the rules right away, before your tests run. Promoting to production stops with an approval link when the rules would show data to more people: show it to the human, they tap "Yes", then promote again. After the tests, **Guard** attacks every preview and staging deploy's data (other people's entries, forged and expired logins, sneaky searches). Anything that gets through stops the deploy, and production needs Guard to pass in staging. \`host_data_check\` (local tool) runs it on demand on preview or staging, also scans this folder for data kept outside Basalt, and returns the owner's safety receipt link: give it to them. \`host_data_status\` shows the rules in plain English and the owner's data map link (share it only with the owner). \`host_data_admin\` asks the owner to let one person see and change everything (always an approval link). \`host_data_rules\` sets rules by hand on one environment without deploying.
+
+## 3. Saving from the page
+
+Save this as **public/basalt.js** (or src/basalt.js with a build). The browser sends the signed-in session cookie automatically, so page code never holds a token:
+
+\`\`\`js
+// basalt.js: the only way this app reads or saves data.
+export function basalt() {
+  async function call(path, body, init = {}) {
+    const res = await fetch('/_basalt/data' + path, { method: 'POST', credentials: 'same-origin', ...init, body });
+    const json = await res.json();
+    if (!json.ok) { const err = new Error(json.error.message); err.code = json.error.code; throw err; }
+    return json.data;
+  }
+  const op = (name, body) => call('/v1/data/' + name, JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+  return {
+    get: (table, id) => op('get', { table, id }),
+    // Newest first. Options: { limit, after: page.next, archived: true, where: { service: 'Color', starts_at: { gte: '...' } }, sort: { field, direction } }
+    list: (table, options = {}) => op('list', { table, ...options }),
+    // Pass { key } (like an order number) so a retry never saves twice.
+    create: (table, input, options = {}) => op('create', { table, input, ...options }),
+    update: (table, id, input) => op('update', { table, id, input }),
+    // Nothing is deleted: archive hides an entry (a cancelled booking), restore brings it back.
+    archive: (table, id) => op('archive', { table, id }),
+    restore: (table, id) => op('restore', { table, id }),
+    // PNG, JPEG, GIF, WebP, PDF, text and CSV up to 5 MB. Save the returned id in a "file" field.
+    upload: (file) => call('/v1/files', file, { headers: { 'content-type': file.type, 'x-file-name': encodeURIComponent(file.name) } }),
+    // A link for <img src> or downloads, good for 5 minutes.
+    fileUrl: async (id) => '/_basalt/data' + (await call('/v1/files/link', JSON.stringify({ id }), { headers: { 'content-type': 'application/json' } })).path,
+  };
+}
+\`\`\`
+
+Use it like \`const db = basalt(); await db.create('bookings', { service: 'Haircut', starts_at: new Date().toISOString() });\`. Sign people in first (see auth_integration_guide: POST /_basalt/auth/signin sets the cookie). err.code is invalid_input, not_found, denied, conflict (a unique value is already taken: show err.message and let them pick another), rate_limited or unavailable, and err.message says what's wrong in plain words.
+
+On a backend (@basalt/api), the same operations are \`ctx.data\` as the signed-in user.
+
+Test the main data flows in e2e/ (sign in with TEST_USER_EMAIL / TEST_USER_PASSWORD, save something, see it).
+`;
+
 const project = (registry: string) => `# Basalt Host — project layout (conventions the build relies on)
 
 \`\`\`
@@ -27,6 +98,7 @@ package.json            "type": "module"; scripts: "build" (frontend), optional 
 package-lock.json       commit it (reproducible builds)
 .npmrc                  @basalt:registry=${registry}   (host_init writes it)
 basalt.json             optional: { "backend": { "entry": "server/index.ts" }, "frontend": { "output": "dist" } }
+basalt.data.json        what the app saves and who can see it (see the data topic)
 server/index.ts         backend entry: createApi() + routes + serve(api)   (Node runs TypeScript directly)
 server/routes/*.ts      route modules (import with .ts extensions)
 db/migrations/NNN_*.sql applied automatically with the admin role before each release
@@ -43,62 +115,6 @@ Only what's listed is deployed. Never commit .env files (they're dropped from up
 Backend runtime: Node 24, NODE_ENV=production, 256 MB (512 MB production), read-only filesystem except /tmp, outbound internet only via an HTTPS proxy (automatic for fetch), PORT=3000 (serve() reads it).
 `;
 
-const data = `# Basalt Host — the Data block (what the app saves, and who can see it)
-
-Every environment (each preview, staging, production) has its own Basalt data store. Each signed-in person only ever reaches the rows they created, plus rows explicitly shared with them. This is checked inside Postgres on every request with the person's Basalt Auth login, so a bug in app code can't leak one person's data to another. Don't build your own tables for per-person data; don't keep app data in localStorage, files or another database.
-
-**1. Rules** — \`host_data_rules { app, env, rules }\`:
-\`\`\`json
-{ "tables": { "bookings": {
-    "fields": {
-      "service":   { "type": "text", "maxLength": 100, "required": true },
-      "starts_at": { "type": "timestamp", "required": true },
-      "phone":     { "type": "text", "format": "phone" },
-      "party":     { "type": "integer", "min": 1, "max": 20 },
-      "staff_id":  { "type": "user" },
-      "photo":     { "type": "file" } },
-    "shareWith": "staff_id" } } }
-\`\`\`
-- Names: lowercase letters, digits, underscores; start with a letter.
-- Types: text (maxLength 1–10000, default 1000; format email | phone | url | postal_code | slug), integer / number (min, max), boolean, timestamp (ISO), user (another person's id), file (an uploaded file's id).
-- Every row gets id, owner_id, created_at, updated_at automatically.
-- shareWith: that user field's person may READ the row (never change it).
-- Later changes may only add optional fields or tables. Previews and staging take rules immediately; production returns an approval link for the human owner whenever rules show data to more people. Set the same rules on each environment you deploy to.
-
-**2. Browser** — save this as \`src/basalt.js\` and use it for every read and save. On a Basalt-hosted site it calls \`/_basalt/data\` on the app's own origin with the HttpOnly session cookie (page code never holds a token):
-\`\`\`js
-export function basalt() {
-  async function call(path, init) {
-    const res = await fetch('/_basalt/data' + path, { method: 'POST', credentials: 'same-origin', ...init });
-    const json = await res.json();
-    if (!json.ok) { const err = new Error(json.error.message); err.code = json.error.code; throw err; }
-    return json.data;
-  }
-  const json = (path, body) => call(path, { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const op = (name, body) => json('/v1/data/' + name, body);
-  return {
-    get: (table, id) => op('get', { table, id }),
-    // Newest first. { limit, after: page.next, archived: true, where: { field: value | { gte, lt, ... } }, sort: { field, direction } }
-    list: (table, options = {}) => op('list', { table, ...options }),
-    create: (table, input, options = {}) => op('create', { table, input, ...options }), // { key } makes retries safe
-    update: (table, id, input) => op('update', { table, id, input }),
-    archive: (table, id) => op('archive', { table, id }), // nothing is ever deleted
-    restore: (table, id) => op('restore', { table, id }),
-    // PNG, JPEG, GIF, WebP, PDF, text, CSV up to 5 MB; store the returned id in a "file" field.
-    upload: (file) => call('/v1/files', { headers: { 'content-type': file.type, 'x-file-name': encodeURIComponent(file.name) }, body: file }),
-    fileUrl: async (id) => '/_basalt/data' + (await json('/v1/files/link', { id })).path, // valid 5 minutes
-  };
-}
-\`\`\`
-Errors: \`err.code\` is invalid_input, not_found, denied, rate_limited or unavailable; \`err.message\` is plain English. Signed out → denied (send the person to sign in).
-
-**3. Backend** — in a route with auth (the default), \`ctx.data\` has the same get/list/create/update/archive/restore and acts as the signed-in user:
-\`\`\`ts
-api.post('/bookings', { body: Booking }, async (ctx) => ctx.data.create('bookings', ctx.body));
-\`\`\`
-
-**4. Check** — \`host_data_status\` (rules in plain English + the owner's data map link), \`host_data_admin\` (owner approves someone seeing everything), \`host_data_check\` (Guard: real test people and a stranger attack the data; also scans your folder for data kept elsewhere). Run host_data_check on staging before production and give the owner the receipt link.
-`;
 
 const testing = `# Basalt Host — testing
 
@@ -161,10 +177,10 @@ export function hostGuide(topic: GuideTopic, root: string, registry = `https://r
   switch (topic) {
     case 'workflow':
       return workflow(root);
+    case 'data':
+      return data(root);
     case 'project':
       return project(registry);
-    case 'data':
-      return data;
     case 'testing':
       return testing;
     case 'operations':

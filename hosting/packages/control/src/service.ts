@@ -1,12 +1,12 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { dataStatus, dataUrlFor, requestDataAdmin, runDataCheck, setDataRules, type DataRulesResult, type GuardFinding } from './data-link.js';
+import { dataStatus, dataUrlFor, requestDataAdmin, setDataRules, type DataRulesResult, type GuardFinding, type GuardResult } from './data-link.js';
 import { z } from 'zod';
 import { mergeConfig, readConfig, setRoutePolicy, writeConfig } from '@basalt/api-mcp';
 import { DEFAULT_PROTECTION, EMPTY_CSP, type AppRoute, type CspSettings, type ProtectionSettings, type Route, type RouteTable } from '@basalt/host-shared';
 import type { Ctx } from './ctx.js';
 import { id, sha256 } from './crypto.js';
 import { Environments, type AppRow, type EnvRow } from './environments.js';
-import { APP_NAME_RE, envKey, RESERVED_APP_NAMES } from './naming.js';
+import { APP_NAME_RE, RESERVED_APP_NAMES, envKey } from './naming.js';
 import { Pipeline } from './pipeline.js';
 import { Runtime, type DeploymentRow } from './runtime.js';
 import { storeSource } from './sources.js';
@@ -80,6 +80,14 @@ export class Host {
       await q('INSERT INTO api_tokens (id, workspace_id, token_hash, name) VALUES ($1, $2, $3, $4)', [id('tok'), wsId, sha256(token), 'agent']);
     });
     return { workspaceId: wsId, token };
+  }
+
+  /** Another workspace token (each connector file the owner downloads gets its own). Shown once. */
+  async createToken(ws: string, name: string) {
+    const token = `bht_${(await import('node:crypto')).randomBytes(32).toString('base64url')}`;
+    await this.ctx.db.query('INSERT INTO api_tokens (id, workspace_id, token_hash, name) VALUES ($1, $2, $3, $4)', [id('tok'), ws, sha256(token), name.slice(0, 80)]);
+    await this.audit(ws, 'token.created', name.slice(0, 80));
+    return token;
   }
 
   async authenticate(token: string): Promise<string | null> {
@@ -205,6 +213,8 @@ export class Host {
     const staging = await this.envs.ensure(app, 'staging', 'staging');
     if (!(await this.deployAndTest(app, staging, dep, pipelineId))) return this.log(pipelineId, 'staging', 'staging tests failed', 'failed');
     const prod = await this.envs.ensure(app, 'production', 'prod');
+    const prodRules = await this.applyDataRules(prod, dep);
+    if (!prodRules.ok) return this.log(pipelineId, 'production', prodRules.message, 'failed');
     await this.runtime.release(app, prod, dep, 'ship');
     await this.log(pipelineId, 'production', `live at ${this.ctx.cfg.appUrl(prod.host)} (watching for errors; automatic rollback is armed)`);
     const smoke = await this.testing.smoke(app, prod, dep);
@@ -215,8 +225,34 @@ export class Host {
     return this.log(pipelineId, 'done', `shipped to ${this.ctx.cfg.appUrl(prod.host)}`, 'passed');
   }
 
+  /**
+   * Applies the deployment's basalt.data.json to an environment's data before the release goes
+   * there. Test environments take it right away. Production waits for the owner when the rules
+   * would show data to more people, and nothing is released until they approve.
+   */
+  private async applyDataRules(env: EnvRow, dep: DeploymentRow): Promise<{ ok: true } | { ok: false; message: string }> {
+    const rules = dep.manifest?.dataRules;
+    if (!rules) return { ok: true };
+    const link = this.ctx.cfg.dataLink;
+    const fresh = (await this.envs.get(env.id))!;
+    const adminKey = this.envs.dataAdminKey(fresh);
+    if (!link || !fresh.data_project_id || !adminKey) return { ok: false, message: 'This app has basalt.data.json but the platform has no Basalt Cloud data store configured.' };
+    try {
+      const r = await setDataRules(link, { projectId: fresh.data_project_id, adminKey, kind: fresh.kind }, rules);
+      if (r.status === 'live') return { ok: true };
+      return { ok: false, message: `The owner needs to approve the app's data rules before this goes live. Show them this link and ask them to approve, then promote again:\n${r.approveUrl}\nWhy: ${r.why.join(' ')}` };
+    } catch (err) {
+      return { ok: false, message: `The data rules in basalt.data.json weren't accepted: ${(err as Error).message.replace(/^Basalt Cloud: /, '')}` };
+    }
+  }
+
   private async deployAndTest(app: AppRow, env: EnvRow, dep: DeploymentRow, pipelineId: string): Promise<boolean> {
     const stage = env.kind === 'preview' ? 'preview' : env.kind;
+    const rules = await this.applyDataRules(env, dep);
+    if (!rules.ok) {
+      await this.log(pipelineId, stage, rules.message);
+      return false;
+    }
     try {
       await this.runtime.release(app, env, dep, stage);
     } catch (err) {
@@ -237,6 +273,17 @@ export class Host {
       return false;
     }
     await this.log(pipelineId, stage, 'e2e passed');
+    if (dep.manifest?.dataRules) {
+      // Guard: the app's live data, attacked the ways a careless or malicious user would try.
+      const guard = await this.testing.guard((await this.envs.get(env.id))!, dep);
+      const s = guard.summary as { passed?: number; failed?: number; failures?: Array<{ title: string; detail: string; table?: string }>; receiptUrl?: string; error?: string };
+      if (guard.status !== 'passed') {
+        const what = s.failures?.map((f) => `- ${f.title}${f.table ? ` (${f.table})` : ''}: ${f.detail}`).join('\n') ?? s.error ?? '';
+        await this.log(pipelineId, stage, `Guard found data reachable by the wrong people, so this stops here:\n${what}\nReceipt: ${s.receiptUrl ?? 'none'}`);
+        return false;
+      }
+      await this.log(pipelineId, stage, `Guard passed: ${s.passed} of ${s.passed} attempts to reach other people's data were refused. Receipt: ${s.receiptUrl}`);
+    }
     return true;
   }
 
@@ -250,6 +297,10 @@ export class Host {
       const runs = staging ? await this.testing.latest(staging.id, depId) : [];
       const smoke = runs.find((r) => r.kind === 'smoke');
       const e2e = runs.find((r) => r.kind === 'e2e');
+      const guard = runs.find((r) => r.kind === 'guard');
+      if (dep.manifest?.dataRules && guard?.status !== 'passed') {
+        throw new UserError('Production promotion requires Guard to pass in staging: promote to staging (Guard runs after the tests), fix anything it finds, then promote to production.', 409);
+      }
       if (smoke?.status !== 'passed' || (dep.manifest?.e2e && e2e?.status !== 'passed')) {
         throw new UserError('Production promotion requires this deployment to pass its tests in staging first: promote to staging (tests run automatically), fix any failures, then promote to production.', 409);
       }
@@ -262,6 +313,8 @@ export class Host {
       await this.audit(ws, 'promote', appName, { depId, to });
       return { pipelineId, url: this.ctx.cfg.appUrl(env.host) };
     }
+    const rules = await this.applyDataRules(env, dep);
+    if (!rules.ok) throw new UserError(rules.message, 409);
     const release = await this.runtime.release(app, env, dep, 'promote');
     const smoke = await this.testing.smoke(app, (await this.envs.get(env.id))!, dep);
     if (smoke.status !== 'passed') {
@@ -387,12 +440,22 @@ export class Host {
     return r;
   }
 
-  /** Guard: real test people and a stranger try to reach data that isn't theirs. */
+  /**
+   * Guard, now: real test people and a stranger try to reach data that isn't theirs in a test
+   * environment. `scan` is the connector's local code scan (data kept outside Basalt), or null.
+   * Recorded like the automatic run after each deploy, so it counts toward the production gate.
+   * Never on production: Guard makes test people and rows, which don't belong among real customers.
+   */
   async dataCheck(ws: string, appName: string, envName: string, scan: GuardFinding[] | null) {
-    const { link, adminKey } = await this.#dataEnv(ws, appName, envName);
-    const r = await runDataCheck(link, adminKey, scan).catch((err: Error) => this.#cloudError(err));
+    const { env } = await this.#dataEnv(ws, appName, envName);
+    if (env.kind === 'production') throw new UserError('Guard runs on preview and staging (every promotion to production needs it to pass there), never on real customers.', 400);
+    const rel = env.current_release_id ? (await this.ctx.db.query<{ deployment_id: string }>('SELECT deployment_id FROM releases WHERE id = $1', [env.current_release_id])).rows[0] : undefined;
+    if (!rel) throw new UserError('Nothing is deployed to this environment yet.', 409);
+    const run = await this.testing.guard(env, await this.deployment(ws, rel.deployment_id), scan);
     await this.audit(ws, 'data_check.ran', `${appName}/${envName}`);
-    return r;
+    const r = run.summary as Partial<GuardResult> & { error?: string };
+    if (run.status === 'error') throw new UserError(`Guard couldn't run: ${String(r.error ?? 'unknown error').replace(/^Basalt Cloud: /, '')}`, 400);
+    return r as GuardResult;
   }
 
   async apiConfig(ws: string, appName: string, envName: string) {
@@ -468,14 +531,18 @@ export class Host {
 
   async routeTable(): Promise<RouteTable> {
     const rows = (
-      await this.ctx.db.query<EnvRow & { app_name: string; static_dir: string | null; container: string | null }>(
-        `SELECT e.*, a.name AS app_name, d.static_dir, r.container
+      await this.ctx.db.query<EnvRow & { app_name: string; workspace_id: string; static_dir: string | null; container: string | null }>(
+        `SELECT e.*, a.name AS app_name, a.workspace_id, d.static_dir, r.container
          FROM environments e JOIN apps a ON a.id = e.app_id
          JOIN releases r ON r.id = e.current_release_id
          JOIN deployments d ON d.id = r.deployment_id
          WHERE e.status = 'ready'`,
       )
     ).rows;
+    const allow = new Map<string, string[]>();
+    for (const r of (await this.ctx.db.query<{ workspace_id: string; ip: string }>('SELECT workspace_id, ip FROM allowlist')).rows) {
+      allow.set(r.workspace_id, [...(allow.get(r.workspace_id) ?? []), r.ip]);
+    }
     const routes: Route[] = [];
     for (const e of rows) {
       const secret = (await this.ctx.db.query<{ value_enc: Buffer }>(`SELECT value_enc FROM env_vars WHERE env_id = $1 AND name = 'BASALT_EDGE_SECRET'`, [e.id])).rows[0];
@@ -495,6 +562,7 @@ export class Host {
         protection: { ...DEFAULT_PROTECTION, ...(e.protection as Partial<ProtectionSettings>) },
         csp: { ...EMPTY_CSP, ...(e.csp as Partial<CspSettings>) },
         dataUrl: dataUrlFor(this.ctx.cfg.dataLink, e.data_project_id),
+        allowIps: allow.get(e.workspace_id) ?? [],
       };
       routes.push(route);
     }

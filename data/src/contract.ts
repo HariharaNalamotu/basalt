@@ -35,6 +35,9 @@ export interface TableSpec {
   fields: Map<string, FieldSpec>;
   // A 'user' field. The user named there can read the row but not change it.
   shareWith?: string;
+  // Groups of required fields no two active rows may share, across everyone (like two bookings
+  // at the same time). Archived rows don't count, so cancelling frees the value.
+  unique?: string[][];
 }
 
 export interface Contract {
@@ -133,7 +136,7 @@ export function parseContract(raw: unknown): Contract {
     checkName('Table', tableName);
     if (!isPlainObject(tableRaw) || !isPlainObject(tableRaw.fields)) fail(`Table ${tableName} needs a "fields" object.`);
     for (const key of Object.keys(tableRaw)) {
-      if (key !== 'fields' && key !== 'shareWith') fail(`Table ${tableName} has an unknown setting "${key}".`);
+      if (key !== 'fields' && key !== 'shareWith' && key !== 'unique') fail(`Table ${tableName} has an unknown setting "${key}".`);
     }
 
     const fieldEntries = Object.entries(tableRaw.fields);
@@ -151,6 +154,20 @@ export function parseContract(raw: unknown): Contract {
         fail(`Table ${tableName}: shareWith must name one of its fields with type "user".`);
       }
       table.shareWith = share;
+    }
+    if (tableRaw.unique !== undefined) {
+      const groups = tableRaw.unique;
+      if (!Array.isArray(groups) || groups.some((g) => !Array.isArray(g))) fail(`Table ${tableName}: unique must be a list of field groups, like [["starts_at"]].`);
+      if (groups.length > 5) fail(`Table ${tableName}: unique can have up to 5 groups.`);
+      table.unique = (groups as unknown[][]).map((group) => {
+        if (group.length < 1 || group.length > 3) fail(`Table ${tableName}: each unique group names 1 to 3 fields.`);
+        if (new Set(group).size !== group.length) fail(`Table ${tableName}: a unique group names a field twice.`);
+        for (const f of group) {
+          if (typeof f !== 'string' || !fields.has(f)) fail(`Table ${tableName}: unique names "${String(f)}", which isn't one of its fields.`);
+          if (!fields.get(f)!.required) fail(`Table ${tableName}: unique field ${f} must be required (an empty value can't be kept unique).`);
+        }
+        return group as string[];
+      });
     }
     tables.set(tableName, table);
   }

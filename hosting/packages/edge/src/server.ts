@@ -231,7 +231,7 @@ export function createEdgeHandler(o: EdgeOptions) {
     return r === -413 ? 413 : r;
   }
 
-  async function handleApp(req: IncomingMessage, res: ServerResponse, route: AppRoute, ip: string, ipKey: string, requestId: string, path: string, query: string, rawUrl: string): Promise<number> {
+  async function handleApp(req: IncomingMessage, res: ServerResponse, route: AppRoute, ip: string, ipKey: string, requestId: string, path: string, query: string, rawUrl: string, client: { allowed: boolean; penalize: (points: number, reason: string) => boolean }): Promise<number> {
     const method = req.method ?? 'GET';
 
     // Edge-owned endpoints.
@@ -269,7 +269,7 @@ export function createEdgeHandler(o: EdgeOptions) {
       }
       const clearance = verifySolution(o.edgeKey, ipKey, route.host, body.challenge, body.nonce);
       if (!clearance) {
-        shield.penalize(ipKey, 2);
+        client.penalize(2, 'challenge_failed');
         send(res, 403, errorJson('challenge_failed', 'Challenge failed.', requestId));
         return 403;
       }
@@ -289,8 +289,8 @@ export function createEdgeHandler(o: EdgeOptions) {
       }
     }
 
-    // Under attack: require proof-of-work clearance.
-    if (route.protection.underAttack || o.table.current.underAttack) {
+    // Under attack: require proof-of-work clearance (the owner's allowlisted clients skip it).
+    if (!client.allowed && (route.protection.underAttack || o.table.current.underAttack)) {
       if (!hasClearance(o.edgeKey, ipKey, route.host, cookie(req, CLEARANCE_COOKIE))) {
         if (method === 'GET' && (req.headers.accept ?? '').includes('text/html')) {
           const nonce = randomBytes(12).toString('base64');
@@ -424,11 +424,23 @@ export function createEdgeHandler(o: EdgeOptions) {
     const host = String(req.headers.host ?? '').toLowerCase().replace(/:\d+$/, '');
     let status = 0;
     let blocked: string | undefined;
+    let bannedNow = false;
+    let path = (req.url ?? '/').split('?')[0]!.slice(0, 200);
     metrics.inflight++;
-    const ipSlot = perIpInflight.acquire(ipKey, ipInflightMax);
+    // The app's owner can always let some clients through (their own machine, a security test):
+    // they're never banned or rate limited on that owner's apps. Other sites still apply bans.
+    const route: Route | undefined = host ? o.table.lookup(host) : undefined;
+    const allowed = route?.kind === 'app' && Boolean(route.allowIps?.includes(ipKey));
+    const penalize = (points: number, reason: string) => {
+      if (allowed) return false;
+      const b = shield.penalize(ipKey, points, Date.now(), { reason, host });
+      if (b) bannedNow = true;
+      return b;
+    };
+    const ipSlot = perIpInflight.acquire(ipKey, allowed ? Number.MAX_SAFE_INTEGER : ipInflightMax);
     try {
       res.setHeader('x-request-id', requestId);
-      const banned = shield.bannedFor(ipKey);
+      const banned = allowed ? 0 : shield.bannedFor(ipKey);
       if (banned) {
         blocked = 'banned';
         send(res, 403, errorJson('blocked', 'Access temporarily blocked.', requestId), { 'retry-after': String(banned) });
@@ -437,7 +449,7 @@ export function createEdgeHandler(o: EdgeOptions) {
       }
       if (!ipSlot) {
         blocked = 'ip_concurrency';
-        shield.penalize(ipKey, 1);
+        penalize(1, blocked);
         send(res, 429, errorJson('rate_limited', 'Too many concurrent requests.', requestId), { 'retry-after': '1' });
         status = 429;
         return;
@@ -451,7 +463,7 @@ export function createEdgeHandler(o: EdgeOptions) {
       const method = req.method ?? '';
       if (!ALLOWED_METHODS.has(method)) {
         blocked = 'bad_method';
-        shield.penalize(ipKey, 2);
+        penalize(2, blocked);
         send(res, 405, errorJson('method_not_allowed', 'Method not allowed.', requestId));
         status = 405;
         return;
@@ -459,20 +471,22 @@ export function createEdgeHandler(o: EdgeOptions) {
       const target = normalizePath(req.url ?? '');
       if (!target || !host) {
         blocked = 'bad_request';
-        shield.penalize(ipKey, 3);
+        penalize(3, blocked);
         send(res, 400, errorJson('bad_request', 'Bad request.', requestId));
         status = 400;
         return;
       }
-      const g = shield.buckets.take(`ip:${ipKey}`, ipPerMinute);
-      if (!g.ok) {
-        blocked = 'rate_limited';
-        shield.penalize(ipKey, 1);
-        send(res, 429, errorJson('rate_limited', 'Too many requests.', requestId), { 'retry-after': String(g.retryAfter) });
-        status = 429;
-        return;
+      path = target.path.slice(0, 200);
+      if (!allowed) {
+        const g = shield.buckets.take(`ip:${ipKey}`, ipPerMinute);
+        if (!g.ok) {
+          blocked = 'rate_limited';
+          penalize(1, blocked);
+          send(res, 429, errorJson('rate_limited', 'Too many requests.', requestId), { 'retry-after': String(g.retryAfter) });
+          status = 429;
+          return;
+        }
       }
-      const route: Route | undefined = o.table.lookup(host);
       if (!route) {
         blocked = 'unknown_host';
         send(res, 404, errorJson('unknown_site', 'Unknown site.', requestId));
@@ -482,24 +496,26 @@ export function createEdgeHandler(o: EdgeOptions) {
       const verdict = shield.inspect(target.path, target.query);
       if (!verdict.ok) {
         blocked = verdict.reason;
-        if (shield.penalize(ipKey, verdict.score)) o.log.warn('client_banned', { ip, reason: verdict.reason });
+        if (penalize(verdict.score, verdict.reason)) o.log.warn('client_banned', { ip, reason: verdict.reason });
         send(res, verdict.status, errorJson(verdict.status === 404 ? 'not_found' : 'blocked', verdict.status === 404 ? 'Not found.' : 'Request blocked.', requestId));
         status = verdict.status;
         return;
       }
-      const perMinute = route.kind === 'app' ? route.protection.perIpPerMinute : route.perIpPerMinute;
-      const r = shield.buckets.take(`${host}|${ipKey}`, perMinute);
-      if (!r.ok) {
-        blocked = 'rate_limited';
-        shield.penalize(ipKey, 1);
-        send(res, 429, errorJson('rate_limited', 'Too many requests.', requestId), { 'retry-after': String(r.retryAfter) });
-        status = 429;
-        return;
+      if (!allowed) {
+        const perMinute = route.kind === 'app' ? route.protection.perIpPerMinute : route.perIpPerMinute;
+        const r = shield.buckets.take(`${host}|${ipKey}`, perMinute);
+        if (!r.ok) {
+          blocked = 'rate_limited';
+          penalize(1, blocked);
+          send(res, 429, errorJson('rate_limited', 'Too many requests.', requestId), { 'retry-after': String(r.retryAfter) });
+          status = 429;
+          return;
+        }
       }
       status =
         route.kind === 'service'
           ? await handleService(req, res, route, ip, requestId, target.path, target.query)
-          : await handleApp(req, res, route, ip, ipKey, requestId, target.path, target.query, canonicalUrl(req.url ?? '/'));
+          : await handleApp(req, res, route, ip, ipKey, requestId, target.path, target.query, canonicalUrl(req.url ?? '/'), { allowed, penalize });
     } catch (err) {
       status = 502;
       o.log.warn('upstream_error', { host, err: (err as Error).message, requestId });
@@ -508,7 +524,9 @@ export function createEdgeHandler(o: EdgeOptions) {
     } finally {
       metrics.inflight--;
       if (ipSlot) perIpInflight.release(ipKey);
-      metrics.record(host || '(none)', status, performance.now() - started, blocked);
+      const ua = req.headers['user-agent'];
+      const referer = req.headers.referer;
+      metrics.record(host || '(none)', status, performance.now() - started, blocked, { ip, method: req.method ?? '', path, userAgent: typeof ua === 'string' ? ua : undefined, referer: typeof referer === 'string' ? referer : undefined, allowed }, bannedNow);
     }
   }
 
