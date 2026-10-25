@@ -46,6 +46,12 @@ const INFRA_ALIASES: Record<string, string> = {
   'basalt-cloud': 'cloud',
 };
 
+/** Infra containers that aren't on a network, given Docker's network inspect output. */
+export function missingInfra(net: { Containers?: Record<string, { Name: string }> }, infra: string[]) {
+  const attached = new Set(Object.values(net.Containers ?? {}).map((c) => c.Name));
+  return infra.filter((c) => !attached.has(c));
+}
+
 export class CapacityError extends Error {}
 
 export class Environments {
@@ -176,6 +182,32 @@ export class Environments {
       });
     }
     for (const c of this.ctx.cfg.infraContainers) await this.ctx.docker.connect(name, c, INFRA_ALIASES[c] ? [INFRA_ALIASES[c]!] : undefined);
+  }
+
+  /**
+   * Re-attaches infra containers to every environment's network. A recreated container (compose
+   * up after a rebuild, an upgrade) comes back on its compose networks only, and without this the
+   * edge can't reach any app and the app can't reach auth or cloud. Safe to run any time.
+   */
+  async reattachInfra() {
+    const { rows } = await this.ctx.db.query<Pick<EnvRow, 'id'>>(`SELECT id FROM environments WHERE status <> 'deleting'`);
+    for (const { id: envId } of rows) {
+      const name = networkName(envId);
+      let net: { Containers?: Record<string, { Name: string }> };
+      try {
+        net = await this.ctx.docker.inspectNetwork(name);
+      } catch {
+        continue; // not created yet, or being torn down
+      }
+      for (const c of missingInfra(net, this.ctx.cfg.infraContainers)) {
+        try {
+          await this.ctx.docker.connect(name, c, INFRA_ALIASES[c] ? [INFRA_ALIASES[c]!] : undefined);
+          this.ctx.log.warn('infra_reattached', { env: envId, container: c });
+        } catch (err) {
+          this.ctx.log.error('infra_reattach_failed', { env: envId, container: c, err });
+        }
+      }
+    }
   }
 
   private async assertCapacity(app: AppRow, kind: EnvKind) {
