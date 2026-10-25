@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { dataStatus, dataUrlFor, requestDataAdmin, setDataRules, type DataRulesResult, type GuardFinding, type GuardResult } from './data-link.js';
+import { dataStatus, dataUrlFor, requestDataAdmin, requestRemoveDataAdmin, setDataRules, type DataRulesResult, type GuardFinding, type GuardResult } from './data-link.js';
 import { z } from 'zod';
 import { mergeConfig, readConfig, setRoutePolicy, writeConfig } from '@basalt/api-mcp';
 import { DEFAULT_PROTECTION, EMPTY_CSP, type AppRoute, type CspSettings, type ProtectionSettings, type Route, type RouteTable } from '@basalt/host-shared';
@@ -432,11 +432,11 @@ export class Host {
     return dataStatus(link, adminKey).catch((err: Error) => this.#cloudError(err));
   }
 
-  /** Asks the human owner to make someone an admin of an environment's data. */
-  async dataAdmin(ws: string, appName: string, envName: string, who: { email?: string; who?: string; userId?: string; label?: string }) {
+  /** Asks the human owner to make someone an admin of an environment's data, or (remove) to take that away. */
+  async dataAdmin(ws: string, appName: string, envName: string, who: { email?: string; who?: string; userId?: string; label?: string }, remove = false) {
     const { link, adminKey } = await this.#dataEnv(ws, appName, envName);
-    const r = await requestDataAdmin(link, adminKey, who).catch((err: Error) => this.#cloudError(err));
-    await this.audit(ws, 'data_admin.requested', `${appName}/${envName}`);
+    const r = await (remove ? requestRemoveDataAdmin(link, adminKey, { email: who.email, who: who.who, userId: who.userId }) : requestDataAdmin(link, adminKey, who)).catch((err: Error) => this.#cloudError(err));
+    await this.audit(ws, remove ? 'data_admin.removal_requested' : 'data_admin.requested', `${appName}/${envName}`);
     return r;
   }
 

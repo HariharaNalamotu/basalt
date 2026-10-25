@@ -12,9 +12,10 @@ This standalone connector is for apps that keep their data in Basalt Cloud but a
 | --- | --- |
 | `basalt_start` | Makes the app's database and saves its key in `.basalt/` (kept out of git) |
 | `basalt_set_rules` | Sets what the app saves and who can see it. Looser rules need the owner's approval |
-| `basalt_status` | Live or waiting, the rules in plain English and the owner's data map link |
+| `basalt_status` | Live or waiting, the rules in plain English, the owner's data map link and any approval links still waiting |
 | `basalt_connect_app` | The `basalt.js` file the app uses for every read, save and upload |
 | `basalt_make_admin` | Asks the owner to let one person see everything |
+| `basalt_remove_admin` | Asks the owner to take that away again. The data map lists every admin by name |
 | `basalt_test_login` | A login token for a pretend person, for trying the app |
 | `basalt_check` | Guard: the safety check and receipt (below) |
 

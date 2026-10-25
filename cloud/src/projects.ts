@@ -39,7 +39,7 @@ export interface Project {
 export interface Approval {
   id: string;
   projectId: string;
-  kind: 'rules' | 'admin';
+  kind: 'rules' | 'admin' | 'remove_admin';
   contract: unknown;
   admin?: { uid: string; label: string };
   status: 'pending' | 'approved' | 'rejected' | 'replaced';
@@ -122,6 +122,11 @@ export class Projects {
         alter table cloud.projects add column if not exists external_id text;
         create unique index if not exists projects_external_id on cloud.projects (external_id) where external_id is not null;
         alter table cloud.projects add column if not exists hosted boolean not null default false;
+        -- Taking someone's admin access away goes through the owner too.
+        alter table cloud.approvals drop constraint if exists approvals_kind_check;
+        alter table cloud.approvals add constraint approvals_kind_check check (kind in ('rules', 'admin', 'remove_admin'));
+        -- The link's token, encrypted, so the owner's dashboard can offer a link that's still waiting.
+        alter table cloud.approvals add column if not exists token_enc text;
 
         create table if not exists cloud.checks (
           id bigint generated always as identity primary key,
@@ -308,7 +313,7 @@ export class Projects {
   async stats(p: Project): Promise<{
     tables: Record<string, { active: number; archived: number }>;
     files: { count: number; bytes: number };
-    admins: number;
+    admins: { uid: string; label: string }[];
     recent: { at: string; table: string; op: string; columns: string[] }[];
   }> {
     const c = await connect(withDb(this.#cfg.adminUrl, p.dbName));
@@ -321,12 +326,35 @@ export class Projects {
         tables[t] = r;
       }
       const files = (await c.query('select count(*)::int as count, coalesce(sum(size), 0)::bigint as bytes from basalt.files')).rows[0];
-      const admins = (await c.query('select count(*)::int as n from basalt.admins')).rows[0].n;
+      const uids = (await c.query('select uid::text from basalt.admins order by added_at')).rows.map((r) => r.uid as string);
       const recent = (await c.query(`select at, table_name as "table", op, coalesce(columns, '{}') as columns from basalt.audit order by at desc limit 8`)).rows;
-      return { tables, files: { count: files.count, bytes: Number(files.bytes) }, admins, recent };
+      return { tables, files: { count: files.count, bytes: Number(files.bytes) }, admins: await this.#labelAdmins(p, uids), recent };
     } finally {
       await c.end();
     }
+  }
+
+  /** Everyone who is an admin right now, named the way the owner approved them. */
+  async admins(p: Project): Promise<{ uid: string; label: string }[]> {
+    const c = await connect(withDb(this.#cfg.adminUrl, p.dbName));
+    try {
+      return await this.#labelAdmins(p, (await c.query('select uid::text from basalt.admins order by added_at')).rows.map((r) => r.uid as string));
+    } finally {
+      await c.end();
+    }
+  }
+
+  // The app's database only keeps ids. The name comes from the request the owner approved.
+  async #labelAdmins(p: Project, uids: string[]): Promise<{ uid: string; label: string }[]> {
+    if (!uids.length) return [];
+    const rows = (await this.#pool.query(
+      `select distinct on (admin_uid) admin_uid::text as uid, admin_label as label from cloud.approvals
+        where project_id = $1 and kind = 'admin' and status = 'approved' and admin_uid = any($2::uuid[])
+        order by admin_uid, decided_at desc`,
+      [p.id, uids],
+    )).rows as { uid: string; label: string }[];
+    const labels = new Map(rows.map((r) => [r.uid, r.label]));
+    return uids.map((uid) => ({ uid, label: labels.get(uid) || 'Someone added without a name' }));
   }
 
   /**
@@ -384,7 +412,7 @@ export class Projects {
     try {
       await c.query('begin');
       await c.query(`update cloud.approvals set status = 'replaced', decided_at = now() where project_id = $1 and status = 'pending' and kind = 'rules'`, [p.id]);
-      await c.query('insert into cloud.approvals (id, project_id, token_hash, contract) values ($1, $2, $3, $4)', [id, p.id, sha256(token), JSON.stringify(contract)]);
+      await c.query('insert into cloud.approvals (id, project_id, token_hash, token_enc, contract) values ($1, $2, $3, $4, $5)', [id, p.id, sha256(token), encrypt(this.#cfg.masterKey, token), JSON.stringify(contract)]);
       await c.query('commit');
     } catch (err) {
       await c.query('rollback').catch(() => {});
@@ -396,12 +424,12 @@ export class Projects {
   }
 
   // Asks the owner to make someone an admin who can see and change every row.
-  async requestAdmin(p: Project, uid: string, label: string): Promise<{ id: string; token: string }> {
+  async requestAdmin(p: Project, uid: string, label: string, kind: 'admin' | 'remove_admin' = 'admin'): Promise<{ id: string; token: string }> {
     const id = randomId(16);
     const token = randomSecret();
     await this.#pool.query(
-      `insert into cloud.approvals (id, project_id, token_hash, kind, admin_uid, admin_label) values ($1, $2, $3, 'admin', $4, $5)`,
-      [id, p.id, sha256(token), uid, label],
+      `insert into cloud.approvals (id, project_id, token_hash, token_enc, kind, admin_uid, admin_label) values ($1, $2, $3, $4, $5, $6, $7)`,
+      [id, p.id, sha256(token), encrypt(this.#cfg.masterKey, token), kind, uid, label],
     );
     return { id, token };
   }
@@ -410,6 +438,15 @@ export class Projects {
     const c = await connect(withDb(this.#cfg.adminUrl, p.dbName));
     try {
       await c.query('select basalt.add_admin($1)', [uid]);
+    } finally {
+      await c.end();
+    }
+  }
+
+  async removeAdmin(p: Project, uid: string): Promise<void> {
+    const c = await connect(withDb(this.#cfg.adminUrl, p.dbName));
+    try {
+      await c.query('select basalt.remove_admin($1)', [uid]);
     } finally {
       await c.end();
     }
@@ -433,6 +470,20 @@ export class Projects {
   async pendingApproval(projectId: string): Promise<{ id: string } | null> {
     const r = (await this.#pool.query(`select id from cloud.approvals where project_id = $1 and status = 'pending' and kind = 'rules' order by created_at desc limit 1`, [projectId])).rows[0];
     return r ? { id: r.id } : null;
+  }
+
+  /**
+   * Every request still waiting for the owner whose link still works, oldest first, with that
+   * link's token. Only for whoever holds the app's admin key (Claude, or the owner's dashboard).
+   */
+  async pendingApprovals(projectId: string): Promise<{ id: string; token: string; kind: Approval['kind']; label: string | null }[]> {
+    const rows = (await this.#pool.query(
+      `select id, token_enc, kind, admin_label from cloud.approvals
+        where project_id = $1 and status = 'pending' and token_enc is not null and created_at > now() - make_interval(days => $2)
+        order by created_at`,
+      [projectId, APPROVAL_DAYS],
+    )).rows;
+    return rows.map((r) => ({ id: r.id, token: decrypt(this.#cfg.masterKey, r.token_enc), kind: r.kind, label: r.admin_label ?? null }));
   }
 
   /**
