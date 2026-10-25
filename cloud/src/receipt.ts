@@ -13,7 +13,8 @@ export function renderReceipt(appName: string, check: { results: CheckResult[]; 
   const toFix = found ? `, ${found} thing${found === 1 ? '' : 's'} to fix in the code` : '';
   const when = new Date(check.at).toUTCString().replace(' GMT', ' UTC');
   // Each attempt gets the badge for what was actually seen: a clear refusal, a leak, or no clear answer.
-  const verdict = (r: CheckResult) => (r.passed ? 'refused' : /^Couldn't tell|wasn't checked/.test(r.detail) ? 'unclear' : 'leaked');
+  // Failing to tidy up Guard's own test entry isn't an attack getting through, so it never shows as a leak.
+  const verdict = (r: CheckResult) => (r.passed ? 'refused' : r.id === 'cleanup' || /^Couldn't tell|wasn't checked/.test(r.detail) ? 'unclear' : 'leaked');
   const badge = { refused: ['safe', 'shield', 'REFUSED'], leaked: ['danger', 'problem', 'LEAKED'], unclear: ['warning', 'question', "CAN'T TELL"] } as const;
   const rows = check.results
     .map((r) => {
