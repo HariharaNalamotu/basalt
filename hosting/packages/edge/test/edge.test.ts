@@ -312,6 +312,8 @@ describe('private (non-production) environments', () => {
     for (const p of pages) {
       expect(p.headers.get('content-type')).toMatch(/text\/html/);
       expect(p.headers.get('content-security-policy')).toMatch(/^default-src 'none';.*frame-ancestors 'none'/);
+      // They have no styles, so they don't allow inline ones (OWASP ZAP flags 'unsafe-inline').
+      expect(p.headers.get('content-security-policy')).not.toContain('unsafe-inline');
     }
     // JSON errors stay JSON, without a page policy.
     const json = await call('/api/x', { host, ip: freshIp() });
@@ -354,6 +356,11 @@ describe('abuse protection', () => {
     expect(page.status).toBe(200);
     const html = await page.text();
     expect(html).toContain('Checking your browser');
+    // Its style block carries the page's nonce, so the policy needn't allow inline styles.
+    const pageCsp = page.headers.get('content-security-policy')!;
+    expect(pageCsp).not.toContain('unsafe-inline');
+    const styleNonce = /style-src 'nonce-([^']+)'/.exec(pageCsp)?.[1];
+    expect(html).toContain(`<style nonce="${styleNonce}">`);
     expect((await call('/api/todos', { ip })).status).toBe(403);
     const challenge = JSON.parse(/const challenge = ("[^"]+")/.exec(html)![1]!);
     let nonce = 0;

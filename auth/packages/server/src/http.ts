@@ -171,8 +171,9 @@ export function accessResponse(
 
 export function clearSessionCookies(c: Context, project: Project, opts: HttpOptions) {
   const names = cookieNames(opts.cookieSecure);
-  deleteCookie(c, names.access, { path: '/', secure: opts.cookieSecure });
-  deleteCookie(c, names.refresh, { path: `${mountPrefix(c, project, opts)}/session`, secure: opts.cookieSecure });
+  // Same flags as when they were set, so no Set-Cookie header ever goes out without them.
+  deleteCookie(c, names.access, { path: '/', secure: opts.cookieSecure, httpOnly: true, sameSite: 'Lax' });
+  deleteCookie(c, names.refresh, { path: `${mountPrefix(c, project, opts)}/session`, secure: opts.cookieSecure, httpOnly: true, sameSite: 'Strict' });
 }
 
 export function readRefreshToken(c: Context, mode: ClientMode, body: Record<string, unknown>, opts: HttpOptions) {
