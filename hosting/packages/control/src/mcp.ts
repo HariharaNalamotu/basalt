@@ -7,7 +7,7 @@ import { dashboardLink } from './dashboard.js';
 import { GUIDE_TOPICS, hostGuide } from './guides.js';
 import { emailsReadable } from './naming.js';
 import type { Host } from './service.js';
-import { UserError } from './service.js';
+import { DELETION_HOURS, UserError } from './service.js';
 
 type Content = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -285,10 +285,10 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
     await host.destroyEnv(ap, e);
     return text(`Deleted ${a.env}.`);
   }, { destructiveHint: true });
-  tool('host_delete_app', 'Deletes an app with ALL environments and data, including production. Irreversible. Only when the human explicitly asks.', { app, confirm: z.literal(true) }, async (a) => {
-    await host.deleteApp(ws, a.app);
-    return text(`Deleted app ${a.app}.`);
-  }, { destructiveHint: true });
+  tool('host_delete_app', 'Asks the owner to delete an app with ALL environments and data, including production. Nothing is deleted until the owner taps Confirm in their dashboard (deleting can\'t be undone). Only when the human explicitly asks.', { app, confirm: z.literal(true).optional() }, async (a) => {
+    await host.requestAppDeletion(ws, a.app);
+    return text(`Nothing is deleted yet. Deleting ${a.app} removes every version and its data and can't be undone, so the owner confirms it themselves. Give them this link to their dashboard and ask them to tap "Confirm" on "Delete ${a.app}?" (or "Cancel" to keep it). The request waits ${DELETION_HOURS} hours; the link works for 24 hours, don't share it publicly:\n${dashboardLink(ctx.cfg, ws)}`);
+  });
 
   // Stateless guidance and code review from the auth and API toolkits.
   registerAuthTools(server, ctx.authFor(ws), { include: ['auth_integration_guide', 'auth_security_rules', 'auth_review_code'] });

@@ -138,6 +138,14 @@ export function createDashboard(ctx: Ctx, host: Host) {
     });
   });
 
+  // Sign out: the session cookie is dropped and the owner needs a fresh link to come back.
+  app.get('/signout', (c) =>
+    c.html('<!doctype html><title>Signed out</title><p style="font:16px system-ui;margin:40px">You signed out of your Basalt dashboard. To open it again, ask Claude for a fresh dashboard link ("show me my dashboard").</p>', 200, {
+      ...securityHeaders(),
+      'set-cookie': `${COOKIE}=; Path=/dashboard; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`,
+    }),
+  );
+
   const signedOut = '<!doctype html><title>Basalt dashboard</title><p style="font:16px system-ui;margin:40px">Open your dashboard from the link Claude gave you (or run the start script again). Ask Claude "show me my dashboard" for a fresh one.</p>';
 
   // Connect Claude: download the connector file that lets a coding agent build and host here.
@@ -285,6 +293,7 @@ export function createDashboard(ctx: Ctx, host: Host) {
       selected: sel,
       deployments,
       incidents,
+      pendingDeletions: await host.pendingDeletions(ws),
       security: {
         edgeReachable: sec.edgeReachable,
         events: sec.events.slice(-300).map((e) => ({ ...e, ...hostToEnv.get(e.host) })),
@@ -437,6 +446,26 @@ export function createDashboard(ctx: Ctx, host: Host) {
     await edge(`/bans?ip=${encodeURIComponent(ip)}`, { method: 'DELETE' });
     return true;
   }
+
+  // "Open site": production at its address; private test versions through a fresh share link
+  // (the same one host_share_link gives), so the owner doesn't land on "This is private".
+  api.get('/open', async (c) => {
+    const { env: e } = await host.env(c.get('ws'), c.req.query('app') ?? '', c.req.query('env') ?? '');
+    const to = e.kind === 'production' ? `${ctx.cfg.appUrl(e.host)}/` : host.testing.shareLink(e, SESSION_HOURS * 60);
+    return c.body(null, 303, { location: to, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+  });
+
+  // Deleting an app: Claude asks (host_delete_app), only the owner's Confirm here deletes it.
+  api.post('/delete-app', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { app?: string };
+    await host.confirmAppDeletion(c.get('ws'), String(body.app ?? ''));
+    return c.json({ ok: true });
+  });
+  api.delete('/delete-app', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { app?: string };
+    await host.cancelAppDeletion(c.get('ws'), String(body.app ?? ''));
+    return c.json({ ok: true });
+  });
 
   // A fresh workspace token inside a ready .mcp.json. POST (from the page), so a link elsewhere
   // can't mint tokens; the file is the only place the token is ever shown.

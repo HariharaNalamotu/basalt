@@ -138,6 +138,18 @@ const must = async (name, args = {}) => {
   if (r.isError) throw new Error(`${name}: ${r.text}`);
   return r.text;
 };
+
+// Deleting an app needs the owner: host_delete_app only asks, then the owner taps Confirm in the
+// dashboard. The test plays the owner through the dashboard link the tool returns.
+const deleteApp = async (app) => {
+  const asked = await must('host_delete_app', { app });
+  const link = /https?:\/\/\S+\/dashboard\/open\?t=\S+/.exec(asked)?.[0];
+  if (!link) throw new Error(`host_delete_app gave no dashboard link: ${asked}`);
+  const open = await fetch(link, { redirect: 'manual' });
+  const cookie = (open.headers.get('set-cookie') ?? '').split(';')[0];
+  const res = await fetch(new URL('/dashboard/api/delete-app', link), { method: 'POST', headers: { cookie, 'content-type': 'application/json', 'x-basalt-dashboard': '1' }, body: JSON.stringify({ app }), signal: AbortSignal.timeout(300_000) });
+  if (!res.ok) throw new Error(`owner confirm failed: ${res.status} ${await res.text()}`);
+};
 const waitDone = async (depId) => {
   for (;;) {
     const text = await must('host_wait', { deploymentId: depId });
@@ -302,7 +314,7 @@ try {
   failed = true;
   console.log('FAIL:', err.message);
 } finally {
-  await tool('host_delete_app', { app: APP, confirm: true }).catch(() => {});
+  await deleteApp(APP).catch(() => {});
   await mcp.close().catch(() => {});
   rmSync(appDir, { recursive: true, force: true });
 }
