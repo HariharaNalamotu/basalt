@@ -15,6 +15,16 @@ The first paste in a profile, Chrome asks you to type `allow pasting`. Do that b
 
 For a table other than `bookings`, pass its name: `basaltAttack(undefined, undefined, 'orders')` for step 1.
 
+## The stage app: Pulse
+
+[`pulse-app/`](pulse-app/) is Pulse, the gym class booking app Claude built on Basalt from one sentence and the one we demo on. Every Basalt install has its own database, so to demo on another laptop you deploy it there and make the demo accounts again:
+
+1. Start Basalt on that laptop (`./start.sh`) and connect Claude Code to it from the Connect page.
+2. Ask Claude Code to deploy `demo/pulse-app` as an app named `pulsegym` all the way to production. The data rules are in its `basalt.data.json`, so it stops once for the owner's approval link.
+3. Ask Claude Code to make the customer accounts on the live site, with `host_test_emails` for the sign up codes, and to book a class for each customer.
+4. Serve this folder so the stage browser can load the script: `python3 -m http.server 8799 --bind 127.0.0.1` from `demo/`, then the script is at `http://127.0.0.1:8799/attack.js`.
+5. Run it as in "Run it" above. Customer A's `basaltAttack()` gives the ids for customer B's command, so nothing needs copying from another laptop.
+
 ## How we know it isn't always green
 
 `node demo/check.mjs` runs it against fake backends: one that behaves like Basalt, one that hands everything to everyone, one with the false greens Codex found in review (another customer's rows in a search, a validation error, an outage) and one that leaks on page two. Every leak shows as LEAKED and anything that isn't a clear "no" shows as CAN'T TELL. (The forged-login check shows CAN'T TELL on the Basalt-like fake only because the fake doesn't check logins.)
