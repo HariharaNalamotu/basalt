@@ -1,6 +1,6 @@
-# Basalt — Security Test Catalogue
+# Basalt Security Test Catalogue
 
-The adversarial tests run against Basalt: what each one sends and which weakness it probes. These are attack tests — every one tries to break a security property on purpose. A test "passes" only when the attack is clearly refused; an error, timeout, or odd answer is treated as "could not tell", never as a pass.
+The adversarial tests run against Basalt: what each one sends and which weakness it probes. These are attack tests: every one tries to break a security property on purpose. A test "passes" only when the attack is clearly refused; an error, timeout, or odd answer is treated as "could not tell", never as a pass.
 
 The tests run in CI against a real database (and, for Cloud, real Basalt Auth). "Already tested today" below names the test behind each check, so you can find and run any of them. Guard (`cloud/src/guard.ts`) also attacks every app's live data on each deploy and writes the owner a safety receipt.
 
@@ -54,7 +54,7 @@ Guard (`cloud/src/guard.ts`) also runs the identity and isolation checks against
 
 What each check sends and which weakness it probes, grouped by what it targets. Most of them already run in the in-repo suites (see "Already tested today" above). They describe person A and person B, two signed-in users, plus a stranger with no login.
 
-### Identity — forging or breaking the login token
+### Identity: forging or breaking the login token
 
 An attacker who can get a bad token accepted becomes someone else without a password. These probe the token check from every angle.
 
@@ -73,7 +73,7 @@ An attacker who can get a bad token accepted becomes someone else without a pass
 | non-canonical | A signature re-encoded so its bytes match but its text differs | String-equality shortcuts in signature checks |
 | zero-id | The all-zero user id | A default/null user that could own orphaned rows |
 
-### Isolation — one user reaching another's data
+### Isolation: one user reaching another's data
 
 The core promise. Person B, fully logged in as themselves, tries to touch person A's records. Run once per table.
 
@@ -85,7 +85,7 @@ The core promise. Person B, fully logged in as themselves, tries to touch person
 | archive | Archive/delete A's record | Delete access control |
 | fake-owner | Create a record with `owner_id` set to A | Mass assignment of the ownership field |
 
-### Escalation — gaining more power than granted
+### Escalation: gaining more power than granted
 
 | Check | What it tries | Weakness probed |
 | --- | --- | --- |
@@ -93,7 +93,7 @@ The core promise. Person B, fully logged in as themselves, tries to touch person
 | role-claim | Put `role: admin` inside your own token | Servers that trust claims in the token instead of the database |
 | immutable owner_id / id / archived_at | Rewrite these system columns through a normal update | Protected fields writable via mass assignment |
 
-### Injection — smuggling code or extra fields in
+### Injection: smuggling code or extra fields in
 
 | Check | What it sends | Weakness probed |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ The core promise. Person B, fully logged in as themselves, tries to touch person
 | raw-route | A request to a `/sql`-style endpoint | A hidden raw-query or delete endpoint |
 | page-cap | A request for 100,000 rows | Dumping a whole table in one call |
 
-### Files — uploads and downloads
+### Files: uploads and downloads
 
 | Check | What it tries | Weakness probed |
 | --- | --- | --- |
@@ -119,7 +119,7 @@ The core promise. Person B, fully logged in as themselves, tries to touch person
 | ticket-guess | Download with a random/guessed link token | Guessable download links |
 | headers | Inspect a real download's response headers | Downloads that render instead of attaching (missing `nosniff`, CSP) |
 
-### Transport — the HTTP layer
+### Transport: the HTTP layer
 
 | Check | What it tries | Weakness probed |
 | --- | --- | --- |
@@ -131,7 +131,7 @@ The core promise. Person B, fully logged in as themselves, tries to touch person
 | unknown-route | Hit undeclared and `../`-normalised routes | Hidden or debug endpoints |
 | hsts | Read the `Strict-Transport-Security` header over HTTPS | Downgrade to plain HTTP |
 
-### Limits — flooding the service
+### Limits: flooding the service
 
 | Check | What it tries | Weakness probed |
 | --- | --- | --- |

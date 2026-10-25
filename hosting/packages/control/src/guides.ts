@@ -171,6 +171,7 @@ const operations = `# Basalt Host — operating an app
 | Backend limits, per-route rate limits, maintenance mode | host_update_api_config, host_route_policy |
 | Traffic spike / attack | host_protection { underAttack: true } (browser challenge), lower perIpPerMinute, maxConcurrency |
 | Load third-party scripts/APIs in the frontend | host_csp { connectSrc, scriptSrc, frameSrc, ... } |
+| Styles | Put CSS in .css files (Vite bundles them). Inline \`<style>\` blocks are blocked by the CSP; \`style="..."\` attributes and React's \`style={...}\` work. |
 | Let a human see staging | host_share_link |
 | Clean up | host_delete_env (previews are also deleted automatically after 24h) |
 

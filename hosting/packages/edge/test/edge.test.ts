@@ -166,6 +166,10 @@ describe('static frontend', () => {
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain('connect-src \'self\' https://api.stripe.com');
+    // Inline <style> blocks are refused (injected CSS can read the page); style="" attributes still work.
+    expect(csp).toMatch(/style-src 'self'(;| )/);
+    expect(csp).not.toMatch(/style-src [^;]*'unsafe-inline'/);
+    expect(csp).toContain("style-src-attr 'unsafe-inline'");
     expect(r.headers.get('strict-transport-security')).toMatch(/max-age/);
     expect(r.headers.get('x-frame-options')).toBe('DENY');
     expect(r.headers.get('cache-control')).toBe('no-cache');

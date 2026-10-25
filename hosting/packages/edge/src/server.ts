@@ -130,7 +130,10 @@ export function createEdgeHandler(o: EdgeOptions) {
       h['content-security-policy'] = [
         `default-src 'self'`,
         `script-src ${list(["'self'"], [...c.scriptSrc, ...(nonce ? [`'nonce-${nonce}'`] : [])])}`,
-        `style-src ${list(["'self'", "'unsafe-inline'"], c.styleSrc)}`,
+        // No inline <style> blocks (injected CSS can read the page), but style="" attributes, which
+        // React's style={...} writes, still work.
+        `style-src ${list(["'self'"], c.styleSrc)}`,
+        `style-src-attr 'unsafe-inline'`,
         `img-src ${list(["'self'", 'data:', 'blob:'], c.imgSrc)}`,
         `font-src ${list(["'self'", 'data:'], c.fontSrc)}`,
         `connect-src ${list(["'self'"], c.connectSrc)}`,
