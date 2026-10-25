@@ -44,6 +44,12 @@ await host.recover();
 
 publishBasaltPackages(cfg.REGISTRY_URL, log).catch((err) => log.error('registry_publish_failed', { err }));
 
+// Infra containers lose their app-network attachments when recreated, possibly after control
+// started (compose starts the edge after control), so check at boot and keep checking.
+const reattach = () => host.envs.reattachInfra().catch((err) => log.error('infra_reattach_failed', { err }));
+await reattach();
+const watchNetworks = setInterval(() => void reattach(), 15_000);
+
 const janitor = setInterval(() => {
   host.runtime.janitor({ get: (id) => host.appById(id) }).catch((err) => log.error('janitor_failed', { err }));
 }, 60_000);
@@ -68,6 +74,7 @@ const internal = serve({ fetch: createInternalApi(ctx, host).fetch, port: intern
 for (const s of ['SIGTERM', 'SIGINT'] as const) {
   process.once(s, () => {
     clearInterval(janitor);
+    clearInterval(watchNetworks);
     clearInterval(watchSettings);
     pub.close();
     internal.close();

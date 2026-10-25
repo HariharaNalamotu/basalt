@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import * as tar from 'tar';
 import { describe, expect, it } from 'vitest';
 import { SecretBox } from '../src/crypto.js';
+import { missingInfra } from '../src/environments.js';
 import { loadConfig } from '../src/config.js';
 import { emailsReadable, hostFor, RESERVED_APP_NAMES } from '../src/naming.js';
 import { detectManifest } from '../src/pipeline.js';
@@ -141,5 +142,18 @@ describe('bounded settings', () => {
     const sealed = box.seal('s3cret', 'env:a:KEY');
     expect(box.open(sealed, 'env:a:KEY')).toBe('s3cret');
     expect(() => box.open(sealed, 'env:b:KEY')).toThrow();
+  });
+});
+
+describe('infra network attachments', () => {
+  const infra = ['basalt-postgres', 'basalt-auth', 'basalt-edge', 'basalt-cloud'];
+  it('finds infra containers a recreate dropped from an environment network', () => {
+    const net = { Containers: { a1: { Name: 'basalt-app-env_x-rel' }, b2: { Name: 'basalt-postgres' } } };
+    expect(missingInfra(net, infra)).toEqual(['basalt-auth', 'basalt-edge', 'basalt-cloud']);
+  });
+  it('finds nothing when everything is attached, and everything on an empty network', () => {
+    const all = { Containers: Object.fromEntries(infra.map((n, i) => [String(i), { Name: n }])) };
+    expect(missingInfra(all, infra)).toEqual([]);
+    expect(missingInfra({}, infra)).toEqual(infra);
   });
 });
