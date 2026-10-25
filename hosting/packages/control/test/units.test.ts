@@ -73,6 +73,19 @@ describe('source scanning', () => {
   });
 });
 
+describe('data kept outside the Data block', () => {
+  it('warns when the app makes its own tables without basalt.data.json, and not once it has data rules', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'own-tables-'));
+    await mkdir(path.join(dir, 'db/migrations'), { recursive: true });
+    await writeFile(path.join(dir, 'db/migrations/001_init.sql'), 'CREATE TABLE bookings (id serial primary key, name text);\n');
+    const r = await scanSource(dir);
+    expect(r.blocking).toEqual([]);
+    expect(r.warnings.map((f) => f.rule)).toContain('own-tables-without-data-rules');
+    await writeFile(path.join(dir, 'basalt.data.json'), '{ "tables": { "bookings": { "fields": { "name": { "type": "text" } } } } }');
+    expect((await scanSource(dir)).warnings.map((f) => f.rule)).not.toContain('own-tables-without-data-rules');
+  });
+});
+
 describe('manifest detection', () => {
   it('detects backend, frontend, migrations and e2e by convention', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'man-'));
