@@ -10,7 +10,7 @@
 
 People with no coding experience build apps in their own Claude Code, the normal way. Basalt sits underneath and enforces the ground rules, so nothing the AI writes can leak one customer's data to another. There's no AI inside Basalt: the rules are fixed and checked the same way every time.
 
-**See it for yourself:** [`demo/`](demo/README.md) has a script you paste into the browser console on a live Basalt app. Signed in as one customer, it tries 9 ways to reach another customer's booking from inside the app's own page, with that customer's real login, and shows every result on screen.
+**See it for yourself:** [`demo/`](demo/README.md) has a script you paste into the browser console on a live Basalt app. Signed in as one customer, it tries 9 ways to reach another customer's booking from inside the app's own page, with that customer's real login, and shows every result on screen. The stage demo runs it on Pulse, a gym class booking app Claude built on Basalt from one sentence: Leo tries to reach Ava's booking and all nine attempts are refused, while his own booking still works.
 
 ## The parts
 
@@ -23,6 +23,7 @@ People with no coding experience build apps in their own Claude Code, the normal
 | [`cloud/`](cloud/README.md) | Basalt Cloud: one locked down database per app, the owner's approval pages, data map and Guard (the safety check and receipt). | Mihir |
 | [`demo/`](demo/README.md) | The attack demo: try to break a live Basalt app from inside its own page. | Mihir |
 | [`design/`](design/README.md) | The black and silver design system and logo used on every owner page. | Mihir |
+| [`security/`](security/README.md) | The security test catalogue: every attack Basalt is tested against, and the test that runs it. | Kushaal |
 
 ## How a request flows on a hosted app
 
@@ -32,10 +33,20 @@ People with no coding experience build apps in their own Claude Code, the normal
 
 The app's own backend can do the same through `ctx.data` in the API framework.
 
+## Where Claude sits, and where it can still go wrong
+
+Claude Code builds the app, in the person's own Claude Code, through Basalt's tools. Claude is never inside Basalt: it never gets a database login, every read and write goes through the one locked function above, and the rules come from a fixed contract (`basalt.data.json`) that Basalt checks the same way every time. Anything that shows data to more people waits for the owner's plain-English yes, and Guard attacks every deploy before it can ship.
+
+What Basalt doesn't solve, said plainly:
+
+- **The owner's own agent can approve its own change.** The approval link goes back to Claude so it can show it to the owner. If the owner lets Claude open it, Claude can say yes for them. Approval stops app code and later edits from quietly widening access; it doesn't stop an agent the owner has handed the link to. Next step: send the link only to the owner's email.
+- **Basalt guarantees who sees the data, not that the app is right.** Claude can still build the wrong page or a confusing one. In our dress rehearsal Claude's first owner page asked for more rows than the Data block allows, so the owner saw an error; the guide now says so and gives a helper.
+- **Data kept outside Basalt isn't protected.** If Claude saves something in the browser or in a file, the database rules can't cover it. Guard's code scan looks for that in the app's folder and lists every place it finds.
+
 ## What's built (as of Sun Oct 25)
 
 - **Data block:** get, list (filters, sorting, paging), create, update, archive and restore, file uploads, sharing, owner admins and additive rule changes. 111 attack and feature tests.
-- **Cloud:** a database per app, plain-English approval for anything that shows data to more people, the owner's data map, test logins through Basalt Auth and **Guard** (`basalt_check`). Guard scans the app folder for data kept outside Basalt, then signs in as two people and a stranger and tries to reach data that isn't theirs: 11 attacks for a one-table app, 6 more for each extra table and one more when the app stores files. Then it writes a safety receipt for the owner. 55 tests.
+- **Cloud:** a database per app, plain-English approval for anything that shows data to more people, the owner's data map, test logins through Basalt Auth and **Guard** (`basalt_check`). Guard scans the app folder for data kept outside Basalt, then signs in as two people and a stranger and tries to reach data that isn't theirs: 11 attacks for a one-table app, 6 more for each extra table and one more when the app stores files. Then it writes a safety receipt for the owner. 56 tests.
 - **Auth and hosting joined up:** Cloud apps use real Basalt Auth logins, and sessions Auth ends stop working in the database too. Every hosted environment gets its own Cloud data project, served at `/_basalt/data` on the app's own site. The app's rules live in `basalt.data.json` in its folder: deploys apply them to preview and staging before the app's tests run, and promoting to production stops with the owner's approval link until they tap "Yes". (`host_data_rules` sets them by hand.) After the tests on every deploy, Guard attacks the environment's live data, a failed check stops the deploy and production needs Guard to pass in staging. `host_data_check` runs it on demand and returns the owner's safety receipt.
 - Reviewed with Codex in several rounds. Every finding so far was fixed.
 

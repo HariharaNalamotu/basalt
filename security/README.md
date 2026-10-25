@@ -2,10 +2,9 @@
 
 The adversarial tests run against Basalt: what each one sends and which weakness it probes. These are attack tests — every one tries to break a security property on purpose. A test "passes" only when the attack is clearly refused; an error, timeout, or odd answer is treated as "could not tell", never as a pass.
 
-The tests live in two places:
+The tests run in CI against a real database (and, for Cloud, real Basalt Auth). "Already tested today" below names the test behind each check, so you can find and run any of them. Guard (`cloud/src/guard.ts`) also attacks every app's live data on each deploy and writes the owner a safety receipt.
 
-- **In-repo attack suites** that run in CI against a real database (and, for Cloud, real Basalt Auth).
-- **A standalone black-box tester** (`basalt-tester.mjs`, **planned, not in the repo yet**) that will fire the checks below at a running Basalt data API as two separate people plus an unauthenticated stranger.
+Later on the page: what each check sends and which weakness it probes, and the design for a standalone outside tester we want to add next.
 
 ---
 
@@ -23,7 +22,7 @@ Run: `cd data && npm test` (also `cloud`, `auth`, `api`, `hosting`). Each suite 
 
 ### Already tested today
 
-Most of the checks in the planned tester below already run in these suites. Test names are quoted so you can find them; data tests are in `data/test/attacks.test.ts` unless another file is named.
+Almost every check in the tables below already runs in these suites. Test names are quoted so you can find them; data tests are in `data/test/attacks.test.ts` unless another file is named.
 
 | Check | Where it runs today |
 | --- | --- |
@@ -49,9 +48,9 @@ Guard (`cloud/src/guard.ts`) also runs the identity and isolation checks against
 
 ---
 
-## The black-box attack tester (planned)
+## Next: an outside tester
 
-> **Planned.** `basalt-tester.mjs` is not in the repo yet. This section is its design: it would run the checks below from outside, against any running Basalt. Most of them already run inside the repo today (see "Already tested today" above).
+> The checks below already run inside the repo (see "Already tested today"). The next step is `basalt-tester.mjs`, a standalone script that would run the same checks from outside against any running Basalt. It isn't written yet; this is its design.
 
 `basalt-tester.mjs` will sign in as person A and person B (and a stranger with no login) and try, from the outside, to reach data that isn't theirs or to subvert the API. Grouped by what each attack targets.
 
@@ -141,7 +140,7 @@ The core promise. Person B, fully logged in as themselves, tries to touch person
 
 ---
 
-## Running the tester (planned)
+## How the outside tester will run
 
 Once the script lands, the intended usage is:
 
