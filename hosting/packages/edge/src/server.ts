@@ -104,6 +104,9 @@ export function createEdgeHandler(o: EdgeOptions) {
       'content-type': isHtml ? 'text/html; charset=utf-8' : 'application/json; charset=utf-8',
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
+      // Pages the edge writes itself (not found, private, expired link) are fixed text: nothing
+      // on them loads or runs. The challenge page passes its own policy, which wins.
+      ...(isHtml ? { 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } : {}),
       ...headers,
     });
     res.end(body);
