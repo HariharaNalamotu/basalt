@@ -262,7 +262,7 @@
     const unsure = rows.filter((r) => r.pass === null).length;
     const attacks = rows.filter((r) => r.badge !== 'WORKS');
     panel('Attacking this app from inside its own page', rows,
-      bad ? `${bad} problem${bad === 1 ? '' : 's'} found.` : unsure ? `${unsure} check${unsure === 1 ? '' : 's'} couldn't tell. Run it again.` : `${attacks.length} of ${attacks.length} attacks refused by the database.`, !bad && !unsure);
+      bad ? `${bad} problem${bad === 1 ? '' : 's'} found.` : unsure ? `${unsure} check${unsure === 1 ? '' : 's'} couldn't tell. Run it again.` : `${attacks.length} of ${attacks.length} attacks refused by Basalt.`, !bad && !unsure);
     console.table(rows.map((r) => ({ attack: r.title, result: r.pass ? r.badge || 'REFUSED' : r.pass === null ? "can't tell" : r.badge ? 'BROKEN' : 'LEAKED', detail: r.detail })));
     return rows;
   };

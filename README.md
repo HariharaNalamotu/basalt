@@ -46,7 +46,7 @@ One thing to run. It checks Docker, builds and starts Basalt, and opens the **Co
 | Computer | Run | Needs |
 | --- | --- | --- |
 | Mac | double-click `start-mac.command`, or `./start.sh` in Terminal | Docker Desktop |
-| Windows | double-click `start-windows.cmd` | WSL (`wsl --install`) and Docker Desktop with WSL integration turned on |
+| Windows | double-click `start-windows.cmd` (not yet tried on a real Windows machine) | WSL (`wsl --install`) and Docker Desktop with WSL integration turned on |
 | Linux | `./start.sh` | Docker Engine with Compose |
 
 Then put the downloaded file in an empty folder for your app as `.mcp.json` (the page shows a command that does it), open Claude Code there and approve the `basalt` server. Claude Code on that computer needs Node.js 24 or newer. Each download makes a new workspace key. `./start.sh --no-build` starts again without rebuilding; `./start.sh --stop` stops Basalt and keeps your apps and data. The owner's dashboard is at the same link (`host_dashboard` gives Claude a fresh one, as does `docker exec basalt-control node dist/admin.js dashboard-link my-apps`).
@@ -84,7 +84,7 @@ Unit and integration suites:
 ```sh
 cd data && npm test        # needs Docker (starts its own Postgres)
 cd cloud && npm test       # also runs Basalt Auth in-process
-cd hosting && npm test
+cd hosting && npm test     # the browser worker's tests need Playwright's Chromium (npx playwright install chromium)
 cd auth && npm test
 cd api && npm test
 ```
