@@ -8,6 +8,7 @@
   --focus:#D3DCE8; --clear:#00000000;
   --silver:#CCD2D9; --silver-hover:#E3E6EA; --silver-pressed:#B8BEC6;
   --silver-ink:#15181C; --silver-edge:#505C69;
+  --logo-body:#7D8996; --logo-facet:#E3E6EA;
   --metal-a:#C6CCD3; --metal-b:#E3E6EA; --metal-c:#CDD3DA; --metal-d:#D5DAE0;
   --metal:linear-gradient(112deg,var(--metal-a) 0%,var(--metal-b) 38%,var(--metal-c) 40%,var(--metal-d) 100%);
   --safe:#A9CEBC; --safe-bg:#182B24;
@@ -39,6 +40,7 @@
   --bg-0:#F3F5F7; --bg-1:#FFFFFF; --bg-2:#EAEEF2; --bg-3:#DEE4EA;
   --border:#CAD1D9; --edge:#697684;
   --text:#171B20; --text-secondary:#39424D; --text-muted:#505C69; --focus:#354D6B;
+  --logo-body:#15181C; --logo-facet:#C6CCD3;
   --safe:#285E46; --safe-bg:#E7F1EB;
   --warning:#725014; --warning-bg:#F8EEDB;
   --danger:#8A3543; --danger-bg:#F8E8EB;
@@ -51,6 +53,7 @@
   --bg-0:#F3F5F7; --bg-1:#FFFFFF; --bg-2:#EAEEF2; --bg-3:#DEE4EA;
   --border:#CAD1D9; --edge:#697684;
   --text:#171B20; --text-secondary:#39424D; --text-muted:#505C69; --focus:#354D6B;
+  --logo-body:#15181C; --logo-facet:#C6CCD3;
   --safe:#285E46; --safe-bg:#E7F1EB;
   --warning:#725014; --warning-bg:#F8EEDB;
   --danger:#8A3543; --danger-bg:#F8E8EB;
@@ -179,7 +182,9 @@ textarea.field__input { min-height:var(--textarea-height); resize:vertical; }
 /* Single-column owner pages (approval, receipt, data map) */
 .page { max-width:760px; margin-inline:auto; padding:var(--s12) var(--s4) var(--s16); display:grid; gap:var(--s6); }
 .wordmark { display:inline-flex; align-items:center; gap:var(--s2); color:var(--text); font-weight:var(--semibold); text-decoration:none; }
-.wordmark__mark { width:var(--icon-lg); height:var(--icon-lg); border-radius:var(--r-control); background:var(--metal); border:var(--line) solid var(--silver-edge); }
+.wordmark__mark { width:28px; height:28px; flex:none; }
+.wordmark__mark .body { fill:var(--logo-body); }
+.wordmark__mark .facet { fill:var(--logo-facet); }
 .result-row { display:grid; grid-template-columns:var(--badge-column) minmax(0,1fr); gap:var(--s4); align-items:start; padding:var(--s4) var(--s0); border-bottom:var(--line) solid var(--border); }
 .result-row:last-child { border-bottom:none; }
 .result-row .badge { justify-self:start; }

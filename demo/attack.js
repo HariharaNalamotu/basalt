@@ -67,10 +67,11 @@
   position:fixed;inset:0;z-index:2147483647;overflow:auto;background:var(--bg-0);color:var(--text-2);padding:32px;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;text-align:left}
 #basalt-attack *{box-sizing:border-box;margin:0}
+#basalt-attack h1,#basalt-attack p,#basalt-attack div{max-width:none}
 #basalt-attack .inner{max-width:1120px;margin:0 auto;display:grid;gap:24px}
 #basalt-attack .head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:start}
 #basalt-attack .brand{display:inline-flex;align-items:center;gap:8px;color:var(--text);font-weight:600;margin-bottom:12px}
-#basalt-attack .mark{width:24px;height:24px;border-radius:8px;border:1px solid #505C69;background:linear-gradient(112deg,#C6CCD3 0%,#E3E6EA 38%,#CDD3DA 40%,#D5DAE0 100%)}
+#basalt-attack .brand .mark{width:28px;height:28px}
 #basalt-attack h1{color:var(--text);font-size:40px;line-height:48px;font-weight:600;letter-spacing:-.02em}
 #basalt-attack .intro{font-size:20px;line-height:28px;margin-top:8px}
 #basalt-attack .summary{display:flex;align-items:center;gap:12px;color:var(--text);font-size:32px;line-height:40px;font-weight:600;letter-spacing:-.02em}
@@ -107,7 +108,7 @@
     el.innerHTML = `<style>${STAGE_CSS}</style>
       <div class="inner">
         <div class="head">
-          <div><div class="brand"><span class="mark" aria-hidden="true"></span>Basalt</div>
+          <div><div class="brand"><svg class="mark" viewBox="0 0 64 64" aria-hidden="true" style="fill:none;stroke:none"><polygon points="12,14 24,6 40,6 52,14 52,50 40,58 24,58 12,50" fill="#7D8996"/><polygon points="12,14 24,6 40,6 52,14 40,22 24,22" fill="#E3E6EA"/><polygon points="12,14 24,22 24,58 12,50" fill="#E3E6EA"/></svg>Basalt</div>
             <h1 id="basalt-attack-title">${esc(title)}</h1>
             <p class="intro">Run from this page with customer B's real login, through the same door the app's own code uses.</p></div>
           <button class="close" type="button">Close</button>
