@@ -125,10 +125,10 @@ export class AuthLink {
     return { userId: entry.userId, token: entry.token, expiresInSeconds: Math.floor((entry.expiresAt - Date.now()) / 1000) };
   }
 
-  /** The id of the person who signed up with this email, or null if nobody has. */
-  async userIdByEmail(projectId: string, email: string, owner = this.#owner): Promise<string | null> {
-    const r = await this.#platform<{ users: { id: string }[] }>('GET', `/projects/${projectId}/users?email=${encodeURIComponent(email)}&limit=1`, undefined, owner);
-    return r.users[0]?.id ?? null;
+  /** The person who signed up with this email, or null if nobody has. */
+  async userByEmail(projectId: string, email: string, owner = this.#owner): Promise<{ id: string; emailVerified: boolean; disabled: boolean } | null> {
+    const r = await this.#platform<{ users: { id: string; emailVerified: boolean; disabled: boolean }[] }>('GET', `/projects/${projectId}/users?email=${encodeURIComponent(email)}&limit=1`, undefined, owner);
+    return r.users[0] ?? null;
   }
 
   /** Sessions Auth ended early, oldest first. */
