@@ -178,6 +178,7 @@ export default defineConfig({
       const info = await this.ctx.docker.inspectNetwork(net);
       const edgeIp = (Object.values(info.Containers ?? {}) as Array<{ Name: string; IPv4Address: string }>).find((c) => c.Name === this.ctx.cfg.EDGE_CONTAINER)?.IPv4Address.split('/')[0];
       if (!edgeIp) throw new Error('edge not reachable on the test network');
+      await this.ctx.docker.ensureImage(this.ctx.cfg.TEST_IMAGE);
       await this.ctx.docker.createContainer(cname, {
         Image: this.ctx.cfg.TEST_IMAGE,
         User: '10001:10001',
