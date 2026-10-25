@@ -531,9 +531,14 @@
   function dataCard(s, guard) {
     var d = s.data, rows = [];
     if (d) rows.push('<div class="feed-item"><div class="f-icon '+(d.status==='live'?'good':'warning')+'">'+ic('database')+'</div><div><div class="f-title">'+(d.status==='live'?'Data rules are on':d.status==='waiting_for_owner'?'Waiting for your OK':'No data saved here')+'</div><div class="f-detail">'+esc((d.rules||'This version doesn’t save customer data with Basalt.').split('\n').slice(0,4).join(' '))+'</div>'+(d.mapUrl?'<div class="f-meta"><a href="'+esc(d.mapUrl)+'" target="_blank" rel="noopener noreferrer">See where your data lives '+ic('out')+'</a></div>':'')+'</div></div>');
+    // Each change waiting for the owner gets its own button to the page where they say yes or no.
+    ((d && d.pending) || []).forEach(function (a) {
+      rows.push('<div class="feed-item"><div class="f-icon warning">'+ic('clock')+'</div><div><div class="f-title">'+esc(a.label)+'</div><div class="f-detail">Waiting for your OK. Nothing changes until you say yes.</div><div class="f-meta"><a class="btn" href="'+esc(a.approveUrl)+'" target="_blank" rel="noopener noreferrer">Review and approve '+ic('out')+'</a></div></div></div>');
+    });
     if (guard) rows.push('<div class="feed-item"><div class="f-icon '+(guard.status==='passed'?'good':'critical')+'">'+ic('shield')+'</div><div><div class="f-title">'+(guard.status==='passed'?'Guard: nobody could reach other people’s data':'Guard found data the wrong people could reach')+'</div><div class="f-detail">Guard signs in as two test customers and a stranger and tries '+D.fmt((guard.passed||0)+(guard.failed||0))+' ways to see or change data that isn’t theirs. Last run on '+esc(guard.env)+', '+esc(D.ago(guard.at))+'.</div>'+(guard.receiptUrl?'<div class="f-meta"><a href="'+esc(guard.receiptUrl)+'" target="_blank" rel="noopener noreferrer">Open the safety receipt '+ic('out')+'</a></div>':'')+'</div></div>');
     return rows.length?'<div class="feed">'+rows.join('')+'</div>':D.emptySmall('This app doesn’t save customer data with Basalt yet.');
   }
+  D.dataCard = dataCard;
 
   D.views.security = function () {
     var s = D.sel(), sec = D.data.security, ui = D.ui;
@@ -656,7 +661,7 @@
   function changesLog() {
     var acts = D.data.activity;
     if (!acts.length) return D.emptySmall('No changes yet.');
-    var NAMES = { 'app.created':'Created the app','app.deleted':'Deleted the app','deploy.started':'Started an update','promote':'Moved a version forward','secret.set':'Set a secret','secret.deleted':'Removed a secret','data_rules.updated':'Changed the data rules','data_admin.requested':'Asked to add a data admin','data_check.ran':'Ran a Guard check','protection.updated':'Changed protection settings','allowlist.added':'Always-allowed an address','allowlist.removed':'Removed an always-allowed address','ban.lifted':'Unblocked an address','token.created':'Made a connector key','api_config.updated':'Changed backend settings' };
+    var NAMES = { 'app.created':'Created the app','app.deleted':'Deleted the app','deploy.started':'Started an update','promote':'Moved a version forward','secret.set':'Set a secret','secret.deleted':'Removed a secret','data_rules.updated':'Changed the data rules','data_admin.requested':'Asked to add a data admin','data_admin.removal_requested':'Asked to remove a data admin','data_check.ran':'Ran a Guard check','protection.updated':'Changed protection settings','allowlist.added':'Always-allowed an address','allowlist.removed':'Removed an always-allowed address','ban.lifted':'Unblocked an address','token.created':'Made a connector key','api_config.updated':'Changed backend settings' };
     return '<div class="feed">'+acts.map(function (a){ return '<div class="feed-item"><div class="f-icon info">'+ic('list')+'</div><div><div class="f-title">'+esc(NAMES[a.action]||a.action)+'</div><div class="f-meta">'+(a.target?chip('info', a.target):'')+'</div></div><div class="f-time">'+esc(D.ago(a.at))+'</div></div>'; }).join('')+'</div>';
   }
   D.views.logs = function () {

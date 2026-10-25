@@ -7,7 +7,8 @@ import { contextLine, esc, friendlyName, page } from './html.ts';
 export interface MapStats {
   tables: Record<string, { active: number; archived: number }>;
   files: { count: number; bytes: number };
-  admins: number;
+  // Who is an admin, named the way the owner approved them.
+  admins: { label: string }[];
   recent: { at: string; table: string; op: string; columns: string[] }[];
 }
 
@@ -116,6 +117,9 @@ export function renderMap(appName: string, contract: Contract, stats: MapStats):
     ? `<ul>${stats.recent.map((r) => `<li>${esc(ago(r.at))}: ${r.op === 'INSERT' ? `a new ${esc(one(r.table))} was added` : `a ${esc(one(r.table))} changed (${esc(r.columns.map(words).join(', '))})`}</li>`).join('')}</ul>`
     : '<p class="muted">Nothing yet.</p>';
   const mb = (stats.files.bytes / 1048576).toFixed(1);
+  const adminCard = `<div class="card"><h2>Admins <span class="muted">see and change everything</span></h2>${
+    stats.admins.length ? `<ul>${stats.admins.map((a) => `<li>${esc(a.label)}</li>`).join('')}</ul>` : '<p class="muted">Nobody is an admin. Everyone only sees their own entries.</p>'
+  }<p class="muted">To add an admin or take one away, ask Claude to add or remove them. You'll get a link to approve it first.</p></div>`;
 
   return page(
     `${appName}: data map`,
@@ -129,11 +133,12 @@ export function renderMap(appName: string, contract: Contract, stats: MapStats):
 </style>
 <p class="decision__context">${contextLine(appName)}</p>
 <h1>Where ${esc(friendlyName(appName).app)}'s information lives</h1>
-<p class="muted">Live: ${tables.length} kind${tables.length === 1 ? '' : 's'} of data, ${stats.files.count} file${stats.files.count === 1 ? '' : 's'} (${mb} MB), ${stats.admins} admin${stats.admins === 1 ? '' : 's'}.</p>
-<div class="card"><h2>Who can reach what</h2>${diagram(contract, stats.admins)}
+<p class="muted">Live: ${tables.length} kind${tables.length === 1 ? '' : 's'} of data, ${stats.files.count} file${stats.files.count === 1 ? '' : 's'} (${mb} MB), ${stats.admins.length} admin${stats.admins.length === 1 ? '' : 's'}.</p>
+<div class="card"><h2>Who can reach what</h2>${diagram(contract, stats.admins.length)}
 <p class="legend"><span><i class="dot" style="background:var(--ok)"></i>their own</span><span><i class="dot" style="background:var(--share)"></i>read only, when assigned</span><span><i class="dot" style="background:var(--admin)"></i>everything</span><span><i class="dot" style="background:var(--bad)"></i>cannot access</span></p>
 <p>The database applies these rules. The AI that built your app only ever gets the same access as the person signed in. Someone who breaks into the website still can't open the data, because the database checks every request itself.</p></div>
 ${cards}
+${adminCard}
 <div class="card"><h2>Recent changes</h2>${recent}<p class="muted">Basalt records what changed and when, never the values.</p></div>`,
   );
 }

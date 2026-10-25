@@ -99,14 +99,32 @@ export function dataUrlFor(cfg: DataLinkConfig | null, projectId: string | null)
   return `${cfg.url.replace(/\/+$/, '')}/p/${projectId}`;
 }
 
+/** A change waiting for the owner's yes, and the page where they give it. */
+export interface PendingApproval {
+  kind: 'rules' | 'admin' | 'remove_admin';
+  label: string;
+  approveUrl: string;
+}
+
 export interface DataStatus {
   status: 'live' | 'waiting_for_owner' | 'no_rules';
   rules: string;
   waitingForOwner: boolean;
   mapUrl: string | null;
+  /** Approval links. Only for the owner's signed in dashboard and Claude, never app code. */
+  pending: PendingApproval[];
 }
 
-/** An environment's data rules in plain English, and the owner's data map link. */
+const PENDING_KINDS = new Set(['rules', 'admin', 'remove_admin']);
+
+function pendingFrom(raw: unknown): PendingApproval[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((a) => a && PENDING_KINDS.has(a.kind) && typeof a.label === 'string' && typeof a.approveUrl === 'string' && /^https?:\/\//.test(a.approveUrl))
+    .map((a) => ({ kind: a.kind, label: a.label.slice(0, 120), approveUrl: a.approveUrl }));
+}
+
+/** An environment's data rules in plain English, the owner's data map link and what's waiting for them. */
 export async function dataStatus(cfg: DataLinkConfig, adminKey: string, f: typeof fetch = fetch): Promise<DataStatus> {
   const { project: p } = await cloudCall(cfg, 'GET', '/api/projects/me', undefined, f, adminKey);
   return {
@@ -114,12 +132,19 @@ export async function dataStatus(cfg: DataLinkConfig, adminKey: string, f: typeo
     rules: String(p.rules ?? ''),
     waitingForOwner: Boolean(p.waitingForOwner),
     mapUrl: typeof p.mapUrl === 'string' ? p.mapUrl : null,
+    pending: pendingFrom(p.pending),
   };
 }
 
 /** Asks the owner to make someone an admin of an environment's data (always needs their approval). */
 export async function requestDataAdmin(cfg: DataLinkConfig, adminKey: string, who: { email?: string; who?: string; userId?: string; label?: string }, f: typeof fetch = fetch): Promise<{ approveUrl: string; userId: string }> {
   const out = await cloudCall(cfg, 'POST', '/api/projects/me/admins', who, f, adminKey);
+  return { approveUrl: String(out.approveUrl), userId: String(out.userId) };
+}
+
+/** Asks the owner to take someone's admin access away (always needs their approval). */
+export async function requestRemoveDataAdmin(cfg: DataLinkConfig, adminKey: string, who: { email?: string; who?: string; userId?: string }, f: typeof fetch = fetch): Promise<{ approveUrl: string; userId: string }> {
+  const out = await cloudCall(cfg, 'POST', '/api/projects/me/admins/remove', who, f, adminKey);
   return { approveUrl: String(out.approveUrl), userId: String(out.userId) };
 }
 

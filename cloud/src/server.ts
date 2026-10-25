@@ -6,6 +6,7 @@
 //   PUT  /api/projects/me/rules        { contract }  -> live now, or waiting for the owner's yes
 //   POST /api/projects/me/test-login   { who }       -> a login token for a test person
 //   POST /api/projects/me/admins       { email | who | userId } -> asks the owner to make someone an admin
+//   POST /api/projects/me/admins/remove { email | who | userId } -> asks the owner to take that away
 //   POST /api/projects/me/check        { scan? }     -> Guard's safety check, with a receipt link
 //   GET  /approve/<id>?t=<token>                     -> the owner's approval page
 //   GET  /owner/<project id>?k=<key>                  -> the owner's data map
@@ -188,9 +189,11 @@ export function createCloudServer(options: CloudServerOptions) {
     return handler;
   }
 
+  // Only ever sent to whoever holds the app's admin key, never to app code.
   async function status(p: Project) {
     const pending = await projects.pendingApproval(p.id);
     const approved = p.approvedContract ? parseContract(p.approvedContract) : null;
+    const label = { rules: () => 'New rules for who can see what', admin: (who: string) => `Make ${who} an admin`, remove_admin: (who: string) => `Remove ${who} as admin` };
     return {
       id: p.id,
       name: p.name,
@@ -198,6 +201,8 @@ export function createCloudServer(options: CloudServerOptions) {
       status: approved ? 'live' : pending ? 'waiting_for_owner' : 'no_rules_yet',
       rules: approved ? summarize(approved).text : null,
       waitingForOwner: Boolean(pending),
+      // Everything waiting for the owner's yes, so a lost link can be found again.
+      pending: (await projects.pendingApprovals(p.id)).map((a) => ({ kind: a.kind, label: label[a.kind](a.label ?? 'this person'), approveUrl: `${base}/approve/${a.id}?t=${a.token}` })),
       mapUrl: `${base}/owner/${p.id}?k=${await projects.ownerViewKey(p)}`,
     };
   }
@@ -347,6 +352,27 @@ export function createCloudServer(options: CloudServerOptions) {
       return sendJson(res, 202, { ok: true, status: 'waiting_for_owner', approveUrl: `${base}/approve/${id}?t=${token}`, userId: uid });
     }
 
+    if (req.method === 'POST' && path === '/api/projects/me/admins/remove') {
+      const p = await adminProject(req);
+      const body = await readJson(req);
+      const userId = typeof body.userId === 'string' ? body.userId.toLowerCase() : null;
+      const name = typeof body.who === 'string' ? body.who : typeof body.email === 'string' ? body.email.trim().toLowerCase() : null;
+      if (!userId && !name) throw new HttpError(400, 'Say which admin to remove: the email they signed up with (email), a test person\'s name (who) or a user id (userId).');
+      const admins = await projects.admins(p);
+      let found = admins.find((a) => (userId ? a.uid === userId : a.label === name));
+      // Someone made admin by user id is still found by the email they signed up with.
+      if (!found && !userId && typeof body.email === 'string' && p.authProjectId) {
+        const user = await options.auth.userByEmail(p.authProjectId, name!, p.authOwner).catch(() => null);
+        found = user ? admins.find((a) => a.uid === user.id) : undefined;
+      }
+      if (!found) {
+        const who = (userId ?? name!).slice(0, 80);
+        throw new HttpError(404, `${who} isn't an admin. ${admins.length ? `The admins are: ${admins.map((a) => a.label).join(', ')}.` : 'Nobody is an admin right now.'}`);
+      }
+      const { id, token } = await projects.requestAdmin(p, found.uid, found.label, 'remove_admin');
+      return sendJson(res, 202, { ok: true, status: 'waiting_for_owner', approveUrl: `${base}/approve/${id}?t=${token}`, userId: found.uid });
+    }
+
     if (req.method === 'POST' && path === '/api/projects/me/check') {
       const p = await adminProject(req);
       if (!p.approvedContract) throw new HttpError(409, "Set the app's rules first (and get them approved), then run the check.");
@@ -402,6 +428,38 @@ export function createCloudServer(options: CloudServerOptions) {
     if (approval.status !== 'pending') {
       const word = { approved: 'already approved', rejected: 'already turned down', replaced: 'replaced by a newer request', pending: '' }[approval.status];
       return sendHtml(res, 410, resultPage('Already decided', p.name, 'warning', `This request was ${word}`, 'Ask Claude for the latest link if you need one.'));
+    }
+
+    if (approval.kind === 'remove_admin') {
+      const who = esc(approval.admin!.label);
+      if (form) {
+        if (form.get('decision') === 'approve') {
+          if (!(await projects.decide(approval, 'approved'))) return gone();
+          try {
+            await projects.removeAdmin(p, approval.admin!.uid);
+          } catch (err) {
+            await projects.reopen(approval);
+            throw err;
+          }
+          return sendHtml(res, 200, resultPage('Admin removed', p.name, 'safe', `Done. ${who} is no longer an admin.`, 'They only see their own entries now.'));
+        }
+        if (!(await projects.decide(approval, 'rejected'))) return gone();
+        return sendHtml(res, 200, resultPage('Not removed', p.name, 'safe', `Kept. ${who} is still an admin.`, "Tell Claude if you'd like something else."));
+      }
+      return sendHtml(
+        res,
+        200,
+        decisionPage(
+          `Remove ${approval.admin!.label} as admin`,
+          p.name,
+          `Remove ${who} as admin of ${esc(friendlyName(p.name).app)}?`,
+          banner('warning', esc("They'll only see their own entries again."), 'They keep their account and everything they saved. They just stop seeing and changing everyone else\'s. Nothing changes until you say yes.'),
+          '',
+          token!,
+          'Yes, remove them',
+          'No, keep them as admin',
+        ),
+      );
     }
 
     if (approval.kind === 'admin') {
@@ -465,7 +523,11 @@ export function createCloudServer(options: CloudServerOptions) {
         `Approve rules for ${p.name}`,
         p.name,
         `Use these rules for who can see what in ${esc(friendlyName(p.name).app)}?`,
-        banner('warning', 'These rules show data to more people.', `${why.map((w) => esc(w)).join(' ')} Nothing changes until you say yes.`),
+        banner(
+          'warning',
+          'These rules show data to more people.',
+          `${why.map((w) => esc(w)).join(' ')} Nothing changes until you say yes. Once these rules are live, you can only add to them later, not tighten them. If you're unsure, take a minute first.`,
+        ),
         `<div class="card"><div class="card__header"><h2>Who can see what</h2></div>${summaryHtml(contract)}</div>`,
         token!,
         'Yes, use these rules',
