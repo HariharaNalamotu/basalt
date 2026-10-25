@@ -45,8 +45,12 @@ export function banner(tone: 'safe' | 'warning' | 'danger', heading: string, bod
   return `<div class="banner tone--${tone}" role="${tone === 'danger' ? 'alert' : 'status'}">${icon(ic)}<div><h3>${heading}</h3>${body ? `<p>${body}</p>` : ''}</div></div>`;
 }
 
+// The Basalt mark: one basalt column (design/logo/). Colors come from the theme tokens.
+const MARK = '<svg class="wordmark__mark" viewBox="0 0 64 64" aria-hidden="true"><polygon class="body" points="12,14 24,6 40,6 52,14 52,50 40,58 24,58 12,50"/><polygon class="facet" points="12,14 24,6 40,6 52,14 40,22 24,22"/><polygon class="facet" points="12,14 24,22 24,58 12,50"/></svg>';
+const FAVICON = `data:image/svg+xml,${encodeURIComponent(readFileSync(new URL('../../design/logo/basalt-mark-dark.svg', import.meta.url), 'utf8'))}`;
+
 export function page(title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex"><title>${esc(title)}</title><style>${DESIGN_CSS}</style></head>
-<body><main class="page"><span class="wordmark"><span class="wordmark__mark" aria-hidden="true"></span>Basalt</span>${body}</main></body></html>`;
+<meta name="robots" content="noindex"><link rel="icon" href="${FAVICON}"><title>${esc(title)}</title><style>${DESIGN_CSS}</style></head>
+<body><main class="page"><span class="wordmark">${MARK}Basalt</span>${body}</main></body></html>`;
 }

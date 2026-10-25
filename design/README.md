@@ -14,6 +14,15 @@ The visual character is **black, silver, precise, and quiet**. Create the impres
 4. **Use silver for identity; color for evidence.** Most of the interface is neutral. Status colors occupy small, purposeful areas and always accompany words and icons.
 5. **Design for imperfect viewing.** Small laptops, older eyes, browser zoom, and washed-out projectors are normal conditions. Essential information never depends on faint text, hover, or animation.
 
+## Logo
+
+One basalt column: basalt rock cools into tight hexagonal columns, which is the idea behind the product (fixed, solid blocks underneath every app). Claude drew three concepts; Codex picked this one and set the geometry; the dark-theme body color was then darkened so the lit facets still read at 16px.
+
+- Files: `design/logo/basalt-mark-dark.svg` (for dark backgrounds) and `design/logo/basalt-mark-light.svg` (for light backgrounds). viewBox `0 0 64 64`, three polygons, no strokes or gradients.
+- Colors: dark backgrounds use body `#7D8996` and facets `#E3E6EA` (tokens `--logo-body`, `--logo-facet`); light backgrounds use body `#15181C` and facets `#C6CCD3`.
+- Wordmark: "Basalt" in the system sans stack, weight 600, letter spacing −0.02em, text height about 0.75 of the mark, 12px gap after the mark.
+- At favicon sizes use the mark alone. Don't recolor it with status colors, add a metal gradient or put it in a container shape.
+
 ## 2. Color system
 
 Dark is the default. The dashboard offers a persistent, explicitly labeled theme control and remembers the owner’s selection. Single-purpose owner pages (approval, receipt, data map) have no control: they follow the device's light or dark setting, defaulting to dark. `data-theme` on the root overrides both. Both themes have identical hierarchy and behavior.
