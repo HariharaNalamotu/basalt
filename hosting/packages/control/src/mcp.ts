@@ -153,10 +153,10 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
   }, { readOnlyHint: true });
   tool(
     'host_data_admin',
-    'Asks the owner to make one person an admin of an environment\'s data (they see and change every row, e.g. a business owner viewing all bookings). Always returns an approval link: show it to the human. who = a test person\'s name (test environments), or userId = a real signed-in user\'s id.',
-    { app, env, who: z.string().regex(/^[A-Za-z0-9 _-]{1,40}$/).optional(), userId: z.string().uuid().optional(), label: z.string().max(60).optional() },
+    'Asks the owner to make one person an admin of an environment\'s data (they see and change every row, e.g. a business owner viewing all bookings). Always returns an approval link: show it to the human. email = the email a real person signed up in the app with (ask the human for theirs; they must sign up first), who = a test person\'s name (test environments), or userId = a signed-in user\'s id.',
+    { app, env, email: z.string().max(254).optional(), who: z.string().regex(/^[A-Za-z0-9 _-]{1,40}$/).optional(), userId: z.string().uuid().optional(), label: z.string().max(60).optional() },
     async ({ app: ap, env: e, ...who }) => {
-      if (!who.who && !who.userId) throw new UserError('Say who: a test person\'s name (who) or a user id (userId).');
+      if (!who.email && !who.who && !who.userId) throw new UserError('Say who: the email they signed up with (email), a test person\'s name (who) or a user id (userId).');
       const r = await host.dataAdmin(ws, ap, e, who);
       return text(`The owner needs to approve this. Show them this link and ask them to open it and approve:\n${r.approveUrl}\n\nUser id: ${r.userId}`);
     },
@@ -236,10 +236,20 @@ export function createMcpServer(ctx: Ctx, host: Host, ws: string): McpServer {
   });
 
   // ---------------------------------------------------------------- browser (Playwright)
-  tool('browser_open', 'Opens a real Chromium session on a preview/staging environment and returns the page snapshot (accessibility tree). Use host_test_user to get credentials for signing in.', { app, env: testEnv, path: z.string().optional() }, async (a) => {
+  tool(
+    'browser_open',
+    'Opens a real Chromium session on a preview/staging environment and returns the page snapshot (accessibility tree). Use host_test_user to get credentials for signing in. viewport "phone" opens a 390x844 touch screen (most customers), colorScheme "dark" opens in dark mode: check both before telling the human it looks right.',
+    {
+      app,
+      env: testEnv,
+      path: z.string().optional(),
+      viewport: z.enum(['desktop', 'phone']).optional().describe('"phone" (390x844, touch) or "desktop" (1280x800, the default).'),
+      colorScheme: z.enum(['light', 'dark']).optional(),
+    },
+    async (a) => {
     const { env: e } = await host.env(ws, a.app, a.env);
     if (e.kind === 'production') throw new UserError('Browser sessions are for preview and staging only.');
-    const r = await browser('/sessions', { method: 'POST', body: { host: e.host, accessToken: host.testing.accessToken(e, 3600), path: a.path ?? '/' } });
+    const r = await browser('/sessions', { method: 'POST', body: { host: e.host, accessToken: host.testing.accessToken(e, 3600), path: a.path ?? '/', viewport: a.viewport, colorScheme: a.colorScheme } });
     const p = page(r);
     p.content.unshift({ type: 'text', text: `sessionId: ${r.sessionId}` });
     return p;

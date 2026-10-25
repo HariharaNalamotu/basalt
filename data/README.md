@@ -1,6 +1,6 @@
 # Basalt Data block
 
-The only way an app reads or writes its database. App code gets four calls (get, list, create and update) over HTTP and nothing else: no raw SQL, no delete and no database login. Whatever code the AI writes around these calls, it can't read or change rows that don't belong to the logged-in user.
+The only way an app reads or writes its database. App code gets six calls (get, list, create, update, archive and restore) plus file uploads over HTTP and nothing else: no raw SQL, no delete and no database login. Whatever code the AI writes around these calls, it can't read or change rows that don't belong to the logged-in user.
 
 ```ts
 import { createBasalt } from '@basalt/data/client';
@@ -20,7 +20,7 @@ app code (AI written) --HTTP + user token--> Data service --basalt_data login-->
 
 ## How it stays safe
 
-- **App code never gets a database login.** It talks to the Data service over HTTP (`src/server.ts`), which only offers get, list, create and update.
+- **App code never gets a database login.** It talks to the Data service over HTTP (`src/server.ts`), which only offers get, list, create, update, archive and restore, plus file uploads and download links.
 - **One door in the database.** The Data service's login (`basalt_data`) can call `basalt.api()` and nothing else: no table, no other function, no other schema. `basalt.api()` (`sql/04_api.sql`) runs as `basalt_exec`, a role nobody can log in as, and only ever touches tables and columns listed in the registry that migrate writes from the contract.
 - **The database checks the login itself.** The user's token is passed through untouched and Postgres verifies the signature (`basalt.uid()` in `sql/02_identity.sql`). The Data service never has the signing secret, so even if it's fully taken over it can't pretend to be another user.
 - **Strict token rules.** HS256 only, exact base64url, `exp` and `iat` required as whole numbers, a maximum lifetime (1 hour by default), `aud` and `role` must be `authenticated` and the issuer is checked when set. Expiry is checked against each statement's time, so a long running transaction can't keep using an expired token.

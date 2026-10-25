@@ -25,6 +25,12 @@ const DATA_GET = /^\/v1\/files\/download\/[0-9a-f]{64}$/;
 const DATA_MAX_BODY = 256 * 1024;
 const DATA_MAX_UPLOAD = 6 * 1024 * 1024; // the Data block takes files up to 5 MB
 
+// Re-encodes a decoded path for forwarding. encodeURI leaves ? and # alone, so an encoded %3F in the
+// path would come back out as a real query string the edge never checked: encode them too.
+function encodePath(path: string): string {
+  return encodeURI(path).replace(/[?#]/g, (c) => encodeURIComponent(c));
+}
+
 export interface EdgeOptions {
   table: RouteTableClient;
   /** Signs challenge/clearance tokens. */
@@ -221,7 +227,7 @@ export function createEdgeHandler(o: EdgeOptions) {
       send(res, 405, errorJson('method_not_allowed', 'Method not allowed.', requestId), { allow: route.methods.join(', ') });
       return 405;
     }
-    const target = `${route.upstream.replace(/\/+$/, '')}${encodeURI(path)}${query ? `?${query}` : ''}`;
+    const target = `${route.upstream.replace(/\/+$/, '')}${encodePath(path)}${query ? `?${query}` : ''}`;
     const headers = upstreamHeaders(req, ip, requestId, route.host);
     // Platform services build absolute URLs from Host (the registry's tarball links, for one), so
     // they see the public name people used, never their internal one.
@@ -308,7 +314,7 @@ export function createEdgeHandler(o: EdgeOptions) {
     // Auth service.
     if (path === '/_basalt/auth' || path.startsWith('/_basalt/auth/')) {
       const rest = path.slice('/_basalt/auth'.length);
-      const target = `${o.authUrl}/v1/projects/${route.projectId}${encodeURI(rest)}${query ? `?${query}` : ''}`;
+      const target = `${o.authUrl}/v1/projects/${route.projectId}${encodePath(rest)}${query ? `?${query}` : ''}`;
       const headers = upstreamHeaders(req, ip, requestId, route.host);
       headers['x-forwarded-prefix'] = '/_basalt/auth';
       const r = await proxy(req, res, target, headers, 64 * 1024, securityHeaders(route, false));

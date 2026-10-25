@@ -433,7 +433,7 @@ export class Host {
   }
 
   /** Asks the human owner to make someone an admin of an environment's data. */
-  async dataAdmin(ws: string, appName: string, envName: string, who: { who?: string; userId?: string; label?: string }) {
+  async dataAdmin(ws: string, appName: string, envName: string, who: { email?: string; who?: string; userId?: string; label?: string }) {
     const { link, adminKey } = await this.#dataEnv(ws, appName, envName);
     const r = await requestDataAdmin(link, adminKey, who).catch((err: Error) => this.#cloudError(err));
     await this.audit(ws, 'data_admin.requested', `${appName}/${envName}`);

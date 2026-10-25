@@ -12,8 +12,46 @@ describe('the agent guide', () => {
     expect(data).toMatch(/host_data_check/);
   });
 
+  it("has the agent give a business owner a screen of everyone's entries, made an admin by their email", () => {
+    const data = hostGuide('data', 'apps.dev');
+    expect(data).toMatch(/owner.{0,80}(all|every)/i);
+    expect(data).toMatch(/host_data_admin[^.]*email/);
+    expect(data).toMatch(/sign up/i);
+    // A real agent read the first wording and offered the page as an extra instead of building it.
+    expect(data).toMatch(/first version/i);
+  });
+
+  it('says a list returns at most 100 rows and gives a helper that pages through everything', () => {
+    // A real agent asked for { limit: 200 } on the owner's All bookings page, which the Data block refuses.
+    const data = hostGuide('data', 'apps.dev');
+    expect(data).toMatch(/limit 1 to 100/);
+    expect(data).toMatch(/listAll: async/);
+    expect(data).toMatch(/All bookings[\s\S]{0,200}listAll/);
+  });
+
   it('sends the agent to the data topic from the workflow', () => {
     expect(hostGuide('workflow', 'apps.dev')).toMatch(/topic "data"|\*\*data\*\* topic/);
+  });
+
+  it('has a design topic with a palette from the business, the CSS starter and a phone and dark mode check before shipping', () => {
+    expect(GUIDE_TOPICS).toContain('design');
+    const design = hostGuide('design', 'apps.dev');
+    expect(design).toMatch(/Brand from the business/);
+    expect(design).toMatch(/--brand:/);
+    expect(design).toMatch(/prefers-color-scheme:dark/);
+    expect(design).toMatch(/\.slot\[aria-pressed="true"\]/);
+    expect(design).toMatch(/viewport: "phone"/);
+    expect(design).toMatch(/colorScheme: "dark"/);
+    expect(design).not.toMatch(/\u2014/); // no em dashes in anything shown to people
+    // A tapped slot stays hovered on phones: the hover color must never replace the selected one
+    // (it made the selected slot's text invisible in a real agent-built app).
+    for (const rule of design.match(/\.slot:hover[^{]*/g) ?? []) expect(rule).toMatch(/:not\(\[aria-pressed="true"\]\)/);
+  });
+
+  it('sends the agent to the design topic before pages and its visual check before reporting', () => {
+    const w = hostGuide('workflow', 'apps.dev');
+    expect(w).toMatch(/\*\*design\*\* topic/);
+    expect(w).toMatch(/viewport: "phone"/);
   });
 
   it("tells the agent not to install packages on the human's computer", () => {

@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import { parseContract } from '../../data/src/index.ts';
 import { runChecks } from '../src/guard.ts';
+import { renderReceipt } from '../src/receipt.ts';
 import { AuthLink } from '../src/auth.ts';
 import { Projects } from '../src/projects.ts';
 import { createCloudServer } from '../src/server.ts';
@@ -101,7 +102,7 @@ describe('Guard on a Basalt app', () => {
     const receipt = await fetch(r.body.receiptUrl);
     const html = await receipt.text();
     assert.equal(receipt.status, 200);
-    assert.match(html, new RegExp(`${r.body.passed} of ${r.body.results.length} checks passed, 1 thing to fix in the code`));
+    assert.match(html, new RegExp(`${r.body.passed} of ${r.body.results.length} attacks were refused, 1 thing to fix in the code`));
     assert.match(html, /src\/app\.js/);
     assert.match(html, /Data is saved in the browser/);
   });
@@ -139,6 +140,16 @@ describe('Guard on a Basalt app', () => {
 });
 
 describe('Guard keeps its receipt honest', () => {
+  test("a test entry that couldn't be tidied up isn't shown as a leak", () => {
+    const results = [
+      { id: 'other_person_get', title: "Opening someone else's entry", passed: true, detail: 'Refused.', table: 'visits' },
+      { id: 'cleanup', title: 'Tidying up the test entry', passed: false, detail: "The test entry couldn't be archived. It's marked Basalt check.", table: 'visits' },
+    ];
+    const html = renderReceipt('demo', { results, findings: [], at: new Date().toISOString() });
+    assert.doesNotMatch(html, /LEAKED|got through/);
+    assert.match(html, /Leaked: 0/);
+  });
+
   test('a check sent without a code scan says the code was not checked', async () => {
     const app = await liveApp();
     const r = await call('POST', '/api/projects/me/check', {}, app.key);

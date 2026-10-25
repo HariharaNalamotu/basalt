@@ -7,6 +7,7 @@ COPY data/package.json data/package-lock.json data/
 RUN cd data && npm ci --omit=dev --ignore-scripts
 COPY data/src data/src
 COPY data/sql data/sql
+COPY design design
 COPY cloud/package.json cloud/
 COPY cloud/src cloud/src
 USER node

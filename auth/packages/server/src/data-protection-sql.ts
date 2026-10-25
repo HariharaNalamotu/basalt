@@ -148,16 +148,23 @@ END
 $fn$;
 
 -- Revocation sync (called by the SDK). Adding revocations can only ever reduce access.
+-- Anyone with a database login can call this, so the sync point comes from the rows actually recorded
+-- (never later than now), not from synced_to: otherwise one call could push it into the future and
+-- the SDK would stop fetching revocations. synced_to is kept so existing callers still work.
 CREATE OR REPLACE FUNCTION basalt_auth.record_revocations(session_ids uuid[], revoked_ats timestamptz[], synced_to timestamptz)
 RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $fn$
+DECLARE
+  newest timestamptz := LEAST((SELECT max(t) FROM unnest(revoked_ats) AS t), now());
 BEGIN
   INSERT INTO basalt_auth.revoked_sessions (session_id, revoked_at)
   SELECT * FROM unnest(session_ids, revoked_ats)
   ON CONFLICT (session_id) DO NOTHING;
   -- Grants live at most 1 hour, so older revocations are no longer needed.
   DELETE FROM basalt_auth.revoked_sessions WHERE revoked_at < now() - interval '2 hours';
-  INSERT INTO basalt_auth.sync_state (id, revocations_synced_to) VALUES (true, synced_to)
-  ON CONFLICT (id) DO UPDATE SET revocations_synced_to = GREATEST(basalt_auth.sync_state.revocations_synced_to, EXCLUDED.revocations_synced_to);
+  IF cardinality(revoked_ats) > 0 THEN
+    INSERT INTO basalt_auth.sync_state (id, revocations_synced_to) VALUES (true, newest)
+    ON CONFLICT (id) DO UPDATE SET revocations_synced_to = GREATEST(basalt_auth.sync_state.revocations_synced_to, EXCLUDED.revocations_synced_to);
+  END IF;
 END
 $fn$;
 

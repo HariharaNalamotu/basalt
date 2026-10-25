@@ -118,7 +118,7 @@ export async function dataStatus(cfg: DataLinkConfig, adminKey: string, f: typeo
 }
 
 /** Asks the owner to make someone an admin of an environment's data (always needs their approval). */
-export async function requestDataAdmin(cfg: DataLinkConfig, adminKey: string, who: { who?: string; userId?: string; label?: string }, f: typeof fetch = fetch): Promise<{ approveUrl: string; userId: string }> {
+export async function requestDataAdmin(cfg: DataLinkConfig, adminKey: string, who: { email?: string; who?: string; userId?: string; label?: string }, f: typeof fetch = fetch): Promise<{ approveUrl: string; userId: string }> {
   const out = await cloudCall(cfg, 'POST', '/api/projects/me/admins', who, f, adminKey);
   return { approveUrl: String(out.approveUrl), userId: String(out.userId) };
 }
