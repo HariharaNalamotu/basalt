@@ -229,6 +229,48 @@ describe('Guard on an app that leaks', () => {
   });
 });
 
+describe('Guard on a safe app with a unique number field', () => {
+  // Stored rules come back from Postgres jsonb with short field names first, so Guard can pick a
+  // unique number like "spot" for the change check. A's test entry gets a random spot; if Guard
+  // guessed the entry held the default and tried the value it already had, a refused change looked
+  // like B had changed it. This app is safe and always stores spot 2, the value that collided.
+  test("a refused change is never reported as a change, whatever value A's entry holds", async () => {
+    const rows = new Map<string, { owner: string; row: Record<string, unknown> }>();
+    const app = createServer(async (req, res) => {
+      let raw = '';
+      for await (const c of req) raw += c;
+      const body = raw ? JSON.parse(raw) : {};
+      const op = req.url!.split('/').pop();
+      const who = req.headers.authorization ?? '';
+      const send = (status: number, json: unknown) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(json));
+      const notFound = () => send(404, { ok: false, error: { code: 'not_found', message: 'No such entry.' } });
+      if (who !== 'Bearer a.a.a' && who !== 'Bearer b.b.b') return send(401, { ok: false, error: { code: 'unauthorized', message: 'Sign in.' } });
+      if (op === 'create') {
+        if (body.input?.owner_id !== undefined) return send(400, { ok: false, error: { code: 'invalid_input', message: 'No.' } });
+        const row = { id: randomUUID(), ...body.input, ...('spot' in (body.input ?? {}) ? { spot: 2 } : {}) };
+        rows.set(row.id, { owner: who, row });
+        return send(200, { ok: true, data: row });
+      }
+      const mine = rows.get(body.id);
+      if (op === 'list') return send(200, { ok: true, data: { rows: [...rows.values()].filter((r) => r.owner === who).map((r) => r.row), next: null } });
+      if (!mine || mine.owner !== who) return notFound();
+      if (op === 'get' || op === 'archive' || op === 'restore') return send(200, { ok: true, data: mine.row });
+      if (op === 'update') return send(200, { ok: true, data: Object.assign(mine.row, body.input) });
+      return notFound();
+    });
+    await new Promise<void>((r) => app.listen(0, '127.0.0.1', () => r()));
+    try {
+      const url = `http://127.0.0.1:${(app.address() as AddressInfo).port}`;
+      const contract = parseContract({ tables: { bookings: { fields: { spot: { type: 'integer', min: 1, max: 20, required: true }, class_id: { type: 'text', maxLength: 40, required: true } }, unique: [['class_id', 'spot']] } } });
+      const results = await runChecks(contract, { url, tokenA: 'a.a.a', tokenB: 'b.b.b', userA: randomUUID(), forged: 'f.f.f', expired: 'e.e.e' });
+      const update = results.find((c) => c.id === 'other_person_update');
+      assert.equal(update?.passed, true, update?.detail);
+    } finally {
+      app.close();
+    }
+  });
+});
+
 describe('Guard on an app that is down', () => {
   // Errors aren't proof of safety. An app that saves and shows the owner's own
   // entry but answers everything else with 503 must not get a clean receipt.
