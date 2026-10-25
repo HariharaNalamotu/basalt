@@ -294,6 +294,26 @@ describe('private (non-production) environments', () => {
     const expired = signToken(ACCESS_KEY, { env: 'env_staging', exp: Math.floor(Date.now() / 1000) - 1 });
     expect((await call(`/_basalt/access?t=${expired}`, { host, ip: freshIp() })).status).toBe(403);
   });
+
+  it("the edge's own pages (not found, private, expired link) get a lock-everything CSP", async () => {
+    setRoutes([route(), staging()]);
+    const host = 'todo--staging.example.com';
+    const expired = signToken(ACCESS_KEY, { env: 'env_staging', exp: Math.floor(Date.now() / 1000) - 1 });
+    const pages = [
+      await call('/missing-page.html', { ip: freshIp(), headers: { accept: 'text/html' } }),
+      await call('/', { host, ip: freshIp(), headers: { accept: 'text/html' } }),
+      await call(`/_basalt/access?t=${expired}`, { host, ip: freshIp() }),
+    ];
+    expect(pages.map((p) => p.status)).toEqual([404, 401, 403]);
+    for (const p of pages) {
+      expect(p.headers.get('content-type')).toMatch(/text\/html/);
+      expect(p.headers.get('content-security-policy')).toMatch(/^default-src 'none';.*frame-ancestors 'none'/);
+    }
+    // JSON errors stay JSON, without a page policy.
+    const json = await call('/api/x', { host, ip: freshIp() });
+    expect(json.headers.get('content-type')).toMatch(/application\/json/);
+    expect(json.headers.get('content-security-policy')).toBeNull();
+  });
 });
 
 describe('abuse protection', () => {
