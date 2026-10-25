@@ -30,7 +30,7 @@ export function hasClearance(key: string, ipKey: string, host: string, cookie: s
 export function challengePage(challenge: string, nonce: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><title>Checking your browser</title>
-<style>body{font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;color:#222}</style></head>
+<style nonce="${nonce}">body{font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;color:#222}</style></head>
 <body><main><p>Checking your browser before continuing&hellip;</p><noscript>JavaScript is required.</noscript></main>
 <script nonce="${nonce}">
 (async () => {

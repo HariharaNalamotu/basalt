@@ -379,6 +379,14 @@ describe('sessions', () => {
     const out = await h.request('POST', `${base()}/session/signout`, { origin: ORIGIN, jar, body: {} });
     expect(out.status).toBe(200);
     expect(jar.cookies.size).toBe(0);
+    // The clearing headers keep the same flags as the cookies they delete (OWASP ZAP checks every Set-Cookie).
+    const cleared = out.headers.getSetCookie();
+    expect(cleared.length).toBe(2);
+    for (const c of cleared) {
+      expect(c).toMatch(/Max-Age=0/);
+      expect(c).toMatch(/HttpOnly/);
+      expect(c).toMatch(/SameSite=(Lax|Strict)/);
+    }
     // The (still unexpired) access token no longer works against strict endpoints.
     expect((await h.request('GET', `${base()}/session`, { bearer: accessCookie })).status).toBe(401);
   });
