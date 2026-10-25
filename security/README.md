@@ -5,7 +5,7 @@ The adversarial tests run against Basalt: what each one sends and which weakness
 The tests live in two places:
 
 - **In-repo attack suites** that run in CI against a real database (and, for Cloud, real Basalt Auth).
-- **A standalone black-box tester** (`basalt-tester.mjs`, **planned, not in the repo yet**) that will fire the checks below at a running Basalt data API as two separate people plus an unauthenticated stranger.
+- **Black-box scans with OWASP ZAP** (**planned, not run yet**) that compare a vibe-coded app with an MCP-connected vibe-coded app from the outside.
 
 ---
 
@@ -23,7 +23,7 @@ Run: `cd data && npm test` (also `cloud`, `auth`, `api`, `hosting`). Each suite 
 
 ### Already tested today
 
-Most of the checks in the planned tester below already run in these suites. Test names are quoted so you can find them; data tests are in `data/test/attacks.test.ts` unless another file is named.
+Most of the checks in the catalogue below already run in these suites. Test names are quoted so you can find them; data tests are in `data/test/attacks.test.ts` unless another file is named.
 
 | Check | Where it runs today |
 | --- | --- |
@@ -49,11 +49,9 @@ Guard (`cloud/src/guard.ts`) also runs the identity and isolation checks against
 
 ---
 
-## The black-box attack tester (planned)
+## Check catalogue
 
-> **Planned.** `basalt-tester.mjs` is not in the repo yet. This section is its design: it would run the checks below from outside, against any running Basalt. Most of them already run inside the repo today (see "Already tested today" above).
-
-`basalt-tester.mjs` will sign in as person A and person B (and a stranger with no login) and try, from the outside, to reach data that isn't theirs or to subvert the API. Grouped by what each attack targets.
+What each check sends and which weakness it probes, grouped by what it targets. Most of them already run in the in-repo suites (see "Already tested today" above). They describe person A and person B, two signed-in users, plus a stranger with no login.
 
 ### Identity — forging or breaking the login token
 
@@ -141,14 +139,48 @@ The core promise. Person B, fully logged in as themselves, tries to touch person
 
 ---
 
-## Running the tester (planned)
+## Black-box testing with OWASP ZAP (planned)
 
-Once the script lands, the intended usage is:
+> **Planned.** These scans haven't been run yet, so this doc has no results.
+
+We compare two apps built from the same prompt:
+
+- **Vibe-coded app:** built by an AI coding assistant on its own. The app handles its own logins and data.
+- **MCP-connected vibe-coded app:** the same prompt, built with the Basalt MCP connector, so logins and data go through Basalt.
+
+To keep the comparison fair, both apps get the same ZAP version and settings, the same scans, and two test accounts each with matching test data.
+
+### Scans
+
+| Scan | What it does | What it can find |
+| --- | --- | --- |
+| Baseline | Crawls the app and reads its responses without attacking | Missing security headers, weak cookie settings, information leaks |
+| Full active scan | Sends attack payloads to every page and parameter the crawler finds | Injection, cross-site scripting, path traversal, server errors |
+| API scan | The same attacks, driven from a list of the app's API routes (if the app has an OpenAPI description) | Routes the crawler misses, such as data calls made from JavaScript |
+| Access control | ZAP's Access Control add-on, signed in as user A and user B, with rules for which addresses each may reach | One user reaching another user's data |
+
+### What the automated scans won't show
+
+ZAP's baseline and active scans look for generic web weaknesses. They don't sign in as two people and try to open each other's records, which is where the two apps are expected to differ. That needs the access-control scan, set up by hand in ZAP with both test users. ZAP's standard scans also don't forge login tokens; those checks stay in the in-repo suites above.
+
+### Running it
+
+The baseline and full scans run from ZAP's Docker image:
 
 ```sh
-node basalt-tester.mjs --config tester.config.json
-node basalt-tester.mjs --config tester.config.json --only isolation,injection
-node basalt-tester.mjs --config tester.config.json --json report.json --md report.md
+docker run --rm -v "$(pwd):/zap/wrk" -t ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -t <app URL> -r baseline.html
+docker run --rm -v "$(pwd):/zap/wrk" -t ghcr.io/zaproxy/zaproxy:stable zap-full-scan.py -t <app URL> -r full-scan.html
 ```
 
-The config will supply the API URL and two test logins. A positive control (person A's real token must still work) will run last; if it fails, the config is wrong and the refusals above prove nothing.
+`<app URL>` must be reachable from inside the container; for an app on the same machine, use `host.docker.internal` instead of `localhost`. The full scan sends real attacks and can change data, so run it only against test copies with test accounts. The access-control scan is set up in the ZAP desktop app.
+
+### Reporting
+
+Results go side by side, one row per scan:
+
+| Scan | Vibe-coded app | MCP-connected vibe-coded app |
+| --- | --- | --- |
+| Baseline (alerts by risk) | – | – |
+| Full active scan (alerts by risk) | – | – |
+| API scan (alerts by risk) | – | – |
+| Access control (cross-user access) | – | – |
