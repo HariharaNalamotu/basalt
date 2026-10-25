@@ -78,7 +78,7 @@ function diagram(contract: Contract, admins: number): string {
     }
     for (const t of a.to) {
       const j = tables.findIndex((x) => x.name === t);
-      lines.push(`<path d="M170 ${ay(i)} C 250 ${ay(i)}, 280 ${ty(j)}, 350 ${ty(j)}" fill="none" stroke="${color[a.kind]}" stroke-width="2.5" opacity="0.85"/>`);
+      lines.push(`<path d="M170 ${ay(i)} C 250 ${ay(i)}, 280 ${ty(j)}, 400 ${ty(j)}" fill="none" stroke="${color[a.kind]}" stroke-width="2.5" opacity="0.85"/>`);
     }
   });
   const actorBoxes = actors
@@ -88,12 +88,12 @@ function diagram(contract: Contract, admins: number): string {
   const tableBoxes = tables
     .map((t, j) => {
       const personal = [...t.fields].some(([n, s]) => isPersonal(n, s));
-      return `<rect x="350" y="${ty(j) - 26}" width="168" height="52" rx="8" fill="var(--card)" stroke="${personal ? 'var(--share)' : 'var(--line)'}" stroke-width="${personal ? 2 : 1.5}"/>
-<text x="434" y="${ty(j) - 3}" text-anchor="middle" font-size="17" font-weight="600" fill="var(--fg)">${esc(title(t.name))}</text>
-<text x="434" y="${ty(j) + 16}" text-anchor="middle" font-size="14" fill="${personal ? 'var(--share)' : 'var(--muted)'}">${personal ? 'personal info' : 'no personal info'}</text>`;
+      return `<rect x="400" y="${ty(j) - 26}" width="168" height="52" rx="8" fill="var(--card)" stroke="${personal ? 'var(--share)' : 'var(--line)'}" stroke-width="${personal ? 2 : 1.5}"/>
+<text x="484" y="${ty(j) - 3}" text-anchor="middle" font-size="17" font-weight="600" fill="var(--fg)">${esc(title(t.name))}</text>
+<text x="484" y="${ty(j) + 16}" text-anchor="middle" font-size="14" fill="${personal ? 'var(--share)' : 'var(--muted)'}">${personal ? 'personal info' : 'no personal info'}</text>`;
     })
     .join('');
-  return `<svg viewBox="0 0 520 ${h}" role="img" aria-label="Who can reach which data" style="width:100%;max-width:560px;height:auto;display:block;margin:0 auto">${lines.join('')}${actorBoxes}${tableBoxes}</svg>`;
+  return `<svg viewBox="0 0 570 ${h}" role="img" aria-label="Who can reach which data" style="width:100%;max-width:600px;height:auto;display:block;margin:0 auto">${lines.join('')}${actorBoxes}${tableBoxes}</svg>`;
 }
 
 export function renderMap(appName: string, contract: Contract, stats: MapStats): string {
@@ -135,7 +135,7 @@ export function renderMap(appName: string, contract: Contract, stats: MapStats):
 <h1>Where ${esc(friendlyName(appName).app)}'s information lives</h1>
 <p class="muted">Live: ${tables.length} kind${tables.length === 1 ? '' : 's'} of data, ${stats.files.count} file${stats.files.count === 1 ? '' : 's'} (${mb} MB), ${stats.admins.length} admin${stats.admins.length === 1 ? '' : 's'}.</p>
 <div class="card"><h2>Who can reach what</h2>${diagram(contract, stats.admins.length)}
-<p class="legend"><span><i class="dot" style="background:var(--ok)"></i>their own</span><span><i class="dot" style="background:var(--share)"></i>read only, when assigned</span><span><i class="dot" style="background:var(--admin)"></i>everything</span><span><i class="dot" style="background:var(--bad)"></i>cannot access</span></p>
+<p class="legend"><span><i class="dot" style="background:var(--ok)"></i>their own</span>${tables.some((t) => t.shareWith) ? '<span><i class="dot" style="background:var(--share)"></i>read only, when assigned</span>' : ''}<span><i class="dot" style="background:var(--admin)"></i>everything</span><span><i class="dot" style="background:var(--bad)"></i>cannot access</span></p>
 <p>The database applies these rules. The AI that built your app only ever gets the same access as the person signed in. Someone who breaks into the website still can't open the data, because the database checks every request itself.</p></div>
 ${cards}
 ${adminCard}
