@@ -48,8 +48,6 @@ Guard (`cloud/src/guard.ts`) also runs the identity and isolation checks against
 
 ---
 
----
-
 ## Check catalogue
 
 What each check sends and which weakness it probes, grouped by what it targets. Most of them already run in the in-repo suites (see "Already tested today" above). They describe person A and person B, two signed-in users, plus a stranger with no login.
@@ -144,12 +142,12 @@ The core promise. Person B, fully logged in as themselves, tries to touch person
 
 Run on Sun Oct 25, 2026 with ZAP 2.17.0, on one laptop. Results are under "Results" below.
 
-We compare two salon booking apps that Claude Code built from similar one-sentence prompts:
+We compare two booking apps that Claude Code built from similar one-sentence prompts:
 
 - **Vibe-coded app:** built by an AI coding assistant on its own. The app handles its own logins and data.
 - **MCP-connected vibe-coded app:** the same prompt, built with the Basalt MCP connector, so logins and data go through Basalt.
 
-To keep the comparison fair, both apps get the same ZAP version and settings and the same scans. The vibe-coded app is an Express server with a SQLite file in its folder; the Basalt app is Fade and Co on the local Basalt platform. The Basalt app was scanned from inside Basalt's own network so the scanner had its own address and couldn't get the presenter's laptop banned.
+To keep the comparison fair, both apps get the same ZAP version and settings and the same scans. The vibe-coded app is an Express server with a SQLite file in its folder; the Basalt app runs on the local Basalt platform. The Basalt app was scanned from inside Basalt's own network so the scanner had its own address and couldn't get the presenter's laptop banned.
 
 ### Scans
 
@@ -182,9 +180,9 @@ docker run --rm -v "$(pwd):/zap/wrk" -t ghcr.io/zaproxy/zaproxy:stable zap-full-
 | Baseline (alerts by risk) | 0 high, 1 medium (no anti-CSRF tokens on forms), 4 low (missing cross-origin and permissions headers) | 0 high, 2 medium (`/sitemap.xml` has no CSP; the app's CSP allows inline styles), 0 low |
 | Full active scan (alerts by risk) | 0 high, 2 medium (anti-CSRF), 4 low | 0 high, the same 2 medium, 0 low. Basalt's edge banned the scanner a few minutes in for probing scanner paths. A second run with the scanner on the workspace allowlist, so every attack reached the app, found the same. |
 | API scan | Not run: no OpenAPI description | Not run: no OpenAPI description |
-| Access control (cross-user access) | Not with ZAP: a script signed in as two customers. Leo's attempts on Ava's booking were refused 7 times; 1 (SQL in the login form) couldn't tell, because the app was rate-limiting during the scan | `demo/attack.js`: 9 of 9 attempts on another customer's booking refused, and the customer's own booking still works |
+| Access control (cross-user access) | Not with ZAP: a script signed in as two customers. Customer B's attempts on customer A's booking were refused 7 times; 1 (SQL in the login form) couldn't tell, because the app was rate-limiting during the scan | `demo/attack.js`: 9 of 9 attempts on another customer's booking refused, and the customer's own booking still works |
 
-**What this shows.** Neither app fell to the generic web attacks ZAP knows, and the vibe-coded app also got its per-customer checks right this time. The difference is where the protection lives. In the vibe-coded app it's in code the AI wrote, which the next edit can quietly remove, and every customer's data sits in a `salon.db` file in the app's folder with no per-person rules (Guard's code scan flags exactly that file). In the Basalt app the database enforces who sees what whatever the app's code says, the edge bans a scanner on its own, and every deploy is attacked before it ships.
+**What this shows.** Neither app fell to the generic web attacks ZAP knows, and the vibe-coded app also got its per-customer checks right this time. The difference is where the protection lives. In the vibe-coded app it's in code the AI wrote, which the next edit can quietly remove, and every customer's data sits in a database file in the app's folder with no per-person rules (Guard's code scan flags exactly that file). In the Basalt app the database enforces who sees what whatever the app's code says, the edge bans a scanner on its own, and every deploy is attacked before it ships.
 
 **Limits of this run.** ZAP's crawler found 7 to 8 pages per app and didn't reach Basalt's data API, which the page calls from JavaScript, so cross-user access was tested with the scripts above instead. Both apps ran on one laptop, not a real server.
 
