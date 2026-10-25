@@ -8,6 +8,7 @@ import { authFactory, type Ctx } from './ctx.js';
 import { SecretBox } from './crypto.js';
 import { createDb, migrate } from './db.js';
 import { Docker } from './docker.js';
+import { checkMachine } from './machine.js';
 import { publishBasaltPackages } from './registry.js';
 import { Host } from './service.js';
 
@@ -46,7 +47,20 @@ publishBasaltPackages(cfg.REGISTRY_URL, log).catch((err) => log.error('registry_
 
 // Infra containers lose their app-network attachments when recreated, possibly after control
 // started (compose starts the edge after control), so check at boot and keep checking.
-const reattach = () => host.envs.reattachInfra().catch((err) => log.error('infra_reattach_failed', { err }));
+// The same loop gives a Basalt container back its usual name if a rebuild left it on a temporary one.
+let lastProblems = '';
+const reattach = () =>
+  checkMachine(ctx)
+    .then((problems) => {
+      const now = JSON.stringify(problems.filter((p) => p.blocking !== false));
+      if (now !== lastProblems && now !== '[]') log.error('machine_not_ready', { problems: JSON.parse(now) });
+      lastProblems = now;
+    })
+    .catch((err) => log.error('machine_check_failed', { err }))
+    .then(() => host.envs.reattachInfra())
+    .catch((err) => log.error('infra_reattach_failed', { err }));
+// Download the build and test images in the background so the first deploy doesn't wait on them.
+void checkMachine(ctx, { pull: true }).catch((err) => log.error('machine_check_failed', { err }));
 await reattach();
 const watchNetworks = setInterval(() => void reattach(), 15_000);
 

@@ -6,6 +6,7 @@ import * as tar from 'tar';
 import type { Ctx } from './ctx.js';
 import { hardened } from './docker.js';
 import type { DeploymentRow } from './runtime.js';
+import { checkMachine, describeProblems } from './machine.js';
 import { imageTag } from './naming.js';
 import { scanSource } from './scanner.js';
 import { extractSource } from './sources.js';
@@ -163,6 +164,12 @@ export class Pipeline {
       };
       try {
         await this.setSteps(dep.id, steps, 'building');
+        // Say plainly what this computer is missing before a step fails on it halfway through.
+        const missing = (await checkMachine(this.ctx)).filter((p) => p.blocking !== false);
+        if (missing.length) {
+          steps.push({ name: 'machine', status: 'failed', output: missing.map((p) => `${p.what} ${p.fix}`).join('\n') });
+          return fail(describeProblems(missing));
+        }
         const t0 = Date.now();
         const { files } = await extractSource(dep.sourcePath, work);
         steps.push({ name: 'extract', status: 'passed', ms: Date.now() - t0, output: `${files} files` });
