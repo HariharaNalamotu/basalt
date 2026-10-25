@@ -116,6 +116,26 @@ describe('deleting an app needs the owner', () => {
     expect(await appExists('bakery')).toBe(false);
   });
 
+  it('a delete that fails part way can be confirmed again (CI saw Basalt Cloud time out)', async () => {
+    await host.createApp('ws_a', 'gym');
+    const tool = await mcpClient('ws_a');
+    await tool('host_delete_app', { app: 'gym' });
+    const real = host.deleteApp.bind(host);
+    host.deleteApp = async () => {
+      throw new Error('The operation was aborted due to timeout');
+    };
+    try {
+      expect((await post('/api/delete-app', { app: 'gym' })).status).toBe(500);
+    } finally {
+      host.deleteApp = real;
+    }
+    expect(await appExists('gym')).toBe(true);
+    // The owner's request is still waiting, so tapping Confirm again finishes the job.
+    const again = await post('/api/delete-app', { app: 'gym' });
+    expect(again.status).toBe(200);
+    expect(await appExists('gym')).toBe(false);
+  });
+
   it("another workspace can't ask to delete someone else's app", async () => {
     await host.createApp('ws_a', 'florist');
     const tool = await mcpClient('ws_b');

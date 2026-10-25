@@ -168,7 +168,9 @@ export function createCloudServer(options: CloudServerOptions) {
   async function dropHandler(id: string): Promise<void> {
     const h = handlers.get(id);
     handlers.delete(id);
-    await h?.data.close().catch(() => {});
+    // Closing waits for every open connection; a stuck one would hang the delete forever. The drop
+    // that follows uses WITH (FORCE), which ends any connection still open, so don't wait long.
+    await Promise.race([h?.data.close().catch(() => {}), new Promise((r) => setTimeout(r, 3000).unref())]);
   }
 
   // Hosted environments' data is served only on their app's own site (/_basalt/data through the

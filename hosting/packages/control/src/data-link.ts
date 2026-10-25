@@ -22,12 +22,12 @@ class CloudError extends Error {
   }
 }
 
-async function cloudCall(cfg: DataLinkConfig, method: string, path: string, body: unknown, f: typeof fetch, key = cfg.platformKey): Promise<any> {
+async function cloudCall(cfg: DataLinkConfig, method: string, path: string, body: unknown, f: typeof fetch, key = cfg.platformKey, timeoutMs = 30_000): Promise<any> {
   const res = await f(`${cfg.url.replace(/\/+$/, '')}${path}`, {
     method,
     headers: { authorization: `Bearer ${key}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const json = (await res.json().catch(() => null)) as { ok?: boolean; error?: { message?: string } } | null;
   if (!res.ok || !json?.ok) throw new CloudError(`Basalt Cloud: ${json?.error?.message ?? `answered ${res.status}`}`, res.status);
@@ -53,16 +53,19 @@ export async function createDataProject(
  * lost is found too. Already gone counts as done. Any other failure throws, so the caller can
  * keep its record and retry.
  */
+// Dropping a database can be slow on a busy machine, so deletes wait longer than everyday calls.
+const DELETE_TIMEOUT_MS = 120_000;
+
 export async function deleteDataProject(cfg: DataLinkConfig, envId: string, f: typeof fetch = fetch, recordedProjectId?: string | null): Promise<void> {
   const gone = (err: unknown) => {
     if (!(err instanceof CloudError && err.status === 404)) throw err;
     return true;
   };
   let found = true;
-  if (/^[A-Za-z0-9_-]{1,64}$/.test(envId)) await cloudCall(cfg, 'DELETE', `/api/platform/environments/${envId}`, undefined, f).catch((err) => (found = !gone(err)));
+  if (/^[A-Za-z0-9_-]{1,64}$/.test(envId)) await cloudCall(cfg, 'DELETE', `/api/platform/environments/${envId}`, undefined, f, cfg.platformKey, DELETE_TIMEOUT_MS).catch((err) => (found = !gone(err)));
   // Projects made before environment ids were sent are only known by their recorded id.
   if (!found && recordedProjectId && PROJECT_ID.test(recordedProjectId)) {
-    await cloudCall(cfg, 'DELETE', `/api/platform/projects/${recordedProjectId}`, undefined, f).catch(gone);
+    await cloudCall(cfg, 'DELETE', `/api/platform/projects/${recordedProjectId}`, undefined, f, cfg.platformKey, DELETE_TIMEOUT_MS).catch(gone);
   }
 }
 
