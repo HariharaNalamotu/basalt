@@ -10,6 +10,8 @@
 
 People with no coding experience build apps in their own Claude Code, the normal way. Basalt sits underneath and enforces the ground rules, so nothing the AI writes can leak one customer's data to another. There's no AI inside Basalt: the rules are fixed and checked the same way every time.
 
+**Who it's for.** The owner of a small business who can't code but now can build with AI: a gym owner who wants members to book class spots, a salon taking appointments, a tutor keeping private session notes, a studio logging staff expenses. We had Claude build each of these on Basalt from one sentence. Their customers trust them with names, phone numbers and bookings. The owner can't read the code Claude writes, so they can't tell whether one customer could see another's data, and the next change Claude makes could quietly break it. Basalt makes that the database's job instead of the code's, so the owner doesn't have to check.
+
 **See it for yourself:** [`demo/`](demo/README.md) has a script you paste into the browser console on a live Basalt app. Signed in as one customer, it tries 9 ways to reach another customer's booking from inside the app's own page, with that customer's real login, and shows every result on screen. The stage demo runs it on Pulse, a gym class booking app Claude built on Basalt from one sentence: Leo tries to reach Ava's booking and all nine attempts are refused, while his own booking still works.
 
 ## The parts
