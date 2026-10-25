@@ -1,0 +1,35 @@
+{
+  "app": "without",
+  "target": "http://localhost:3000",
+  "_comment": "Copy to results\\<app>\\crossuser.config.json and fill in from TEST-ACCOUNTS.md and the app's openapi.json. Each user either signs in with 'login' or uses 'headers' copied from the browser (DevTools > Network > a request > Request Headers > Cookie or Authorization). 'vars' are ids of the OTHER patient's records; 'secrets' are strings only that patient's data contains.",
+  "users": {
+    "patientA": { "login": { "method": "POST", "path": "/api/auth/login", "body": { "email": "patient.a@example.com", "password": "..." }, "tokenField": "token" } },
+    "patientB": { "login": { "method": "POST", "path": "/api/auth/login", "body": { "email": "patient.b@example.com", "password": "..." }, "tokenField": "token" } },
+    "therapist1": { "headers": { "cookie": "sid=..." } },
+    "owner": { "headers": { "authorization": "Bearer ..." } }
+  },
+  "vars": {
+    "aAppointment": "id of one of Patient A's appointments",
+    "bAppointment": "id of one of Patient B's appointments",
+    "bDocument": "id of Patient B's document",
+    "bProfile": "id of Patient B's profile",
+    "bName": "Patient B's full name",
+    "bReason": "the reason-for-visit text on B's appointment",
+    "bNote": "a phrase from the therapist note on B's appointment"
+  },
+  "checks": [
+    { "id": 1, "name": "open B's appointment", "as": "patientA", "method": "GET", "path": "/api/appointments/{{bAppointment}}", "secrets": ["{{bReason}}"] },
+    { "id": 2, "name": "change B's appointment", "as": "patientA", "method": "PATCH", "path": "/api/appointments/{{bAppointment}}", "body": { "reason": "changed by A" },
+      "verify": { "as": "patientB", "method": "GET", "path": "/api/appointments/{{bAppointment}}" } },
+    { "id": 3, "name": "download B's document", "as": "patientA", "method": "GET", "path": "/api/documents/{{bDocument}}", "secrets": ["%PDF"] },
+    { "id": 4, "name": "read B's profile", "as": "patientA", "method": "GET", "path": "/api/profiles/{{bProfile}}", "secrets": ["{{bName}}"] },
+    { "id": 5, "name": "list everything", "as": "patientA", "method": "GET", "path": "/api/appointments?all=true&limit=1000", "secrets": ["{{bReason}}", "{{bName}}"] },
+    { "id": 6, "name": "read notes on B's visit", "as": "patientA", "method": "GET", "path": "/api/appointments/{{bAppointment}}/notes", "secrets": ["{{bNote}}"] },
+    { "id": 7, "name": "therapist 1 opens B (not assigned)", "as": "therapist1", "method": "GET", "path": "/api/appointments/{{bAppointment}}", "secrets": ["{{bReason}}"] },
+    { "id": 8, "name": "therapist changes an appointment (read-only)", "as": "therapist1", "method": "PATCH", "path": "/api/appointments/{{aAppointment}}", "body": { "reason": "changed by therapist" },
+      "verify": { "as": "patientA", "method": "GET", "path": "/api/appointments/{{aAppointment}}" } },
+    { "id": 9, "name": "patient calls the owner's summary", "as": "patientA", "method": "GET", "path": "/api/admin/summary", "secrets": ["{{bName}}"] },
+    { "id": 10, "name": "signed out opens B's appointment", "as": "anonymous", "method": "GET", "path": "/api/appointments/{{bAppointment}}", "secrets": ["{{bReason}}"] },
+    { "id": 11, "name": "after Round 2: taken-slots view", "as": "patientA", "method": "GET", "path": "/api/slots/taken", "secrets": ["{{bName}}", "{{bReason}}", "{{bAppointment}}"] }
+  ]
+}
