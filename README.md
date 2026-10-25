@@ -1,6 +1,16 @@
-# Basalt
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/logo/basalt-mark-dark.svg">
+    <img src="design/logo/basalt-mark-light.svg" alt="Basalt" width="88">
+  </picture>
+</p>
+
+<h1 align="center">Basalt</h1>
+<p align="center"><b>Build anything. Leak nothing.</b><br>Built at Cal Hacks 13.0</p>
 
 People with no coding experience build apps in their own Claude Code, the normal way. Basalt sits underneath and enforces the ground rules, so nothing the AI writes can leak one customer's data to another. There's no AI inside Basalt: the rules are fixed and checked the same way every time.
+
+**See it for yourself:** [`demo/`](demo/README.md) has a script you paste into the browser console on a live Basalt app. Signed in as one customer, it tries 9 ways to reach another customer's booking from inside the app's own page, with that customer's real login, and shows every result on screen.
 
 ## The parts
 
@@ -11,6 +21,8 @@ People with no coding experience build apps in their own Claude Code, the normal
 | `hosting/` | Basalt Host: build, test, preview and ship apps on one machine, driven by Claude through `host_*` tools. | Hari |
 | [`data/`](data/README.md) | The Data block: Postgres where every request is checked inside the database (row rules, login check, damage limits, audit log). | Mihir |
 | [`cloud/`](cloud/README.md) | Basalt Cloud: one locked down database per app, the owner's approval pages, data map and Guard (the safety check and receipt). | Mihir |
+| [`demo/`](demo/README.md) | The attack demo: try to break a live Basalt app from inside its own page. | Mihir |
+| [`design/`](design/README.md) | The black and silver design system and logo used on every owner page. | Mihir |
 
 ## How a request flows on a hosted app
 
@@ -20,10 +32,10 @@ People with no coding experience build apps in their own Claude Code, the normal
 
 The app's own backend can do the same through `ctx.data` in the API framework.
 
-## What's built (as of Sat Oct 24)
+## What's built (as of Sun Oct 25)
 
-- **Data block:** get, list (filters, sorting, paging), create, update, archive and restore, file uploads, sharing, owner admins and additive rule changes. 104 attack and feature tests.
-- **Cloud:** a database per app, plain-English approval for anything that shows data to more people, the owner's data map, test logins through Basalt Auth and **Guard** (`basalt_check`). Guard scans the app folder for data kept outside Basalt, then signs in as two people and a stranger and tries 12 ways to reach data that isn't theirs, then writes a safety receipt for the owner. 49 tests.
+- **Data block:** get, list (filters, sorting, paging), create, update, archive and restore, file uploads, sharing, owner admins and additive rule changes. 111 attack and feature tests.
+- **Cloud:** a database per app, plain-English approval for anything that shows data to more people, the owner's data map, test logins through Basalt Auth and **Guard** (`basalt_check`). Guard scans the app folder for data kept outside Basalt, then signs in as two people and a stranger and tries to reach data that isn't theirs: 11 attacks for a one-table app, 6 more for each extra table and one more when the app stores files. Then it writes a safety receipt for the owner. 55 tests.
 - **Auth and hosting joined up:** Cloud apps use real Basalt Auth logins, and sessions Auth ends stop working in the database too. Every hosted environment gets its own Cloud data project, served at `/_basalt/data` on the app's own site. The app's rules live in `basalt.data.json` in its folder: deploys apply them to preview and staging before the app's tests run, and promoting to production stops with the owner's approval link until they tap "Yes". (`host_data_rules` sets them by hand.) After the tests on every deploy, Guard attacks the environment's live data, a failed check stops the deploy and production needs Guard to pass in staging. `host_data_check` runs it on demand and returns the owner's safety receipt.
 - Reviewed with Codex in several rounds. Every finding so far was fixed.
 
