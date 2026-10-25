@@ -42,7 +42,7 @@ export function renderReceipt(appName: string, check: { results: CheckResult[]; 
     ? banner('warning', 'The code check found something to fix', `${found} thing${found === 1 ? '' : 's'} in the app's code keep data outside Basalt. See the code check below.`)
     : check.findings === null
     ? banner('warning', "The app's code wasn't checked", 'Every attack was refused, but the code check below didn\'t run. Ask Claude to run it from the app\'s folder.')
-    : banner('safe', 'Every attack was refused', 'Nobody could reach data that wasn\'t theirs.');
+    : banner('safe', 'Every attack was refused', `None of the ${total} attacks reached another person\'s data.`);
 
   return page(
     `${appName}: safety receipt`,
