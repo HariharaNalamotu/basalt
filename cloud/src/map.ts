@@ -1,5 +1,5 @@
 import type { Contract, FieldSpec } from '../../data/src/index.ts';
-import { esc, page } from './html.ts';
+import { contextLine, esc, friendlyName, page } from './html.ts';
 
 // The owner's data map: where their customers' information lives and who can
 // reach it. Personal information is marked in red. Counts only, never anyone's data.
@@ -72,7 +72,7 @@ function diagram(contract: Contract, admins: number): string {
       const y = ay(i);
       lines.push(`<line x1="170" y1="${y}" x2="222" y2="${y}" stroke="${color.none}" stroke-width="2" stroke-dasharray="5 5"/>`);
       lines.push(`<text x="228" y="${y + 7}" fill="${color.none}" font-size="22" font-weight="700">&#x2715;</text>`);
-      lines.push(`<text x="252" y="${y + 6}" fill="${color.none}" font-size="15">no key</text>`);
+      lines.push(`<text x="252" y="${y + 6}" fill="${color.none}" font-size="15">Cannot access</text>`);
       return;
     }
     for (const t of a.to) {
@@ -87,9 +87,9 @@ function diagram(contract: Contract, admins: number): string {
   const tableBoxes = tables
     .map((t, j) => {
       const personal = [...t.fields].some(([n, s]) => isPersonal(n, s));
-      return `<rect x="350" y="${ty(j) - 26}" width="168" height="52" rx="8" fill="var(--card)" stroke="${personal ? 'var(--bad)' : 'var(--line)'}" stroke-width="${personal ? 2 : 1.5}"/>
+      return `<rect x="350" y="${ty(j) - 26}" width="168" height="52" rx="8" fill="var(--card)" stroke="${personal ? 'var(--share)' : 'var(--line)'}" stroke-width="${personal ? 2 : 1.5}"/>
 <text x="434" y="${ty(j) - 3}" text-anchor="middle" font-size="17" font-weight="600" fill="var(--fg)">${esc(title(t.name))}</text>
-<text x="434" y="${ty(j) + 16}" text-anchor="middle" font-size="13" fill="${personal ? 'var(--bad)' : 'var(--muted)'}">${personal ? 'personal info' : 'no personal info'}</text>`;
+<text x="434" y="${ty(j) + 16}" text-anchor="middle" font-size="14" fill="${personal ? 'var(--share)' : 'var(--muted)'}">${personal ? 'personal info' : 'no personal info'}</text>`;
     })
     .join('');
   return `<svg viewBox="0 0 520 ${h}" role="img" aria-label="Who can reach which data" style="width:100%;max-width:560px;height:auto;display:block;margin:0 auto">${lines.join('')}${actorBoxes}${tableBoxes}</svg>`;
@@ -104,12 +104,12 @@ export function renderMap(appName: string, contract: Contract, stats: MapStats):
         .map(([n, s]) => {
           const personal = isPersonal(n, s);
           const kind = kindOf(s);
-          return `<li><span class="${personal ? 'pii' : ''}">${esc(words(n))}</span>${kind === words(n) ? '' : ` <span class="muted">${esc(kind)}</span>`}${personal ? ' <span class="tag">personal</span>' : ''}</li>`;
+          return `<li><span class="${personal ? 'pii' : ''}">${esc(words(n))}</span>${kind === words(n) ? '' : ` <span class="muted">${esc(kind)}</span>`}${personal ? ' <span class="badge tone--info">Personal info</span>' : ''}</li>`;
         })
         .join('');
-      return `<div class="card"><h2>${esc(title(t.name))} <span class="muted">${c.active} saved${c.archived ? `, ${c.archived} archived` : ''}</span></h2>
+      return `<section class="card"><h2>${esc(title(t.name))} <span class="muted">${c.active} saved${c.archived ? `, ${c.archived} archived` : ''}</span></h2>
 <ul class="fields">${fields}</ul>
-<p class="muted">${t.shareWith ? `Each person sees their own. The person in "${esc(words(t.shareWith))}" can read it but not change it. ` : 'Each person sees only their own. '}Admins see all. Nothing is ever permanently deleted.</p></div>`;
+<p class="muted">${t.shareWith ? `Each person sees their own. The person in "${esc(words(t.shareWith))}" can read it but not change it. ` : 'Each person sees only their own. '}Admins see all. Nothing is ever permanently deleted.</p></section>`;
     })
     .join('');
   const recent = stats.recent.length
@@ -120,17 +120,19 @@ export function renderMap(appName: string, contract: Contract, stats: MapStats):
   return page(
     `${appName}: data map`,
     `<style>
-:root{--ok:#2b8a3e;--share:#1c7ed6;--admin:#e67700;--bad:#e03131;--card:#fff;--fg:#1a1a1a;--muted:#666;--line:#ccc}
-@media (prefers-color-scheme:dark){:root{--ok:#51cf66;--share:#4dabf7;--admin:#ffa94d;--bad:#ff6b6b;--card:#181818;--fg:#eee;--muted:#aaa;--line:#444}}
-body{max-width:760px}.pii{color:var(--bad);font-weight:600}.tag{background:var(--bad);color:#fff;border-radius:4px;padding:0 6px;font-size:12px}
-.fields{columns:2;list-style:none;padding:0}.legend span{margin-right:14px;font-size:14px;white-space:nowrap;display:inline-block}
-@media (max-width:480px){.fields{columns:1}}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}
+/* The map's own names, pointed at the design system's tokens. */
+:root{--ok:var(--safe);--share:var(--info);--admin:var(--warning);--bad:var(--danger);--card:var(--bg-1);--fg:var(--text);--muted:var(--text-muted);--line:var(--edge)}
+.pii{color:var(--text);font-weight:var(--semibold)}
+.fields{columns:2;list-style:none;padding:0;margin:var(--s0)}.fields li{margin:var(--s1) var(--s0)}
+.legend{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s4);font-size:var(--sm);margin:var(--s4) var(--s0)}.dot{display:inline-block;width:var(--dot);height:var(--dot);border-radius:var(--round);margin-right:var(--s1)}
+@media (max-width:480px){.fields{columns:1}}
 </style>
-<h1>Where ${esc(appName)}'s information lives</h1>
+<p class="decision__context">${contextLine(appName)}</p>
+<h1>Where ${esc(friendlyName(appName).app)}'s information lives</h1>
 <p class="muted">Live: ${tables.length} kind${tables.length === 1 ? '' : 's'} of data, ${stats.files.count} file${stats.files.count === 1 ? '' : 's'} (${mb} MB), ${stats.admins} admin${stats.admins === 1 ? '' : 's'}.</p>
 <div class="card"><h2>Who can reach what</h2>${diagram(contract, stats.admins)}
-<p class="legend"><span><i class="dot" style="background:var(--ok)"></i>their own</span><span><i class="dot" style="background:var(--share)"></i>read only, when assigned</span><span><i class="dot" style="background:var(--admin)"></i>everything</span><span><i class="dot" style="background:var(--bad)"></i>no way in</span></p>
-<p class="muted">The AI that built your app only ever gets the same access as the person signed in. Someone who breaks into the website still can't open the data, because the database checks every request itself.</p></div>
+<p class="legend"><span><i class="dot" style="background:var(--ok)"></i>their own</span><span><i class="dot" style="background:var(--share)"></i>read only, when assigned</span><span><i class="dot" style="background:var(--admin)"></i>everything</span><span><i class="dot" style="background:var(--bad)"></i>cannot access</span></p>
+<p>The database applies these rules. The AI that built your app only ever gets the same access as the person signed in. Someone who breaks into the website still can't open the data, because the database checks every request itself.</p></div>
 ${cards}
 <div class="card"><h2>Recent changes</h2>${recent}<p class="muted">Basalt records what changed and when, never the values.</p></div>`,
   );

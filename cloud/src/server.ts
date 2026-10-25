@@ -22,7 +22,7 @@ import { resign, runChecks } from './guard.ts';
 import { renderReceipt } from './receipt.ts';
 import type { ScanFinding } from './scan.ts';
 import { sha256 } from './secrets.ts';
-import { esc, page } from './html.ts';
+import { banner, contextLine, esc, friendlyName, page } from './html.ts';
 import { renderMap } from './map.ts';
 import type { AuthLink } from './auth.ts';
 import { loosens, summarize } from './summary.ts';
@@ -58,6 +58,27 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
     'x-content-type-options': 'nosniff',
   });
   res.end(json);
+}
+
+/** The owner's decision: context, one plain question, what saying yes means, then Yes and No. */
+function decisionPage(title: string, projectName: string, question: string, consequence: string, extra: string, token: string, yes: string, no: string): string {
+  return page(
+    title,
+    `<section class="decision" aria-labelledby="question">
+<div class="decision__head"><p class="decision__context">${contextLine(projectName)}</p>
+<h1 id="question" class="decision__question" tabindex="-1">${question}</h1></div>
+${consequence}
+${extra}
+<form method="post" class="decision__actions"><input type="hidden" name="t" value="${esc(token)}">
+<button class="button button--primary metal" name="decision" value="approve">${yes}</button>
+<button class="button" name="decision" value="reject">${no}</button></form>
+</section>`,
+  );
+}
+
+/** What happened after a decision, or why a link can't be used. */
+function resultPage(title: string, projectName: string | null, tone: 'safe' | 'warning' | 'danger', heading: string, body: string, extra = ''): string {
+  return page(title, `<section class="decision">${projectName ? `<p class="decision__context">${contextLine(projectName)}</p>` : ''}${banner(tone, heading, body)}${extra}<p class="muted">You can close this page and go back to Claude.</p></section>`);
 }
 
 function sendHtml(res: ServerResponse, status: number, html: string): void {
@@ -371,16 +392,16 @@ export function createCloudServer(options: CloudServerOptions) {
     const form = req.method === 'POST' ? new URLSearchParams(await readBody(req, 4096)) : null;
     const token = form ? form.get('t') : url.searchParams.get('t');
     const approval = await projects.getApproval(id, token);
-    if (!approval) return sendHtml(res, 404, page('Link not found', '<h1>This link doesn\'t work</h1><p>It may be mistyped or expired. Ask Claude for a new one.</p>'));
+    if (!approval) return sendHtml(res, 404, resultPage('Link not found', null, 'warning', "This link doesn't work", 'It may be mistyped or expired. Nothing changed. Ask Claude for a new one.'));
     const p = (await projects.get(approval.projectId))!;
 
-    const gone = () => sendHtml(res, 410, page('Already decided', '<h1>This request was already decided</h1><p>Ask Claude for the latest link if you need one.</p>'));
+    const gone = () => sendHtml(res, 410, resultPage('Already decided', p.name, 'warning', 'This request was already decided', 'Ask Claude for the latest link if you need one.'));
     if (approval.expired) {
-      return sendHtml(res, 410, page('Link expired', '<h1>This link has expired</h1><p>Approval links work for 7 days. Nothing changed. Ask Claude for a new one.</p>'));
+      return sendHtml(res, 410, resultPage('Link expired', p.name, 'warning', 'This link has expired', 'Approval links work for 7 days. Nothing changed. Ask Claude for a new one.'));
     }
     if (approval.status !== 'pending') {
       const word = { approved: 'already approved', rejected: 'already turned down', replaced: 'replaced by a newer request', pending: '' }[approval.status];
-      return sendHtml(res, 410, page('Already decided', `<h1>This request was ${word}</h1><p>Ask Claude for the latest link if you need one.</p>`));
+      return sendHtml(res, 410, resultPage('Already decided', p.name, 'warning', `This request was ${word}`, 'Ask Claude for the latest link if you need one.'));
     }
 
     if (approval.kind === 'admin') {
@@ -394,21 +415,27 @@ export function createCloudServer(options: CloudServerOptions) {
             await projects.reopen(approval);
             throw err;
           }
-          return sendHtml(res, 200, page('Admin added', `<h1>Done. ${who} is now an admin of ${esc(p.name)}.</h1><p class="muted">You can close this page and go back to Claude.</p>`));
+          return sendHtml(res, 200, resultPage('Admin added', p.name, 'safe', `Approved. ${who} is now an admin.`, `They can see and change everything saved in ${esc(friendlyName(p.name).app)}.`));
         }
         if (!(await projects.decide(approval, 'rejected'))) return gone();
-        return sendHtml(res, 200, page('Not approved', '<h1>Nothing changed</h1><p>Nobody new can see everything. Tell Claude what you\'d like instead.</p>'));
+        return sendHtml(res, 200, resultPage('Not approved', p.name, 'safe', 'Declined. Nothing changed.', "Nobody new can see everything. Tell Claude what you'd like instead."));
       }
       return sendHtml(
         res,
         200,
-        page(
+        decisionPage(
           `Make ${approval.admin!.label} an admin`,
-          `<h1>Make ${who} an admin of ${esc(p.name)}?</h1>
-<div class="warn">An admin can see and change everything everyone has saved in this app. Only say yes for yourself or someone you fully trust.</div>
-<form method="post"><input type="hidden" name="t" value="${esc(token!)}">
-<button class="yes" name="decision" value="approve">Yes, make ${who} an admin</button>
-<button class="no" name="decision" value="reject">No</button></form>`,
+          p.name,
+          `Make ${who} an admin of ${esc(friendlyName(p.name).app)}?`,
+          banner(
+            'warning',
+            'An admin can see and change all customer information saved in this app.',
+            `${friendlyName(p.name).env === 'Production' ? 'This applies to the production app your customers use. ' : ''}Approve only if you trust this person with that access. Nothing changes until you say yes.`,
+          ),
+          '',
+          token!,
+          'Yes, make them an admin',
+          'No, keep access unchanged',
         ),
       );
     }
@@ -421,27 +448,28 @@ export function createCloudServer(options: CloudServerOptions) {
           await projects.apply(p, approval.contract);
         } catch (err) {
           await projects.reopen(approval);
-          return sendHtml(res, 409, page('Not applied', `<h1>These rules couldn't be applied</h1><p>${esc((err as Error).message)}</p><p>Nothing changed. Tell Claude what this page says and it will fix it.</p>`));
+          return sendHtml(res, 409, resultPage('Not applied', p.name, 'danger', "These rules couldn't be applied", `${esc((err as Error).message)} Nothing changed. Tell Claude what this page says and it will fix it.`));
         }
         await dropHandler(p.id);
-        return sendHtml(res, 200, page('Rules are live', `<h1>Done. These rules are live for ${esc(p.name)}.</h1>${summaryHtml(contract)}<p class="muted">You can close this page and go back to Claude.</p>`));
+        return sendHtml(res, 200, resultPage('Rules are live', p.name, 'safe', 'Approved. These rules are live.', 'The database now enforces them on every request.', `<div class="card">${summaryHtml(contract)}</div>`));
       }
       if (!(await projects.decide(approval, 'rejected'))) return gone();
-      return sendHtml(res, 200, page('Not approved', `<h1>Nothing changed</h1><p>Your app keeps its current rules. Tell Claude what you'd like instead.</p>`));
+      return sendHtml(res, 200, resultPage('Not approved', p.name, 'safe', 'Declined. Nothing changed.', "Your app keeps its current rules. Tell Claude what you'd like instead."));
     }
 
     const why = loosens(p.approvedContract ? parseContract(p.approvedContract) : null, contract);
     return sendHtml(
       res,
       200,
-      page(
+      decisionPage(
         `Approve rules for ${p.name}`,
-        `<h1>Who can see what in ${esc(p.name)}</h1>
-<div class="warn">${why.map((w) => esc(w)).join('<br>')} Nothing changes until you say yes.</div>
-${summaryHtml(contract)}
-<form method="post"><input type="hidden" name="t" value="${esc(token!)}">
-<button class="yes" name="decision" value="approve">Yes, use these rules</button>
-<button class="no" name="decision" value="reject">No, keep things as they are</button></form>`,
+        p.name,
+        `Use these rules for who can see what in ${esc(friendlyName(p.name).app)}?`,
+        banner('warning', 'These rules show data to more people.', `${why.map((w) => esc(w)).join(' ')} Nothing changes until you say yes.`),
+        `<div class="card"><div class="card__header"><h2>Who can see what</h2></div>${summaryHtml(contract)}</div>`,
+        token!,
+        'Yes, use these rules',
+        'No, keep things as they are',
       ),
     );
   }
@@ -467,7 +495,7 @@ ${summaryHtml(contract)}
       const mapMatch = /^\/owner\/([a-z0-9]{10})$/.exec(path);
       if (mapMatch && req.method === 'GET') {
         const p = await projects.checkOwnerViewKey(mapMatch[1], url.searchParams.get('k'));
-        if (!p) return sendHtml(res, 404, page('Link not found', "<h1>This link doesn't work</h1><p>Ask Claude for your data map link again.</p>"));
+        if (!p) return sendHtml(res, 404, resultPage('Link not found', null, 'warning', "This link doesn't work", 'Ask Claude for your data map link again.'));
         if (!p.approvedContract) return sendHtml(res, 200, page(p.name, `<h1>${esc(p.name)} has no rules yet</h1><p>Once you approve them, this page shows where everything lives.</p>`));
         return sendHtml(res, 200, renderMap(p.name, parseContract(p.approvedContract), await projects.stats(p)));
       }
@@ -475,7 +503,7 @@ ${summaryHtml(contract)}
       const receiptMatch = /^\/owner\/([a-z0-9]{10})\/check$/.exec(path);
       if (receiptMatch && req.method === 'GET') {
         const p = await projects.checkOwnerViewKey(receiptMatch[1], url.searchParams.get('k'));
-        if (!p) return sendHtml(res, 404, page('Link not found', "<h1>This link doesn't work</h1><p>Ask Claude for your safety receipt link again.</p>"));
+        if (!p) return sendHtml(res, 404, resultPage('Link not found', null, 'warning', "This link doesn't work", 'Ask Claude for your safety receipt link again.'));
         const check = await projects.latestCheck(p.id);
         if (!check) return sendHtml(res, 200, page(p.name, `<h1>${esc(p.name)} hasn't been checked yet</h1><p>Ask Claude to run the safety check.</p>`));
         return sendHtml(res, 200, renderReceipt(p.name, check, check.contractHash !== sha256(JSON.stringify(p.approvedContract))));

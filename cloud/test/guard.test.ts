@@ -101,7 +101,7 @@ describe('Guard on a Basalt app', () => {
     const receipt = await fetch(r.body.receiptUrl);
     const html = await receipt.text();
     assert.equal(receipt.status, 200);
-    assert.match(html, new RegExp(`${r.body.passed} of ${r.body.results.length} checks passed, 1 thing to fix in the code`));
+    assert.match(html, new RegExp(`${r.body.passed} of ${r.body.results.length} attacks were refused, 1 thing to fix in the code`));
     assert.match(html, /src\/app\.js/);
     assert.match(html, /Data is saved in the browser/);
   });
